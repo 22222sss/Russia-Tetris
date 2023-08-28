@@ -1,0 +1,46 @@
+# default normal_vp. Run 'make [hls/flv/as/flvs/ws/mix/audiohls]' to build_ hls/flv/audiospeaker/flvspeaker/websocket/mixspeaker/audiohls
+
+CFLAGS += -g
+
+all:my_test_app
+
+
+CC=gcc
+CXX=g++
+INC=  
+LDFLAGS=#-lz -lcrypto -lssl -lpthread -lrt -Wunreachable-code
+CFLAGS=-g -D__USE_BSD -Wno-deprecated -Wno-deprecated-declarations -Wunused-function -Wuninitialized -O2
+CXXFLAGS=$(CFLAGS) -Wno-invalid-offsetof -Wextra -Wall -Wno-reorder -Werror -std=c++0x
+
+
+SOURCES =  test.cpp
+BUILD_SUBDIRS=build_
+$(BUILD_SUBDIRS):
+	@mkdir -p $@
+build_/%.o: %.cc
+	@$(CXX) $(CXXFLAGS) $(INC)  $< -MM -MT $@ > build_/$*.d&
+	$(CXX) -c $(CXXFLAGS) $(INC)  $< -o $@	
+build_/%.o: %.cpp
+	@$(CXX) $(CXXFLAGS) $(INC)  $< -MM -MT $@ > build_/$*.d&
+	$(CXX) -c $(CXXFLAGS) $(INC) $< -o $@
+build_/%.o: %.c
+	@$(CC) $(CFLAGS) $(INC)  $< -MM -MT $@ > build_/$*.d&
+	$(CC) -c $(CFLAGS) $(INC) $< -o $@
+
+OBJECTS_TMP1= $(patsubst %.cpp,build_/%.o,$(SOURCES))
+OBJECTS_TMP2=$(patsubst %.c,build_/%.o,$(OBJECTS_TMP1))
+OBJECTS_TMP3=$(patsubst %.cc,build_/%.o,$(OBJECTS_TMP2))
+OBJECTS=$(OBJECTS_TMP3:.c=.o)
+DEPENDS=$(OBJECTS_TMP3:.o=.d)
+$(OBJECTS): | $(BUILD_SUBDIRS)
+my_test_app:$(OBJECTS)
+-include $(DEPENDS)
+my_test_app:$(OBJECTS)
+	g++ $(CXXFLAGS) -o $@  $(OBJECTS)  $(LDFLAGS) 
+
+.PHONY: clean
+clean:
+	@rm -f $(OBJECTS) $(DEPENDS) my_test_app
+
+
+	
