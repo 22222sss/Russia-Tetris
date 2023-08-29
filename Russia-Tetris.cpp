@@ -27,6 +27,7 @@ struct Block
 }block[7][4];//用于存储7种基本形状方块的各自的4种形态的信息，共28种
 
 int grade; //全局变量
+int total;//行数
 
 void InitInterface();//初始化界面
 void moveTo(int row, int col);//输出跳转函数
@@ -44,6 +45,27 @@ int JudeFunc();
 void StartGame();
 //主函数
 int main();
+//判断得分
+void Score();
+
+void Score()
+{
+	if (total >= 2)
+	{
+		grade += (total + 1) * 10;
+		moveTo(14, 2 * COL + 2);
+		color(7);
+		printf("Score:%d", grade);
+	}
+	else
+	{
+		grade += total * 10;
+		moveTo(14, 2 * COL + 2);
+		color(7);
+		printf("Score:%d", grade);
+	}
+}
+
 
 int kbhit(void)
 {
@@ -83,13 +105,13 @@ void InitInterface()
 			if (j == 0 || j == COL - 1 || j == COL + 9)
 			{
 				face.data[i][j] = 1; //标记该位置有方块
-				moveTo(i + 1, 2 * j + 1);
+				moveTo(i + 1, 2 * (j + 1) - 1);
 				printf("■");
 			}
 			else if (i == ROW - 1)
 			{
 				face.data[i][j] = 1; //标记该位置有方块
-				moveTo(i + 1, 2 * j + 1);
+				moveTo(i + 1, 2 * (j + 1) - 1);
 				printf("■");
 			}
 			else
@@ -163,6 +185,7 @@ void InitBlockInfo()
 		for (int form = 0; form < 3; form++)//4种形态（已经有了一种，这里每个还需要增加3种）
 		{
 			int temp[4][4] = { 0 };
+
 			//获取第form种状态
 			for (int i = 0; i < 4; i++)
 			{
@@ -222,7 +245,7 @@ void DrawBlock(int shape, int form, int row, int col)//row和col，指的是方�
 		{
 			if (block[shape][form].space[i][j] == 1)//如果该位置有方块
 			{
-				moveTo(row + i, 2 * (col + j));//光标跳转到指定位置
+				moveTo(row + i, 2 * (col + j) - 1);//光标跳转到指定位置
 				printf("■"); //输出方块
 			}
 		}
@@ -242,7 +265,7 @@ void DrawSpace(int shape, int form, int row, int col)
 		{
 			if (block[shape][form].space[i][j] == 1)//如果该位置有方块
 			{
-				moveTo(row + i, 2 * (col + j));//光标跳转到指定位置
+				moveTo(row + i, 2 * (col + j) - 1);//光标跳转到指定位置
 				printf("  ");//打印空格覆盖（两个空格）
 			}
 		}
@@ -260,12 +283,15 @@ int IsLegal(int shape, int form, int row, int col)
 	{
 		for (j = 0; j < 4; j++)
 		{
-			if ((block[shape][form].space[i][j] == 1) && (face.data[row + i][col + j] == 1))
+			if ((block[shape][form].space[i][j] == 1) && (face.data[row + i - 1][col + j - 1] == 1))
 				return 0;
 		}
 	}
 	return 1;
 }
+
+
+
 
 //判断得分与结束
 
@@ -292,15 +318,13 @@ int JudeFunc()
 			break;
 		if (sum == COL - 2)//该行全是方块，可得分
 		{
-			grade += 10;
-			moveTo(14, 2 * COL + 2);
-			color(7);
-			printf("Score:%d", grade);
-			for (j = 1; j <= COL - 1; j++)//清除得分行的方块信息
+			total++;
+			for (j = 1; j < COL - 1; j++)//清除得分行的方块信息
 			{
 				face.data[i][j] = 0;
-				moveTo(i, 2 * j);
+				moveTo(i + 1, 2 * j + 1);
 				printf("  ");
+
 			}
 			//把被清除行上面的行整体向下挪一格
 			for (int m = i; m > 1; m--)
@@ -313,14 +337,14 @@ int JudeFunc()
 					face.color[m][n] = face.color[m - 1][n];//将上一行方块的颜色编号移到下一行
 					if (face.data[m][n] == 1)
 					{
-						moveTo(m, 2 * n);
+						moveTo(m + 1, 2 * n + 1);
 						color(face.color[m][n]);//颜色设置为还方块的颜色
 						printf("■"); //打印方块
 
 					}
 					else
 					{
-						moveTo(m, 2 * n);
+						moveTo(m + 1, 2 * n + 1);
 						printf("  ");
 					}
 				}
@@ -335,16 +359,14 @@ int JudeFunc()
 		if (face.data[1][j] == 1) //顶层有方块存在（以第1行为顶层，不是第0行）
 		{
 			sleep(1); //留给玩家反应时间
-			if (!system("clear")) //清空屏幕
-				color(7); //颜色设置为白色
-
+			color(7); //颜色设置为白色
 			moveTo(ROW / 2, 2 * (COL / 3));
 			printf("GAME OVER");
 			while (1)
 			{
 				char ch;
 				moveTo(ROW / 2 + 3, 2 * (COL / 3));
-				printf("再来一局?(y/n):");
+				printf("Start Again ? (y/n):");
 				cin >> ch;
 				if (ch == 'y' || ch == 'Y')
 				{
@@ -384,7 +406,7 @@ void StartGame()
 			DrawBlock(shape, form, row, col); //将该方块显示在初始下落位置
 			if (t == 0)
 			{
-				t = 150000;//这里t越小，方块下落越快（可以根据此设置游戏难度）
+				t = 200000;//这里t越小，方块下落越快（可以根据此设置游戏难度）
 			}
 
 			while (--t)
@@ -392,6 +414,7 @@ void StartGame()
 				if (kbhit() != 0)
 					break;
 			}
+
 
 			if (t == 0)//键盘未被敲击
 			{
@@ -405,12 +428,14 @@ void StartGame()
 						{
 							if (block[shape][form].space[i][j] == 1)
 							{
-								face.data[row + i][col + j] = 1; //将该位置标记为有方块
-								face.color[row + i][col + j] = shape; //记录该方块的颜色数值
+								face.data[row + i - 1][col + j - 1] = 1; //将该位置标记为有方块
+								face.color[row + i - 1][col + j - 1] = shape; //记录该方块的颜色数值
 							}
 						}
 					}
-					while (JudeFunc()); //判断此次方块下落是否得分以及游戏是否结束
+					total = 0;
+					while (JudeFunc());//判断此次方块下落是否得分以及游戏是否结束
+					Score();//判断得分
 					break; //跳出当前死循环，准备进行下一个方块的下落
 				}
 				else//未到底部
@@ -464,8 +489,6 @@ void StartGame()
 		DrawSpace(nextShape, nextForm, 3, COL + 3); //将右上角的方块信息用空格覆盖
 	}
 }
-
-
 
 int main()
 {
