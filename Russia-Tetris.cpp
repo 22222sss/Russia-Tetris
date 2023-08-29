@@ -204,3 +204,24 @@ void DrawBlock(int shape, int form, int row, int col)//row和col，指的是方�
 		}
 	}
 }
+
+//空格覆盖
+//无论是游戏区方块的移动，还是提示区右上角下一个方块的显示，都需要方块位置的变换.
+//而在变化之前肯定是要先将之前打印的方块用空格进行覆盖，然后再打印变化后的方块
+//在覆盖方块时特别需要注意的是，要覆盖一个小方块需要用两个空格。
+void DrawSpace(int shape, int form, int row, int col)
+{
+	int i, j;
+	for (i = 0; i < 4; i++)
+	{
+		for (j = 0; j < 4; j++)
+		{
+			if (block[shape][form].space[i][j] == 1)//如果该位置有方块
+			{
+				moveTo(row + i, 2 * (col + j));//光标跳转到指定位置
+				printf("  ");//打印空格覆盖（两个空格）
+			}
+		}
+
+	}
+}
