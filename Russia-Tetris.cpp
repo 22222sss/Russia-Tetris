@@ -159,3 +159,32 @@ void InitBlockInfo()
 		}
 	}
 }
+
+//颜色设置
+void color(int c)
+{
+	switch (c)
+	{
+	case 0:
+		c = 35; //“T”形方块设置为紫色
+		break;
+	case 1:
+	case 2:
+		c = 31; //“L”形和“J”形方块设置为红色
+		break;
+	case 3:
+	case 4:
+		c = 36; //“Z”形和“S”形方块设置为绿色
+		break;
+	case 5:
+		c = 33; //“O”形方块设置为黄色
+		break;
+	case 6:
+		c = 34; //“I”形方块设置为浅蓝色
+		break;
+	default:
+		c = 37; //其他默认设置为白色
+		break;
+	}
+	printf("\33[%dm", c); //颜色设置
+}
