@@ -72,44 +72,43 @@ struct Block
 }block[7][4];//用于存储7种基本形状方块的各自的4种形态的信息，共28种
 
 
-void output(int client, string s);
+void output(int client, string s);//输出到客户端函数
 
-void outputgrade(int client, string s, int grade);
+void outputgrade(int client, string s, int grade);//输出分数
 
-void moveTo(int client, int row, int col);
+void moveTo(int client, int row, int col);//打印移动函数
 
-void ChangeCurrentColor(int client, int n);
+void ChangeCurrentColor(int client, int n);//更改目前字体及方块颜色函数
 
-void SetSocketBlocking(int socket, bool blocking);
+void SetSocketBlocking(int socket, bool blocking);//将客户端套接字设置为阻塞与非阻塞
 
-void InitBlockInfo();
+void InitBlockInfo();//初始化方块信息
 
-void DrawBlock(int client, int shape, int form, int row, int col);
+void DrawBlock(int client, int shape, int form, int row, int col);//画出方块
 
 void color(int client, int c);
 
-bool IsLegal(UserInfo* user, int shape, int form, int row, int col);
+bool IsLegal(UserInfo* user, int shape, int form, int row, int col);//方块移动合法性判断函数
 
-bool JudeScore(UserInfo* userInfo);
+bool JudeScore(UserInfo* userInfo);//方块下落完毕判断得分函数
 
-void CurrentScore(UserInfo* userInfo);
+void CurrentScore(UserInfo* userInfo);//修改目前得分
 
-bool IsOver(UserInfo* user);
+bool IsOver(UserInfo* user);//判断游戏是否结束
 
-void clear(int client);
+void clear(int client);//清理屏幕
 
-void HandleClientConnection(int serverSocket, unordered_map<int, UserInfo*>& p, int epollfd);
+void HandleClientConnection(int serverSocket, unordered_map<int, UserInfo*>& p, int epollfd);//处理客户端连接
 
-void processTimerEvent(int timerfd, vector<int>& qiut, unordered_map<int, UserInfo*>& p);
+void processTimerEvent(int timerfd, vector<int>& qiut, unordered_map<int, UserInfo*>& p);//处理各个客户端的方块下降函数
 
-void handleClientData(int epollfd, UserInfo* userInfo);
+void handleClientData(int epollfd, UserInfo* userInfo);//处理各个客户端发来的信息并及时响应
 
 void processEvents(int readyCount, epoll_event* events, int serverSocket, int timerfd, vector<int>& qiut, unordered_map<int, UserInfo*>& p, int epollfd);
 
-void processUserLogic(UserInfo* user);
+void processUserLogic(UserInfo* user);//判断方块下降逻辑函数
 
-
-void InitInterface(UserInfo* user);
+void InitInterface(UserInfo* user);//初始化界面
 
 
 void output(int client, string s)
@@ -669,7 +668,11 @@ void processEvents(int readyCount, epoll_event* events, int serverSocket, int ti
 		UserInfo* userInfo = (UserInfo*)(events[i].data.ptr);
 		int currentFd = events[i].data.fd;
 
-		if (currentFd == timerfd)
+		if (currentFd == serverSocket)
+		{
+			HandleClientConnection(serverSocket, p, epollfd);
+		}
+		else if (currentFd == timerfd)
 		{
 			processTimerEvent(timerfd, qiut, p);
 		}
@@ -786,8 +789,6 @@ int main()
 	}
 
 	printf("======waiting for client's request======\n");
-
-	HandleClientConnection(serverSocket, p, epollfd);
 
 	while (1)
 	{
