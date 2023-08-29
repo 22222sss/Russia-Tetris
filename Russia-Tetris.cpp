@@ -242,3 +242,103 @@ int IsLegal(int shape, int form, int row, int col)
 	}
 	return 1;
 }
+
+//判断得分与结束
+
+// 判断得分
+//从下往上判断，若某一行方块全满，则将改行方块数据清空，并将该行上方的方块全部下移，下移结束后返回1，表示还需再次调用该函数进行判断
+//因为被下移的行并没有进行判断，可能还存在满行。
+
+//判断结束
+//直接判断游戏区最上面的一行当中是否有方块存在，若存在方块，则游戏结束。
+//游戏结束后，除了给出游戏结束提示语之外，如果玩家本局游戏分数大于历史最高记录，则需要更新最高分到文件当中。
+//游戏结束后询问玩家是否再来一局。
+int JudeFunc()
+{
+	int i, j;
+	//判断是否得分
+	for (i = ROW - 2; i > 4; i--)
+	{
+		int sum = 0;
+		for (j = 1; j < COL - 1; j++)
+		{
+			sum += face.data[i][j];
+		}
+		if (sum == 0)
+			break;
+		if (sum == COL - 2)//该行全是方块，可得分
+		{
+			grade += 10;
+			moveTo(14, 2 * COL + 2);
+			color(7);
+			printf("Score:%d", grade);
+			for (j = 1; j <= COL - 1; j++)//清除得分行的方块信息
+			{
+				face.data[i][j] = 0;
+				moveTo(i, 2 * j);
+				printf("  ");
+			}
+			//把被清除行上面的行整体向下挪一格
+			for (int m = i; m > 1; m--)
+			{
+				sum = 0;//记录上一行的方块个数
+				for (int n = 1; n < COL - 1; n++)
+				{
+					sum += face.data[m - 1][n];//统计上一行的方块个数
+					face.data[m][n] = face.data[m - 1][n];//将上一行方块的标识移到下一行
+					face.color[m][n] = face.color[m - 1][n];//将上一行方块的颜色编号移到下一行
+					if (face.data[m][n] == 1)
+					{
+						moveTo(m, 2 * n);
+						color(face.color[m][n]);//颜色设置为还方块的颜色
+						printf("■"); //打印方块
+
+					}
+					else
+					{
+						moveTo(m, 2 * n);
+						printf("  ");
+					}
+				}
+				if (sum == 0) //上一行移下来的全是空格，无需再将上层的方块向下移动（移动结束）
+					return 1; //返回1，表示还需调用该函数进行判断（移动下来的可能还有满行）
+			}
+		}
+	}
+	//判断游戏是否结束
+	for (int j = 1; j < COL - 1; j++)
+	{
+		if (face.data[1][j] == 1) //顶层有方块存在（以第1行为顶层，不是第0行）
+		{
+			sleep(1); //留给玩家反应时间
+			if (!system("clear")) //清空屏幕
+				color(7); //颜色设置为白色
+
+			moveTo(ROW / 2, 2 * (COL / 3));
+			printf("GAME OVER");
+			while (1)
+			{
+				char ch;
+				moveTo(ROW / 2 + 3, 2 * (COL / 3));
+				printf("再来一局?(y/n):");
+				cin >> ch;
+				if (ch == 'y' || ch == 'Y')
+				{
+					if (!system("clear"))
+						main();
+				}
+				else if (ch == 'n' || ch == 'N')
+				{
+					moveTo(ROW / 2 + 5, 2 * (COL / 3));
+					exit(0);
+				}
+				else
+				{
+					moveTo(ROW / 2 + 4, 2 * (COL / 3));
+					printf("选择错误，请再次选择");
+				}
+			}
+		}
+	}
+	return 0; //判断结束，无需再调用该函数进行判断
+}
