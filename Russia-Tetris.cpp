@@ -253,7 +253,6 @@ int IsLegal(int shape, int form, int row, int col)
 //直接判断游戏区最上面的一行当中是否有方块存在，若存在方块，则游戏结束。
 //游戏结束后，除了给出游戏结束提示语之外，如果玩家本局游戏分数大于历史最高记录，则需要更新最高分到文件当中。
 //游戏结束后询问玩家是否再来一局。
-
 int JudeFunc()
 {
 	int i, j;
@@ -342,4 +341,102 @@ int JudeFunc()
 		}
 	}
 	return 0; //判断结束，无需再调用该函数进行判断
+}
+
+//游戏主体逻辑函数
+void StartGame()
+{
+	int shape = rand() % 7, form = rand() % 4; //随机获取方块的形状和形态
+	while (1)
+	{
+		int t = 0;
+		int nextShape = rand() % 7, nextForm = rand() % 4; //随机获取下一个方块的形状和形态
+		int row = 1, col = COL / 2 - 1; //方块初始下落位置
+		color(nextShape); //颜色设置为下一个方块的颜色
+		DrawBlock(nextShape, nextForm, 3, COL + 3); //将下一个方块显示在右上角
+		while (1)
+		{
+			color(shape); //颜色设置为当前正在下落的方块
+			DrawBlock(shape, form, row, col); //将该方块显示在初始下落位置
+			if (t == 0)
+			{
+				t = 150000;//这里t越小，方块下落越快（可以根据此设置游戏难度）
+			}
+
+			while (--t)
+			{
+				if (kbhit() != 0)
+					break;
+			}
+
+			if (t == 0)//键盘未被敲击
+			{
+				if (IsLegal(shape, form, row + 1, col) == 0)//方块再下落就不合法了（已经到达底部）
+				{
+					//将当前方块的信息录入face当中
+					//face:记录界面的每个位置是否有方块，若有方块还需记录该位置方块的颜色。
+					for (int i = 0; i < 4; i++)
+					{
+						for (int j = 0; j < 4; j++)
+						{
+							if (block[shape][form].space[i][j] == 1)
+							{
+								face.data[row + i][col + j] = 1; //将该位置标记为有方块
+								face.color[row + i][col + j] = shape; //记录该方块的颜色数值
+							}
+						}
+					}
+					while (JudeFunc()); //判断此次方块下落是否得分以及游戏是否结束
+					break; //跳出当前死循环，准备进行下一个方块的下落
+				}
+				else//未到底部
+				{
+					DrawSpace(shape, form, row, col); //用空格覆盖当前方块所在位置
+					row++; //纵坐标自增（下一次显示方块时就相当于下落了一格了）
+				}
+			}
+			else
+			{
+				char ch = getchar();
+				switch (ch)
+				{
+				case DOWN: //方向键：下
+					if (IsLegal(shape, form, row + 1, col) == 1) //判断方块向下移动一位后是否合法
+					{
+						//方块下落后合法才进行以下操作
+						DrawSpace(shape, form, row, col); //用空格覆盖当前方块所在位置
+						row++; //纵坐标自增（下一次显示方块时就相当于下落了一格了）
+					}
+					break;
+				case LEFT: //方向键：左
+					if (IsLegal(shape, form, row, col - 1) == 1) //判断方块向左移动一位后是否合法
+					{
+						//方块左移后合法才进行以下操作
+						DrawSpace(shape, form, row, col); //用空格覆盖当前方块所在位置
+						col--; //横坐标自减（下一次显示方块时就相当于左移了一格了）
+					}
+					break;
+				case RIGHT: //方向键：右
+					if (IsLegal(shape, form, row, col + 1) == 1) //判断方块向右移动一位后是否合法
+					{
+						//方块右移后合法才进行以下操作
+						DrawSpace(shape, form, row, col); //用空格覆盖当前方块所在位置
+						col++; //横坐标自增（下一次显示方块时就相当于右移了一格了）
+					}
+					break;
+				case SPACE: //空格键
+					if (IsLegal(shape, (form + 1) % 4, row + 1, col) == 1) //判断方块旋转后是否合法
+					{
+						//方块旋转后合法才进行以下操作
+						DrawSpace(shape, form, row, col); //用空格覆盖当前方块所在位置
+						row++; //纵坐标自增（总不能原地旋转吧）
+						form = (form + 1) % 4; //方块的形态自增（下一次显示方块时就相当于旋转了）
+					}
+					break;
+				}
+			}
+		}
+		shape = nextShape, form = nextForm; //获取下一个方块的信息
+		DrawSpace(nextShape, nextForm, 3, COL + 3); //将右上角的方块信息用空格覆盖
+	}
 }
