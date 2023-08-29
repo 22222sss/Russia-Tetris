@@ -45,12 +45,35 @@ void StartGame();
 //主函数
 int main();
 
-void moveTo(int row, int col)//移动到第row行第col列
+int kbhit(void)
+{
+	struct termios oldt, newt;
+	int ch;
+	int oldf;
+	tcgetattr(STDIN_FILENO, &oldt);
+	newt = oldt;
+	newt.c_lflag &= ~(ICANON | ECHO);
+	tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+	oldf = fcntl(STDIN_FILENO, F_GETFL, 0);
+	fcntl(STDIN_FILENO, F_SETFL, oldf | O_NONBLOCK);
+	ch = getchar();
+	tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+	fcntl(STDIN_FILENO, F_SETFL, oldf);
+	if (ch != EOF)
+	{
+		ungetc(ch, stdin);
+		return 1;
+	}
+	return 0;
+}
+
+void moveTo(int row, int col)
 {
 	printf("\x1b[%d;%dH", row, col);
 }
 
-void InitInterface()//初始化界面
+
+void InitInterface()
 {
 
 	for (int i = 0; i < ROW; i++)
@@ -60,7 +83,7 @@ void InitInterface()//初始化界面
 			if (j == 0 || j == COL - 1 || j == COL + 9)
 			{
 				face.data[i][j] = 1; //标记该位置有方块
-				moveTo(i + 1, 2 * j + 1);//方块占一个行位置，两个列位置
+				moveTo(i + 1, 2 * j + 1);
 				printf("■");
 			}
 			else if (i == ROW - 1)
@@ -188,6 +211,7 @@ void color(int c)
 	}
 	printf("\33[%dm", c); //颜色设置
 }
+
 
 //画出方块
 void DrawBlock(int shape, int form, int row, int col)//row和col，指的是方块信息当中第一行第一列的方块的打印位置为第row行第col列
@@ -439,4 +463,21 @@ void StartGame()
 		shape = nextShape, form = nextForm; //获取下一个方块的信息
 		DrawSpace(nextShape, nextForm, 3, COL + 3); //将右上角的方块信息用空格覆盖
 	}
+}
+
+
+
+int main()
+{
+	if (!system("clear"))
+	{
+		grade = 0;
+		InitInterface(); //初始化界面
+		InitBlockInfo(); //初始化方块信息
+		srand((unsigned int)time(NULL)); //设置随机数生成的起点
+		StartGame(); //开始游戏
+	}
+	moveTo(30, 1);
+	cout << endl;
+	return 0;
 }
