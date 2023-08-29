@@ -188,3 +188,19 @@ void color(int c)
 	}
 	printf("\33[%dm", c); //颜色设置
 }
+
+//画出方块
+void DrawBlock(int shape, int form, int row, int col)//row和col，指的是方块信息当中第一行第一列的方块的打印位置为第row行第col列
+{
+	for (int i = 0; i < 4; i++)
+	{
+		for (int j = 0; j < 4; j++)
+		{
+			if (block[shape][form].space[i][j] == 1)//如果该位置有方块
+			{
+				moveTo(row + i, 2 * (col + j));//光标跳转到指定位置
+				printf("■"); //输出方块
+			}
+		}
+	}
+}
