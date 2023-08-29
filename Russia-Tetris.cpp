@@ -90,3 +90,72 @@ void InitInterface()//初始化界面
 	printf("\33[40m");
 	printf("Score:%d", grade);
 }
+
+//初始化方块信息
+void InitBlockInfo()
+{
+	int i;
+	//“T”形
+	for (i = 0; i <= 2; i++)
+	{
+		block[0][0].space[1][i] = 1;
+	}
+	block[0][0].space[2][1] = 1;
+
+	//“L”形
+	for (i = 1; i <= 3; i++)
+	{
+		block[1][0].space[i][1] = 1;
+	}
+	block[1][0].space[3][2] = 1;
+
+	//“J”形
+	for (i = 1; i <= 3; i++)
+	{
+		block[2][0].space[i][2] = 1;
+	}
+	block[2][0].space[3][1] = 1;
+
+	for (int i = 0; i <= 1; i++)
+	{
+		//“Z”形
+		block[3][0].space[1][i] = 1;
+		block[3][0].space[2][i + 1] = 1;
+		//“S”形
+		block[4][0].space[1][i + 1] = 1;
+		block[4][0].space[2][i] = 1;
+		//“O”形
+		block[5][0].space[1][i + 1] = 1;
+		block[5][0].space[2][i + 1] = 1;
+	}
+
+	//“I”形
+	for (i = 0; i <= 3; i++)
+	{
+		block[6][0].space[i][1] = 1;
+	}
+
+	for (int shape = 0; shape < 7; shape++)//7种形状
+	{
+		for (int form = 0; form < 3; form++)//4种形态（已经有了一种，这里每个还需要增加3种）
+		{
+			int temp[4][4] = { 0 };
+			//获取第form种状态
+			for (int i = 0; i < 4; i++)
+			{
+				for (int j = 0; j < 4; j++)
+				{
+					temp[i][j] = block[shape][form].space[i][j];
+				}
+			}
+			//将第form种形态顺时针旋转，得到第form+1种形态
+			for (i = 0; i < 4; i++)
+			{
+				for (int j = 0; j < 4; j++)
+				{
+					block[shape][form + 1].space[i][j] = temp[3 - j][i];
+				}
+			}
+		}
+	}
+}
