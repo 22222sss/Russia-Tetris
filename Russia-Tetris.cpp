@@ -12,6 +12,7 @@
 #include <sys/errno.h>
 #include <netinet/in.h>
 #include <signal.h>
+
 #define BUFFSIZE 2048
 #define DEFAULT_PORT 9999    // 指定端口为9999
 #define MAXLINK 2048
@@ -28,6 +29,15 @@ using namespace std;
 #define SPACE 32 //空格键
 #define ESC "\033" //Esc键
 
+//红绿黄蓝白
+#define COLOR_PURPLE 35
+#define COLOR_RED 31
+#define COLOR_GREEN 36
+#define COLOR_YELLO 33
+#define COLOR_BLUE 34
+#define COLOR_WHITE 37
+
+
 struct Face
 {
 	int data[ROW][COL + 10];//用于标记指定位置是否有方块（1为有，0为无）
@@ -39,8 +49,8 @@ struct Block
 	int space[4][4];
 }block[7][4];//用于存储7种基本形状方块的各自的4种形态的信息，共28种
 
-int grade; //全局变量
-int total;//行数
+int grade = 0; //全局变量
+int total = 0;//行数
 
 void SetSocketBlocking(int socket, bool blocking);//切换阻塞与非阻塞状态
 void GameMain();
@@ -54,15 +64,38 @@ void DrawBlock(int shape, int form, int x, int y);
 //空格覆盖
 void DrawSpace(int shape, int form, int x, int y);
 //合法性判断
-int IsLegal(int shape, int form, int x, int y);
-//判断得分与结束
-int JudeFunc();
+bool IsLegal(int shape, int form, int x, int y);
+//判断得分
+bool JudeScore();
+//判断结束
+void IsOver();
 //游戏主体逻辑函数
 void StartGame();
 //主函数
 int main();
-//判断得分
+//统计得分
 void CurrentScore();
+
+
+void output(string s)
+{
+	//cout << s;
+	send(client, s.c_str(), s.length(), 0);
+}
+
+void outputgrade(string s, int grade)
+{
+	string command = s + to_string(grade);
+	//cout << command;
+	output(command);
+}
+
+void ChangeCurrentColor(int n)
+{
+	string command = "\33[" + to_string(n) + "m";
+	//cout << command;
+	output(command);
+}
 
 void SetSocketBlocking(int socket, bool blocking) {
 	// 获取套接字标志
@@ -109,41 +142,22 @@ void GameMain()
 void clear()
 {
 	int i;
+	string emptyLine(4 * COL, ' ');
 	for (i = 1; i <= ROW; i++)
 	{
 		moveTo(i, 1);
-		string emptyLine(4 * COL, ' ');
-		cout << emptyLine;
-		send(client, emptyLine.c_str(), emptyLine.length(), 0);
+		//cout << emptyLine;
+		output(emptyLine);
 	}
 }
 
 void moveTo(int row, int col)
 {
 	string command = "\x1b[" + to_string(row) + ";" + to_string(col) + "H";
-	cout << command; // 在控制台上打印命令
-	send(client, command.c_str(), command.length(), 0);
+	//cout << command; // 在控制台上打印命令
+	output(command);
 }
 
-void output(string s)
-{
-	cout << s;
-	send(client, s.c_str(), s.length(), 0);
-}
-
-void outputgrade(string s, int grade)
-{
-	string command = s + to_string(grade);
-	cout << command;
-	send(client, command.c_str(), command.length(), 0);
-}
-
-void outputcolor(int n)
-{
-	string command = "\33[" + to_string(n) + "m";
-	cout << command;
-	send(client, command.c_str(), command.length(), 0);
-}
 
 void CurrentScore()
 {
@@ -197,11 +211,11 @@ void InitInterface()
 	}
 
 	moveTo(2, 2 * COL + 1 + 1);
-	output("\33[40m");
+	ChangeCurrentColor(COLOR_WHITE);
 	output("Next:");
 
 	moveTo(14, 2 * COL + 2);
-	output("\33[40m");
+	ChangeCurrentColor(COLOR_WHITE);
 	outputgrade("Score: ", grade);
 }
 
@@ -281,28 +295,26 @@ void color(int c)
 	switch (c)
 	{
 	case 0:
-		c = 35; //“T”形方块设置为紫色
+		ChangeCurrentColor(COLOR_PURPLE); //“T”形方块设置为紫色
 		break;
 	case 1:
 	case 2:
-		c = 31; //“L”形和“J”形方块设置为红色
+		ChangeCurrentColor(COLOR_RED); //“L”形和“J”形方块设置为红色
 		break;
 	case 3:
 	case 4:
-		c = 36; //“Z”形和“S”形方块设置为绿色
+		ChangeCurrentColor(COLOR_GREEN);//“Z”形和“S”形方块设置为绿色
 		break;
 	case 5:
-		c = 33; //“O”形方块设置为黄色
+		ChangeCurrentColor(COLOR_YELLO);//“O”形方块设置为黄色
 		break;
 	case 6:
-		c = 34; //“I”形方块设置为浅蓝色
+		ChangeCurrentColor(COLOR_BLUE);//“I”形方块设置为浅蓝色
 		break;
 	default:
-		c = 37; //其他默认设置为白色
+		ChangeCurrentColor(COLOR_WHITE); //其他默认设置为白色
 		break;
 	}
-	//printf("\33[%dm", c); //颜色设置
-	outputcolor(c);
 }
 
 //画出方块
@@ -348,7 +360,7 @@ void DrawSpace(int shape, int form, int row, int col)
 //其实在方块移动过程中，无时无刻都在判断方块下一次变化后的位置是否合法，只有合法才会允许该变化的进行。
 //所谓非法，就是指该方块进行了该变化后落在了本来就有方块的位置。
 //合法性判断
-int IsLegal(int shape, int form, int row, int col)
+bool IsLegal(int shape, int form, int row, int col)
 {
 	int i, j;
 	for (i = 0; i < 4; i++)
@@ -356,10 +368,10 @@ int IsLegal(int shape, int form, int row, int col)
 		for (j = 0; j < 4; j++)
 		{
 			if ((block[shape][form].space[i][j] == 1) && (face.data[row + i - 1][col + j - 1] == 1))
-				return 0;
+				return false;
 		}
 	}
-	return 1;
+	return true;
 }
 
 //判断得分与结束
@@ -370,11 +382,10 @@ int IsLegal(int shape, int form, int row, int col)
 
 //判断结束
 //直接判断游戏区最上面的一行当中是否有方块存在，若存在方块，则游戏结束。
-//游戏结束后，除了给出游戏结束提示语之外，如果玩家本局游戏分数大于历史最高记录，则需要更新最高分到文件当中。
 //游戏结束后询问玩家是否再来一局。
-int JudeFunc()
+bool JudeScore()
 {
-	int i, j;
+	int i = 0, j = 0;
 	//判断是否得分
 	for (i = ROW - 2; i > 4; i--)
 	{
@@ -420,10 +431,15 @@ int JudeFunc()
 					}
 				}
 				if (sum == 0) //上一行移下来的全是空格，无需再将上层的方块向下移动（移动结束）
-					return 1; //返回1，表示还需调用该函数进行判断（移动下来的可能还有满行）
+					return true; //返回1，表示还需调用该函数进行判断（移动下来的可能还有满行）
 			}
 		}
 	}
+	return false;
+}
+
+void IsOver()
+{
 	//判断游戏是否结束
 	for (int j = 1; j < COL - 1; j++)
 	{
@@ -432,21 +448,17 @@ int JudeFunc()
 			sleep(1); //留给玩家反应时间
 			color(7); //颜色设置为白色
 			moveTo(ROW / 2, 2 * (COL / 3));
-			//printf("GAME OVER");
 			output("GAME OVER");
 			while (1)
 			{
 				moveTo(ROW / 2 + 3, 2 * (COL / 3));
-				//printf("Start Again ? (y/n):");
 				output("Start Again ? (y/n):");
-				//cin >> ch;
-
 
 				// 将客户端套接字设置为阻塞模式
 				SetSocketBlocking(client, true);
 
-
 				recv(client, buf, sizeof(buf), 0);
+
 				if (*buf == 'Y' || *buf == 'y')
 				{
 					clear();
@@ -457,7 +469,6 @@ int JudeFunc()
 					moveTo(ROW / 2 + 5, 2 * (COL / 3));
 					close(client);
 					close(sock);
-					return 0;
 				}
 				else
 				{
@@ -468,8 +479,9 @@ int JudeFunc()
 			}
 		}
 	}
-	return 0; //判断结束，无需再调用该函数进行判断
+
 }
+
 
 
 //游戏主体逻辑函数
@@ -518,8 +530,9 @@ void StartGame()
 						}
 					}
 					total = 0;
-					while (JudeFunc());//判断此次方块下落是否得分以及游戏是否结束
-					Score();//判断得分
+					while (JudeScore());//判断此次方块下落是否得分
+					CurrentScore();//统计得分
+					IsOver();
 					break; //跳出当前死循环，准备进行下一个方块的下落
 				}
 				else//未到底部
@@ -531,7 +544,7 @@ void StartGame()
 			else
 			{
 
-				if (strcmp(buf, "\x1b[B") == 0)//下
+				if (strcmp(buf, KEY_DOWN) == 0)//下
 				{
 					if (IsLegal(shape, form, row + 1, col) == 1) //判断方块向下移动一位后是否合法
 					{
@@ -540,7 +553,7 @@ void StartGame()
 						row++; //纵坐标自增（下一次显示方块时就相当于下落了一格了）
 					}
 				}
-				else if (strcmp(buf, "\x1b[D") == 0)//左
+				else if (strcmp(buf, KEY_LEFT) == 0)//左
 				{
 					if (IsLegal(shape, form, row, col - 1) == 1) //判断方块向左移动一位后是否合法
 					{
@@ -549,7 +562,7 @@ void StartGame()
 						col--; //横坐标自减（下一次显示方块时就相当于左移了一格了）
 					}
 				}
-				else if (strcmp(buf, "\x1b[C") == 0)//右
+				else if (strcmp(buf, KEY_RIGHT) == 0)//右
 				{
 					if (IsLegal(shape, form, row, col + 1) == 1) //判断方块向右移动一位后是否合法
 					{
@@ -574,9 +587,6 @@ void StartGame()
 		DrawSpace(nextShape, nextForm, 3, COL + 3); //将右上角的方块信息用空格覆盖
 	}
 }
-
-
-
 
 
 int main()
