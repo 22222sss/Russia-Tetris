@@ -225,3 +225,20 @@ void DrawSpace(int shape, int form, int row, int col)
 
 	}
 }
+
+//其实在方块移动过程中，无时无刻都在判断方块下一次变化后的位置是否合法，只有合法才会允许该变化的进行。
+//所谓非法，就是指该方块进行了该变化后落在了本来就有方块的位置。
+//合法性判断
+int IsLegal(int shape, int form, int row, int col)
+{
+	int i, j;
+	for (i = 0; i < 4; i++)
+	{
+		for (j = 0; j < 4; j++)
+		{
+			if ((block[shape][form].space[i][j] == 1) && (face.data[row + i][col + j] == 1))
+				return 0;
+		}
+	}
+	return 1;
+}
