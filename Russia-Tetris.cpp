@@ -5,13 +5,26 @@
 #include<iostream>
 #include <termios.h>
 #include <fcntl.h>
+#include <cstring>
+#include <sys/socket.h>
+#include <sys/unistd.h>
+#include <sys/types.h>
+#include <sys/errno.h>
+#include <netinet/in.h>
+#include <signal.h>
+#define BUFFSIZE 2048
+#define DEFAULT_PORT 9999    // 指定端口为9999
+#define MAXLINK 2048
+char buf[BUFFSIZE] = { 0 }; // 用于收发数据
+int sock, client, ret;    // 定义服务端套接字和客户端套接字
 using namespace std;
 #define ROW 24 //游戏区行数
 #define COL 20 //游戏区列数
 
-#define DOWN  's'//方向键：下
-#define LEFT  'a'//方向键：左
-#define RIGHT 'd'//方向键：右
+#define KEY_DOWN "\x1b[B" //方向键：下
+#define KEY_LEFT "\x1b[D" //方向键：左
+#define KEY_RIGHT "\x1b[C" //方向键：右
+
 #define SPACE 32 //空格键
 #define ESC "\033" //Esc键
 
@@ -29,6 +42,9 @@ struct Block
 int grade; //全局变量
 int total;//行数
 
+void SetSocketBlocking(int socket, bool blocking);//切换阻塞与非阻塞状态
+void GameMain();
+void clear();//清屏函数
 void InitInterface();//初始化界面
 void moveTo(int row, int col);//输出跳转函数
 void InitBlockInfo();//初始化方块信息
@@ -46,58 +62,111 @@ void StartGame();
 //主函数
 int main();
 //判断得分
-void Score();
+void CurrentScore();
 
-void Score()
+void SetSocketBlocking(int socket, bool blocking) {
+	// 获取套接字标志
+	int flags = fcntl(socket, F_GETFL, 0);
+	if (flags < 0) {
+		std::cerr << "Failed to get socket flags" << std::endl;
+		return;
+	}
+
+	// 根据 blocking 参数切换回阻塞或非阻塞模式
+	if (blocking) {
+		flags &= ~O_NONBLOCK;  // 清除非阻塞标志
+	}
+	else {
+		flags |= O_NONBLOCK;  // 设置非阻塞标志
+	}
+
+	// 设置套接字的新标志
+	if (fcntl(socket, F_SETFL, flags) < 0) {
+		std::cerr << "Failed to set socket mode" << std::endl;
+		return;
+	}
+}
+
+
+
+
+void GameMain()
+{
+	// 将客户端套接字设置为非阻塞模式
+	SetSocketBlocking(client, false);
+
+	grade = 0;
+	InitInterface(); //初始化界面
+	InitBlockInfo(); //初始化方块信息
+	srand((unsigned int)time(NULL)); //设置随机数生成的起点
+	StartGame(); //开始游戏
+
+	moveTo(30, 1);
+	cout << endl;
+}
+
+
+void clear()
+{
+	int i;
+	for (i = 1; i <= ROW; i++)
+	{
+		moveTo(i, 1);
+		string emptyLine(4 * COL, ' ');
+		cout << emptyLine;
+		send(client, emptyLine.c_str(), emptyLine.length(), 0);
+	}
+}
+
+void moveTo(int row, int col)
+{
+	string command = "\x1b[" + to_string(row) + ";" + to_string(col) + "H";
+	cout << command; // 在控制台上打印命令
+	send(client, command.c_str(), command.length(), 0);
+}
+
+void output(string s)
+{
+	cout << s;
+	send(client, s.c_str(), s.length(), 0);
+}
+
+void outputgrade(string s, int grade)
+{
+	string command = s + to_string(grade);
+	cout << command;
+	send(client, command.c_str(), command.length(), 0);
+}
+
+void outputcolor(int n)
+{
+	string command = "\33[" + to_string(n) + "m";
+	cout << command;
+	send(client, command.c_str(), command.length(), 0);
+}
+
+void CurrentScore()
 {
 	if (total >= 2)
 	{
 		grade += (total + 1) * 10;
 		moveTo(14, 2 * COL + 2);
 		color(7);
-		printf("Score:%d", grade);
+		//printf("Score:%d", grade);
+		outputgrade("Score: ", grade);
 	}
 	else
 	{
 		grade += total * 10;
 		moveTo(14, 2 * COL + 2);
 		color(7);
-		printf("Score:%d", grade);
+		outputgrade("Score: ", grade);
 	}
-}
-
-
-int kbhit(void)
-{
-	struct termios oldt, newt;
-	int ch;
-	int oldf;
-	tcgetattr(STDIN_FILENO, &oldt);
-	newt = oldt;
-	newt.c_lflag &= ~(ICANON | ECHO);
-	tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-	oldf = fcntl(STDIN_FILENO, F_GETFL, 0);
-	fcntl(STDIN_FILENO, F_SETFL, oldf | O_NONBLOCK);
-	ch = getchar();
-	tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
-	fcntl(STDIN_FILENO, F_SETFL, oldf);
-	if (ch != EOF)
-	{
-		ungetc(ch, stdin);
-		return 1;
-	}
-	return 0;
-}
-
-void moveTo(int row, int col)
-{
-	printf("\x1b[%d;%dH", row, col);
 }
 
 
 void InitInterface()
 {
-
 	for (int i = 0; i < ROW; i++)
 	{
 		for (int j = 0; j < COL + 10; j++)
@@ -106,13 +175,13 @@ void InitInterface()
 			{
 				face.data[i][j] = 1; //标记该位置有方块
 				moveTo(i + 1, 2 * (j + 1) - 1);
-				printf("■");
+				output("■");
 			}
 			else if (i == ROW - 1)
 			{
 				face.data[i][j] = 1; //标记该位置有方块
 				moveTo(i + 1, 2 * (j + 1) - 1);
-				printf("■");
+				output("■");
 			}
 			else
 				face.data[i][j] = 0; //标记该位置无方块
@@ -124,16 +193,16 @@ void InitInterface()
 	{
 		face.data[11][i] = 1; //标记该位置有方块
 		moveTo(11 + 1, 2 * i + 1);
-		printf("■");
+		output("■");
 	}
 
 	moveTo(2, 2 * COL + 1 + 1);
-	printf("\33[40m");
-	printf("Next:");
+	output("\33[40m");
+	output("Next:");
 
 	moveTo(14, 2 * COL + 2);
-	printf("\33[40m");
-	printf("Score:%d", grade);
+	output("\33[40m");
+	outputgrade("Score: ", grade);
 }
 
 //初始化方块信息
@@ -232,9 +301,9 @@ void color(int c)
 		c = 37; //其他默认设置为白色
 		break;
 	}
-	printf("\33[%dm", c); //颜色设置
+	//printf("\33[%dm", c); //颜色设置
+	outputcolor(c);
 }
-
 
 //画出方块
 void DrawBlock(int shape, int form, int row, int col)//row和col，指的是方块信息当中第一行第一列的方块的打印位置为第row行第col列
@@ -246,7 +315,8 @@ void DrawBlock(int shape, int form, int row, int col)//row和col，指的是方�
 			if (block[shape][form].space[i][j] == 1)//如果该位置有方块
 			{
 				moveTo(row + i, 2 * (col + j) - 1);//光标跳转到指定位置
-				printf("■"); //输出方块
+				//printf("■"); //输出方块
+				output("■");
 			}
 		}
 	}
@@ -266,12 +336,14 @@ void DrawSpace(int shape, int form, int row, int col)
 			if (block[shape][form].space[i][j] == 1)//如果该位置有方块
 			{
 				moveTo(row + i, 2 * (col + j) - 1);//光标跳转到指定位置
-				printf("  ");//打印空格覆盖（两个空格）
+				//printf("  ");//打印空格覆盖（两个空格）
+				output("  ");
 			}
 		}
 
 	}
 }
+
 
 //其实在方块移动过程中，无时无刻都在判断方块下一次变化后的位置是否合法，只有合法才会允许该变化的进行。
 //所谓非法，就是指该方块进行了该变化后落在了本来就有方块的位置。
@@ -289,9 +361,6 @@ int IsLegal(int shape, int form, int row, int col)
 	}
 	return 1;
 }
-
-
-
 
 //判断得分与结束
 
@@ -323,7 +392,8 @@ int JudeFunc()
 			{
 				face.data[i][j] = 0;
 				moveTo(i + 1, 2 * j + 1);
-				printf("  ");
+				//printf("  ");
+				output("  ");
 
 			}
 			//把被清除行上面的行整体向下挪一格
@@ -339,13 +409,14 @@ int JudeFunc()
 					{
 						moveTo(m + 1, 2 * n + 1);
 						color(face.color[m][n]);//颜色设置为还方块的颜色
-						printf("■"); //打印方块
-
+						//printf("■"); //打印方块
+						output("■");
 					}
 					else
 					{
 						moveTo(m + 1, 2 * n + 1);
-						printf("  ");
+						//printf("  ");
+						output("  ");
 					}
 				}
 				if (sum == 0) //上一行移下来的全是空格，无需再将上层的方块向下移动（移动结束）
@@ -361,33 +432,45 @@ int JudeFunc()
 			sleep(1); //留给玩家反应时间
 			color(7); //颜色设置为白色
 			moveTo(ROW / 2, 2 * (COL / 3));
-			printf("GAME OVER");
+			//printf("GAME OVER");
+			output("GAME OVER");
 			while (1)
 			{
-				char ch;
 				moveTo(ROW / 2 + 3, 2 * (COL / 3));
-				printf("Start Again ? (y/n):");
-				cin >> ch;
-				if (ch == 'y' || ch == 'Y')
+				//printf("Start Again ? (y/n):");
+				output("Start Again ? (y/n):");
+				//cin >> ch;
+
+
+				// 将客户端套接字设置为阻塞模式
+				SetSocketBlocking(client, true);
+
+
+				recv(client, buf, sizeof(buf), 0);
+				if (*buf == 'Y' || *buf == 'y')
 				{
-					if (!system("clear"))
-						main();
+					clear();
+					GameMain();
 				}
-				else if (ch == 'n' || ch == 'N')
+				else if (*buf == 'n' || *buf == 'N')
 				{
 					moveTo(ROW / 2 + 5, 2 * (COL / 3));
-					exit(0);
+					close(client);
+					close(sock);
+					return 0;
 				}
 				else
 				{
 					moveTo(ROW / 2 + 4, 2 * (COL / 3));
-					printf("选择错误，请再次选择");
+					//printf("选择错误，请再次选择");
+					output("选择错误，请再次选择");
 				}
 			}
 		}
 	}
 	return 0; //判断结束，无需再调用该函数进行判断
 }
+
 
 //游戏主体逻辑函数
 void StartGame()
@@ -404,17 +487,18 @@ void StartGame()
 		{
 			color(shape); //颜色设置为当前正在下落的方块
 			DrawBlock(shape, form, row, col); //将该方块显示在初始下落位置
+
 			if (t == 0)
 			{
-				t = 200000;//这里t越小，方块下落越快（可以根据此设置游戏难度）
+				t = 10000000;//这里t越小，方块下落越快（可以根据此设置游戏难度）
 			}
 
 			while (--t)
 			{
-				if (kbhit() != 0)
+				int bytesRead = recv(client, buf, sizeof(buf), 0);
+				if (bytesRead > 0)
 					break;
 			}
-
 
 			if (t == 0)//键盘未被敲击
 			{
@@ -446,34 +530,36 @@ void StartGame()
 			}
 			else
 			{
-				char ch = getchar();
-				switch (ch)
+
+				if (strcmp(buf, "\x1b[B") == 0)//下
 				{
-				case DOWN: //方向键：下
 					if (IsLegal(shape, form, row + 1, col) == 1) //判断方块向下移动一位后是否合法
 					{
 						//方块下落后合法才进行以下操作
 						DrawSpace(shape, form, row, col); //用空格覆盖当前方块所在位置
 						row++; //纵坐标自增（下一次显示方块时就相当于下落了一格了）
 					}
-					break;
-				case LEFT: //方向键：左
+				}
+				else if (strcmp(buf, "\x1b[D") == 0)//左
+				{
 					if (IsLegal(shape, form, row, col - 1) == 1) //判断方块向左移动一位后是否合法
 					{
 						//方块左移后合法才进行以下操作
 						DrawSpace(shape, form, row, col); //用空格覆盖当前方块所在位置
 						col--; //横坐标自减（下一次显示方块时就相当于左移了一格了）
 					}
-					break;
-				case RIGHT: //方向键：右
+				}
+				else if (strcmp(buf, "\x1b[C") == 0)//右
+				{
 					if (IsLegal(shape, form, row, col + 1) == 1) //判断方块向右移动一位后是否合法
 					{
 						//方块右移后合法才进行以下操作
 						DrawSpace(shape, form, row, col); //用空格覆盖当前方块所在位置
 						col++; //横坐标自增（下一次显示方块时就相当于右移了一格了）
 					}
-					break;
-				case SPACE: //空格键
+				}
+				else
+				{
 					if (IsLegal(shape, (form + 1) % 4, row + 1, col) == 1) //判断方块旋转后是否合法
 					{
 						//方块旋转后合法才进行以下操作
@@ -481,7 +567,6 @@ void StartGame()
 						row++; //纵坐标自增（总不能原地旋转吧）
 						form = (form + 1) % 4; //方块的形态自增（下一次显示方块时就相当于旋转了）
 					}
-					break;
 				}
 			}
 		}
@@ -490,17 +575,45 @@ void StartGame()
 	}
 }
 
+
+
+
+
 int main()
 {
 	if (!system("clear"))
 	{
-		grade = 0;
-		InitInterface(); //初始化界面
-		InitBlockInfo(); //初始化方块信息
-		srand((unsigned int)time(NULL)); //设置随机数生成的起点
-		StartGame(); //开始游戏
+		struct sockaddr_in addr;    // 用于存放ip和端口的结构
+		// 对应伪代码中的sockfd = socket();
+		sock = socket(AF_INET, SOCK_STREAM, 0);
+		if (-1 == sock)
+		{
+			printf("创建套接字失败\n");
+			return -1;
+		}
+		// END
+		// 对应伪代码中的bind(sockfd, ip::port和一些配置);
+		addr.sin_family = AF_INET;
+		addr.sin_addr.s_addr = htonl(INADDR_ANY);
+		addr.sin_port = htons(DEFAULT_PORT);
+		if (-1 == bind(sock, (struct sockaddr*)&addr, sizeof(addr)))
+		{
+			printf("绑定地址端口失败\n");
+			return -1;
+		}
+		// END
+		// 对应伪代码中的listen(sockfd);    
+		if (-1 == listen(sock, MAXLINK))
+		{
+			printf("监听套接字失败\n");
+			return -1;
+		}
+		// END
+		//printf("listen.......\n");
+		//printf("start to accepct\n");
+		//printf("client=%d\n", client);
+		client = accept(sock, NULL, NULL);
+		GameMain();
+		return 0;
 	}
-	moveTo(30, 1);
-	cout << endl;
-	return 0;
 }
