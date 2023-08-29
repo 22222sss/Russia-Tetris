@@ -6,6 +6,8 @@
 #include <termios.h>
 #include <fcntl.h>
 #include <cstring>
+#include <chrono>
+#include <thread>
 #include <sys/socket.h>
 #include <sys/unistd.h>
 #include <sys/types.h>
@@ -490,29 +492,36 @@ void StartGame()
 	int shape = rand() % 7, form = rand() % 4; //随机获取方块的形状和形态
 	while (1)
 	{
-		int t = 0;
 		int nextShape = rand() % 7, nextForm = rand() % 4; //随机获取下一个方块的形状和形态
 		int row = 1, col = COL / 2 - 1; //方块初始下落位置
 		color(nextShape); //颜色设置为下一个方块的颜色
 		DrawBlock(nextShape, nextForm, 3, COL + 3); //将下一个方块显示在右上角
 		while (1)
 		{
+			int t = -1;
 			color(shape); //颜色设置为当前正在下落的方块
 			DrawBlock(shape, form, row, col); //将该方块显示在初始下落位置
 
-			if (t == 0)
+			string temp = "";
+			auto start = std::chrono::steady_clock::now(); // 记录起始时间
+			while (1)
 			{
-				t = 10000000;//这里t越小，方块下落越快（可以根据此设置游戏难度）
-			}
 
-			while (--t)
-			{
 				int bytesRead = recv(client, buf, sizeof(buf), 0);
 				if (bytesRead > 0)
+				{
+					t = bytesRead;
+					temp = buf;
+					break;
+				}
+				auto end = std::chrono::steady_clock::now(); // 记录结束时间
+				auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+				if (duration >= 1000) // 如果超过1秒，跳出循环
 					break;
 			}
 
-			if (t == 0)//键盘未被敲击
+			if (t == -1 || temp == "\x1b[A")//键盘未被敲击
 			{
 				if (IsLegal(shape, form, row + 1, col) == 0)//方块再下落就不合法了（已经到达底部）
 				{
@@ -544,7 +553,7 @@ void StartGame()
 			else
 			{
 
-				if (strcmp(buf, KEY_DOWN) == 0)//下
+				if (temp == KEY_DOWN)//下
 				{
 					if (IsLegal(shape, form, row + 1, col) == 1) //判断方块向下移动一位后是否合法
 					{
@@ -553,7 +562,7 @@ void StartGame()
 						row++; //纵坐标自增（下一次显示方块时就相当于下落了一格了）
 					}
 				}
-				else if (strcmp(buf, KEY_LEFT) == 0)//左
+				else if (temp == KEY_LEFT)//左
 				{
 					if (IsLegal(shape, form, row, col - 1) == 1) //判断方块向左移动一位后是否合法
 					{
@@ -562,7 +571,7 @@ void StartGame()
 						col--; //横坐标自减（下一次显示方块时就相当于左移了一格了）
 					}
 				}
-				else if (strcmp(buf, KEY_RIGHT) == 0)//右
+				else if (temp == KEY_RIGHT)//右
 				{
 					if (IsLegal(shape, form, row, col + 1) == 1) //判断方块向右移动一位后是否合法
 					{
