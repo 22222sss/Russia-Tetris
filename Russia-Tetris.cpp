@@ -140,7 +140,6 @@ bool output(UserInfo* user, string s) {
 	int bytesSent = send(user->fd, s.c_str(), s.length(), 0);
 	if (bytesSent == -1) {
 		quit.push_back(user->fd);
-		cerr << "Failed to send data to client" << "[" << user->fd << "]" << endl;
 		printf("Client[%d] disconnected!\n", user->fd);
 		close(user->fd);
 		delete user;
@@ -651,7 +650,7 @@ void handleClientData(UserInfo* userInfo)
 	}
 	else if (bytesRead == 0) {
 		// 客户端连接已关闭
-		std::cout << "Client disconnected" << std::endl;
+		printf("Client[%d] disconnected!\n", userInfo->fd);
 		p.erase(userInfo->fd);
 		close(userInfo->fd);
 		epoll_ctl(userInfo->epollfd, EPOLL_CTL_DEL, userInfo->fd, nullptr);
