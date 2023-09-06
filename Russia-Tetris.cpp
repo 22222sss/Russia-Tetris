@@ -18,10 +18,12 @@
 #include <sys/epoll.h>	//epoll头文件
 #include <signal.h>
 #include <unordered_map>
+#include<map>
+#include <algorithm>
 #include<vector>
 #include <thread>
 #define MAXSIZE 2048
-#define DEFAULT_PORT 8880// 指定端口为9999
+#define DEFAULT_PORT 9990// 指定端口为9999
 #define BUFFSIZE 2048
 #define MAXLINK 2048
 
@@ -32,17 +34,9 @@
 #define KEY_LEFT "\x1b[D" //方向键：左
 #define KEY_RIGHT "\x1b[C" //方向键：右
 
-//红绿黄蓝白
-#define COLOR_PURPLE 35
-#define COLOR_RED 31
-#define COLOR_GREEN 36
-#define COLOR_YELLO 33
-#define COLOR_BLUE 34
-#define COLOR_WHITE 37
-
 using namespace std;
 
-typedef struct UserInfo
+struct UserInfo
 {
 	int fd;
 	int line;
@@ -56,82 +50,133 @@ typedef struct UserInfo
 
 	int data[ROW][COL + 10];//用于标记指定位置是否有方块（1为有，0为无）
 	int color[ROW][COL + 10];//用于记录指定位置的方块颜色编码
+};
 
-}UserInfo;
 
-unordered_map<int, UserInfo*> p;
+map<int, UserInfo*> p;
 
 vector<int> qiut;
+
+vector<UserInfo*>overuser;
 
 struct Block
 {
 	int space[4][4];
-}block[7][4];//用于存储7种基本形状方块的各自的4种形态的信息，共28种
+};
 
-/*
-void output(int client, string s);
+Block blockDefines[7][4];//用于存储7种基本形状方块的各自的4种形态的信息，共28种
 
-void outputgrade(int client, string s, int grade);
-
-void moveTo(int client, int row, int col);
-
-void ChangeCurrentColor(int client, int n);
-
-void SetSocketBlocking(int socket, bool blocking);
-
-void InitBlockInfo();
-
-void DrawBlock(int client, int shape, int form, int row, int col);
-
-bool IsLegal(UserInfo* user, int shape, int form, int row, int col);
-
-bool JudeScore(UserInfo* userInfo);
-
-void CurrentScore(UserInfo* userInfo);
-
-bool IsOver(int serverSocket, UserInfo* userInfo);
-
-void clear(int client);
-
-void HandleClientConnection(int serverSocket, vector<UserInfo*>& p, int epollfd);
-
-void processTimerEvent(int timerfd, vector<UserInfo*>& p, int epollfd);
-
-void handleClientData(int epollfd, UserInfo* userInfo);
-
-void processEvents(int readyCount, epoll_event* events, int serverSocket, int timerfd, vector<UserInfo*>& p, int epollfd);
-
-void processUserLogic(UserInfo* user, int epollfd);
-*/
-void InitInterface(UserInfo* user);
-
-
-
-
-
-
-void output(int client, string s)
+enum Shape
 {
-	send(client, s.c_str(), s.length(), 0);
+	SHAPE_T = 0,
+	SHAPE_L = 1,
+	SHAPE_J = 2,
+	SHAPE_Z = 3,
+	SHAPE_S = 4,
+	SHAPE_O = 5,
+	SHAPE_I = 6
+};
+
+enum Color
+{
+	COLOR_PURPLE = 35,
+	COLOR_RED = 31,
+	COLOR_LOWBLUE = 36,
+	COLOR_YELLO = 33,
+	COLOR_DEEPBLUE = 34,
+	COLOR_WHITE = 37
+};
+
+
+
+
+void output(int client, string s);//输出到客户端函数
+
+void outputgrade(int client, string s, int grade);//输出分数到客户端
+
+void moveTo(int client, int row, int col);//打印移动函数
+
+void ChangeCurrentColor(int client, int n);//更改目前字体及方块颜色函数
+
+void SetSocketBlocking(int socket, bool blocking);//将客户端套接字设置为阻塞与非阻塞
+
+void InitBlockInfo();//初始化方块信息
+
+void DrawBlock(int client, int shape, int form, int row, int col);//画出方块
+
+void DrawSpace(int client, int shape, int form, int row, int col);//空格覆盖
+
+void color(int client, int c);//颜色设置
+
+bool IsLegal(UserInfo* user, int shape, int form, int row, int col);//合法性判断
+
+bool Is_Increase_Score(UserInfo* userInfo);//判断是否得分
+
+void UpdateCurrentScore(UserInfo* userInfo);//更新目前得分
+
+void clear(int client);//清屏函数
+
+bool IsOver(UserInfo* user);//判断游戏是否结束
+
+void showover(UserInfo* user);//输出游戏结束界面到客户端
+
+void HandleClientConnection(int serverSocket, int epollfd);//处理客户端连接
+
+void processUserLogic(UserInfo* user);//判断方块下降逻辑函数
+
+void processTimerEvent();//处理各个客户端的方块下降函数
+
+void handleClientData(int epollfd, UserInfo* userInfo);//处理各个客户端发来的信息并及时响应
+
+void processEvents(int readyCount, epoll_event* events, int serverSocket, int timerfd, int epollfd);
+
+void InitInterface(UserInfo* user);//初始化界面
+
+
+
+
+void output(int client, string s) {
+	int bytesSent = send(client, s.c_str(), s.length(), 0);
+	if (bytesSent == -1) {
+		cerr << "Failed to send data from client" << endl;
+		close(client);
+		return;
+	}
 }
 
-void outputgrade(int client, string s, int grade)
-{
+void outputgrade(int client, string s, int grade) {
+	// 检查输入是否合法
+	if (grade < 0) {
+		cerr << "Invalid grades: " << grade << endl;
+		// 可以根据具体情况进行相应的错误处理操作
+		return;
+	}
+
 	string command = s + to_string(grade);
 	output(client, command);
 }
 
-void moveTo(int client, int row, int col)
-{
+void moveTo(int client, int row, int col) {
+	// 检查输入是否合法
+	if (row < 0 || col < 0) {
+		cerr << "Invalid row or col number" << endl;
+		// 可以根据具体情况进行相应的错误处理操作
+		return;
+	}
+
 	string command = "\x1b[" + to_string(row) + ";" + to_string(col) + "H";
-	//cout << command; // 在控制台上打印命令
 	output(client, command);
 }
 
-void ChangeCurrentColor(int client, int n)
-{
+void ChangeCurrentColor(int client, int n) {
+	// 检查输入是否合法
+	if (n < 0 || n > 255) {
+		cerr << "Invalid color number" << endl;
+		// 可以根据具体情况进行相应的错误处理操作
+		return;
+	}
+
 	string command = "\33[" + to_string(n) + "m";
-	//cout << command;
 	output(client, command);
 }
 
@@ -163,43 +208,50 @@ void InitBlockInfo()
 {
 	int i;
 	//“T”形
+	auto& spaceT = blockDefines[SHAPE_T][0].space;
 	for (i = 0; i <= 2; i++)
 	{
-		block[0][0].space[1][i] = 1;
+		spaceT[1][i] = 1;
 	}
-	block[0][0].space[2][1] = 1;
+	spaceT[2][1] = 1;
 
 	//“L”形
+	auto& spaceL = blockDefines[SHAPE_L][0].space;
 	for (i = 1; i <= 3; i++)
 	{
-		block[1][0].space[i][1] = 1;
+		spaceL[i][1] = 1;
 	}
-	block[1][0].space[3][2] = 1;
+	spaceL[3][2] = 1;
 
 	//“J”形
+	auto& spaceJ = blockDefines[SHAPE_J][0].space;
 	for (i = 1; i <= 3; i++)
 	{
-		block[2][0].space[i][2] = 1;
+		spaceJ[i][2] = 1;
 	}
-	block[2][0].space[3][1] = 1;
+	spaceJ[3][1] = 1;
 
 	for (int i = 0; i <= 1; i++)
 	{
 		//“Z”形
-		block[3][0].space[1][i] = 1;
-		block[3][0].space[2][i + 1] = 1;
+		auto& spaceZ = blockDefines[SHAPE_Z][0].space;
+		spaceZ[1][i] = 1;
+		spaceZ[2][i + 1] = 1;
 		//“S”形
-		block[4][0].space[1][i + 1] = 1;
-		block[4][0].space[2][i] = 1;
+		auto& spaceS = blockDefines[SHAPE_S][0].space;
+		spaceS[1][i + 1] = 1;
+		spaceS[2][i] = 1;
 		//“O”形
-		block[5][0].space[1][i + 1] = 1;
-		block[5][0].space[2][i + 1] = 1;
+		auto& spaceO = blockDefines[SHAPE_O][0].space;
+		spaceO[1][i + 1] = 1;
+		spaceO[2][i + 1] = 1;
 	}
 
 	//“I”形
+	auto& spaceI = blockDefines[SHAPE_I][0].space;
 	for (i = 0; i <= 3; i++)
 	{
-		block[6][0].space[i][1] = 1;
+		spaceI[i][1] = 1;
 	}
 
 	for (int shape = 0; shape < 7; shape++)//7种形状
@@ -213,7 +265,7 @@ void InitBlockInfo()
 			{
 				for (int j = 0; j < 4; j++)
 				{
-					temp[i][j] = block[shape][form].space[i][j];
+					temp[i][j] = blockDefines[shape][form].space[i][j];
 				}
 			}
 			//将第form种形态顺时针旋转，得到第form+1种形态
@@ -221,7 +273,7 @@ void InitBlockInfo()
 			{
 				for (int j = 0; j < 4; j++)
 				{
-					block[shape][form + 1].space[i][j] = temp[3 - j][i];
+					blockDefines[shape][form + 1].space[i][j] = temp[3 - j][i];
 				}
 			}
 		}
@@ -235,7 +287,7 @@ void DrawBlock(int client, int shape, int form, int row, int col)//row和col，�
 	{
 		for (int j = 0; j < 4; j++)
 		{
-			if (block[shape][form].space[i][j] == 1)//如果该位置有方块
+			if (blockDefines[shape][form].space[i][j] == 1)//如果该位置有方块
 			{
 				moveTo(client, row + i, 2 * (col + j) - 1);//光标跳转到指定位置
 				//printf("■"); //输出方块
@@ -257,7 +309,7 @@ void DrawSpace(int client, int shape, int form, int row, int col)
 	{
 		for (j = 0; j < 4; j++)
 		{
-			if (block[shape][form].space[i][j] == 1)//如果该位置有方块
+			if (blockDefines[shape][form].space[i][j] == 1)//如果该位置有方块
 			{
 				moveTo(client, row + i, 2 * (col + j) - 1);//光标跳转到指定位置
 				//printf("  ");//打印空格覆盖（两个空格）
@@ -273,22 +325,22 @@ void color(int client, int c)
 {
 	switch (c)
 	{
-	case 0:
+	case SHAPE_T:
 		ChangeCurrentColor(client, COLOR_PURPLE); //“T”形方块设置为紫色
 		break;
-	case 1:
-	case 2:
+	case SHAPE_L:
+	case SHAPE_J:
 		ChangeCurrentColor(client, COLOR_RED); //“L”形和“J”形方块设置为红色
 		break;
-	case 3:
-	case 4:
-		ChangeCurrentColor(client, COLOR_GREEN);//“Z”形和“S”形方块设置为绿色
+	case SHAPE_Z:
+	case SHAPE_S:
+		ChangeCurrentColor(client, COLOR_LOWBLUE);//“Z”形和“S”形方块设置为浅蓝色
 		break;
-	case 5:
+	case SHAPE_O:
 		ChangeCurrentColor(client, COLOR_YELLO);//“O”形方块设置为黄色
 		break;
-	case 6:
-		ChangeCurrentColor(client, COLOR_BLUE);//“I”形方块设置为浅蓝色
+	case SHAPE_I:
+		ChangeCurrentColor(client, COLOR_DEEPBLUE);//“I”形方块设置为深蓝色
 		break;
 	default:
 		ChangeCurrentColor(client, COLOR_WHITE); //其他默认设置为白色
@@ -306,7 +358,7 @@ bool IsLegal(UserInfo* user, int shape, int form, int row, int col)
 	{
 		for (j = 0; j < 4; j++)
 		{
-			if ((block[shape][form].space[i][j] == 1) && (user->data[row + i - 1][col + j - 1] == 1))
+			if ((blockDefines[shape][form].space[i][j] == 1) && (user->data[row + i - 1][col + j - 1] == 1))
 				return false;
 		}
 	}
@@ -319,10 +371,7 @@ bool IsLegal(UserInfo* user, int shape, int form, int row, int col)
 //从下往上判断，若某一行方块全满，则将改行方块数据清空，并将该行上方的方块全部下移，下移结束后返回1，表示还需再次调用该函数进行判断
 //因为被下移的行并没有进行判断，可能还存在满行。
 
-//判断结束
-//直接判断游戏区最上面的一行当中是否有方块存在，若存在方块，则游戏结束。
-//游戏结束后询问玩家是否再来一局。
-bool JudeScore(UserInfo* userInfo)
+bool Is_Increase_Score(UserInfo* userInfo)
 {
 	int i = 0, j = 0;
 	//判断是否得分
@@ -377,9 +426,7 @@ bool JudeScore(UserInfo* userInfo)
 	return false;
 }
 
-
-
-void CurrentScore(UserInfo* userInfo)
+void UpdateCurrentScore(UserInfo* userInfo)
 {
 	if (userInfo->line >= 2)
 	{
@@ -389,7 +436,6 @@ void CurrentScore(UserInfo* userInfo)
 		//printf("Score:%d", grade);
 		outputgrade(userInfo->fd, "Score: ", userInfo->score);
 	}
-
 	else
 	{
 		userInfo->score += userInfo->line * 10;
@@ -404,8 +450,6 @@ void clear(int client)
 	int i;
 	string emptyLine(4 * COL, ' ');
 	for (i = 1; i <= ROW; i++)
-
-
 	{
 		moveTo(client, i, 1);
 		//cout << emptyLine;
@@ -413,7 +457,38 @@ void clear(int client)
 	}
 }
 
-void HandleClientConnection(int serverSocket, unordered_map<int, UserInfo*>& p, int epollfd)
+//判断结束
+//直接判断游戏区最上面的一行当中是否有方块存在，若存在方块，则游戏结束。
+//游戏结束后询问玩家是否再来一局。
+
+bool IsOver(UserInfo* user)
+{
+	//判断游戏是否结束
+	for (int j = 1; j < COL - 1; j++)
+	{
+		if (user->data[1][j] == 1) //顶层有方块存在（以第1行为顶层，不是第0行）
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void showover(UserInfo* user)
+{
+	//sleep(1); //留给玩家反应时间
+	color(user->fd, 7); //颜色设置为白色
+	moveTo(user->fd, ROW / 2, 2 * (COL / 3));
+	output(user->fd, "GAME OVER");
+	moveTo(user->fd, ROW / 2 + 3, 2 * (COL / 3));
+	output(user->fd, "Start Again ? (y/n):");
+
+	qiut.push_back(user->fd);
+
+	overuser.push_back(user);
+}
+
+void HandleClientConnection(int serverSocket, int epollfd)
 {
 	int clientSocket = accept(serverSocket, NULL, NULL);
 	if (clientSocket == -1)
@@ -468,12 +543,13 @@ void HandleClientConnection(int serverSocket, unordered_map<int, UserInfo*>& p, 
 }
 
 // 定义处理用户逻辑的函数
-void processUserLogic(UserInfo* user, int epollfd) {
+void processUserLogic(UserInfo* user)
+{
 	if (IsLegal(user, user->shape, user->form, user->row + 1, user->col) == 0) {
 		// Store the current block's information in the 'user' object
 		for (int i = 0; i < 4; i++) {
 			for (int j = 0; j < 4; j++) {
-				if (block[user->shape][user->form].space[i][j] == 1) {
+				if (blockDefines[user->shape][user->form].space[i][j] == 1) {
 					user->data[user->row + i - 1][user->col + j - 1] = 1;
 					user->color[user->row + i - 1][user->col + j - 1] = user->shape;
 				}
@@ -481,78 +557,9 @@ void processUserLogic(UserInfo* user, int epollfd) {
 		}
 
 		user->line = 0;
-		while (JudeScore(user));
-		CurrentScore(user);
-
-		int flag = 0;
-
-		//判断游戏是否结束
-		for (int j = 1; j < COL - 1; j++)
-		{
-			if (user->data[1][j] == 1) //顶层有方块存在（以第1行为顶层，不是第0行）
-			{
-				flag = 1;
-				sleep(1); //留给玩家反应时间
-				color(user->fd, 7); //颜色设置为白色
-				moveTo(user->fd, ROW / 2, 2 * (COL / 3));
-				output(user->fd, "GAME OVER");
-
-				moveTo(user->fd, ROW / 2 + 3, 2 * (COL / 3));
-				output(user->fd, "Start Again ? (y/n):");
-
-				// 将客户端套接字设置为阻塞模式
-				SetSocketBlocking(user->fd, true);
-
-				char buf[BUFFSIZE] = { 0 }; // 用于收发数据
-				recv(user->fd, buf, sizeof(buf), 0);
-
-				if (*buf == 'Y' || *buf == 'y')
-				{
-					clear(user->fd);
-
-
-					user->score = 0;
-
-					InitInterface(user); //初始化界面
-
-					user->shape = rand() % 7;
-					user->form = rand() % 4; //随机获取方块的形状和形态
-					user->nextShape = rand() % 7;
-					user->nextForm = rand() % 4;
-					//随机获取下一个方块的形状和形态
-					user->row = 1;
-					user->col = COL / 2 - 1; //方块初始下落位置
-					color(user->fd, user->nextShape); //颜色设置为下一个方块的颜色
-					DrawBlock(user->fd, user->nextShape, user->nextForm, 3, COL + 3); //将下一个方块显示在右上角
-					color(user->fd, user->shape); //颜色设置为当前正在下落的方块
-					DrawBlock(user->fd, user->shape, user->form, user->row, user->col); //将该方块显示在初始下落位置
-
-					return;
-
-				}
-				else if (*buf == 'n' || *buf == 'N')
-				{
-					printf("Client[%d] disconnected!\n", user->fd);
-					qiut.push_back(user->fd);
-					close(user->fd);
-					//close(serverSocket);
-					delete user;
-					epoll_ctl(epollfd, EPOLL_CTL_DEL, user->fd, nullptr);
-					return;
-				}
-				else
-				{
-					moveTo(user->fd, ROW / 2 + 4, 2 * (COL / 3));
-					//printf("选择错误，请再次选择");
-					output(user->fd, "选择错误，请再次选择");
-				}
-
-			}
-		}
-
-
-
-		if (!flag)
+		while (Is_Increase_Score(user));
+		UpdateCurrentScore(user);
+		if (!IsOver(user))//判断是否结束
 		{
 			user->shape = user->nextShape;
 			user->form = user->nextForm;
@@ -567,7 +574,10 @@ void processUserLogic(UserInfo* user, int epollfd) {
 			color(user->fd, user->shape);
 			DrawBlock(user->fd, user->shape, user->form, user->row, user->col);
 		}
-
+		else
+		{
+			showover(user);
+		}
 	}
 	else {
 		DrawSpace(user->fd, user->shape, user->form, user->row, user->col);
@@ -576,32 +586,40 @@ void processUserLogic(UserInfo* user, int epollfd) {
 	}
 }
 
-void processTimerEvent(int timerfd, vector<int>& qiut, unordered_map<int, UserInfo*>& p, int epollfd) {
-	// 读取 timerfd，重置定时器
-	uint64_t expirations;
-	if (read(timerfd, &expirations, sizeof(expirations)) == -1) {
-		cout << "Failed to read expirations” << endl";
-		return;
-	}
-	if (!p.empty())
+void processTimerEvent()
+{
+	// 记录上次触发时间
+	static std::chrono::steady_clock::time_point lastTriggerTime = std::chrono::steady_clock::now();
+
+	// 获取当前时间
+	std::chrono::steady_clock::time_point currentTime = std::chrono::steady_clock::now();
+
+	// 计算距离上次触发经过的时间
+	std::chrono::duration<double> elapsed_time = currentTime - lastTriggerTime;
+
+	// 如果时间差大于等于1秒
+	if (elapsed_time >= std::chrono::seconds(1))
 	{
-		for (auto i = p.begin(); i != p.end(); i++) {
-			if (p.empty())
+		// 执行相应的逻辑处理
+
+		if (!p.empty())
+		{
+			for (auto i = p.begin(); i != p.end(); i++) //遍历客户端
 			{
-				return;
+				processUserLogic(i->second);
 			}
 
-			//thread t(processUserLogic, i->second, epollfd);
-			processUserLogic(i->second, epollfd);
-			//t.detach();
+			for (auto i = qiut.begin(); i != qiut.end(); i++)
+			{
+				p.erase(*i);
+			}
+			qiut.clear();
 		}
 
-		for (auto i = qiut.begin(); i != qiut.end(); i++)
-		{
-			p.erase(*i);
-		}
-		qiut.clear();
+		// 将上次触发时间更新为当前时间
+		lastTriggerTime = currentTime;
 	}
+
 }
 
 void handleClientData(int epollfd, UserInfo* userInfo)
@@ -620,53 +638,101 @@ void handleClientData(int epollfd, UserInfo* userInfo)
 	}
 	else
 	{
-		// 处理接收到的数据
-		string temp = buffer;
-		if (temp == KEY_DOWN)//下
+		auto it = find(overuser.begin(), overuser.end(), userInfo);
+		if (it == overuser.end())
 		{
-			if (IsLegal(userInfo, userInfo->shape, userInfo->form, userInfo->row + 1, userInfo->col) == 1) //判断方块向下移动一位后是否合法
+			// 处理接收到的数据
+			if (strcmp(buffer, KEY_DOWN) == 0)//下
 			{
-				//方块下落后合法才进行以下操作
-				DrawSpace(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col); //用空格覆盖当前方块所在位置
-				userInfo->row++; //纵坐标自增（下一次显示方块时就相当于下落了一格了）
-				DrawBlock(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col);
+				if (IsLegal(userInfo, userInfo->shape, userInfo->form, userInfo->row + 1, userInfo->col) == 1) //判断方块向下移动一位后是否合法
+				{
+					//方块下落后合法才进行以下操作
+					DrawSpace(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col); //用空格覆盖当前方块所在位置
+					userInfo->row++; //纵坐标自增（下一次显示方块时就相当于下落了一格了）
+					DrawBlock(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col);
+				}
 			}
-		}
-		else if (temp == KEY_LEFT)//左
-		{
-			if (IsLegal(userInfo, userInfo->shape, userInfo->form, userInfo->row, userInfo->col - 1) == 1) //判断方块向左移动一位后是否合法
+			else if (strcmp(buffer, KEY_LEFT) == 0)//左
 			{
-				//方块左移后合法才进行以下操作
-				DrawSpace(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col);//用空格覆盖当前方块所在位置
-				userInfo->col--; //横坐标自减（下一次显示方块时就相当于左移了一格了）
-				DrawBlock(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col);
+				if (IsLegal(userInfo, userInfo->shape, userInfo->form, userInfo->row, userInfo->col - 1) == 1) //判断方块向左移动一位后是否合法
+				{
+					//方块左移后合法才进行以下操作
+					DrawSpace(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col);//用空格覆盖当前方块所在位置
+					userInfo->col--; //横坐标自减（下一次显示方块时就相当于左移了一格了）
+					DrawBlock(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col);
+				}
 			}
-		}
-		else if (temp == KEY_RIGHT)//右
-		{
-			if (IsLegal(userInfo, userInfo->shape, userInfo->form, userInfo->row, userInfo->col + 1) == 1) //判断方块向右移动一位后是否合法
+			else if (strcmp(buffer, KEY_RIGHT) == 0)//右
 			{
-				//方块右移后合法才进行以下操作
-				DrawSpace(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col); //用空格覆盖当前方块所在位置
-				userInfo->col++; //横坐标自增（下一次显示方块时就相当于右移了一格了）
-				DrawBlock(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col);
+				if (IsLegal(userInfo, userInfo->shape, userInfo->form, userInfo->row, userInfo->col + 1) == 1) //判断方块向右移动一位后是否合法
+				{
+					//方块右移后合法才进行以下操作
+					DrawSpace(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col); //用空格覆盖当前方块所在位置
+					userInfo->col++; //横坐标自增（下一次显示方块时就相当于右移了一格了）
+					DrawBlock(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col);
+				}
+			}
+			else if (*buffer == ' ')
+			{
+				if (IsLegal(userInfo, userInfo->shape, (userInfo->form + 1) % 4, userInfo->row + 1, userInfo->col) == 1) //判断方块旋转后是否合法
+				{
+					//方块旋转后合法才进行以下操作
+					DrawSpace(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col); //用空格覆盖当前方块所在位置
+					userInfo->row++; //纵坐标自增（总不能原地旋转吧）
+					userInfo->form = (userInfo->form + 1) % 4; //方块的形态自增（下一次显示方块时就相当于旋转了）
+					DrawBlock(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col);
+				}
 			}
 		}
 		else
 		{
-			if (IsLegal(userInfo, userInfo->shape, (userInfo->form + 1) % 4, userInfo->row + 1, userInfo->col) == 1) //判断方块旋转后是否合法
+			if (*buffer == 'Y' || *buffer == 'y')
 			{
-				//方块旋转后合法才进行以下操作
-				DrawSpace(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col); //用空格覆盖当前方块所在位置
-				userInfo->row++; //纵坐标自增（总不能原地旋转吧）
-				userInfo->form = (userInfo->form + 1) % 4; //方块的形态自增（下一次显示方块时就相当于旋转了）
-				DrawBlock(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col);
+				overuser.erase(it);
+
+				p.insert(make_pair(userInfo->fd, userInfo));
+
+				clear(userInfo->fd);
+
+				userInfo->score = 0;
+
+				InitInterface(userInfo); //初始化界面
+
+				userInfo->shape = rand() % 7;
+				userInfo->form = rand() % 4; //随机获取方块的形状和形态
+				userInfo->nextShape = rand() % 7;
+				userInfo->nextForm = rand() % 4;
+				//随机获取下一个方块的形状和形态
+				userInfo->row = 1;
+				userInfo->col = COL / 2 - 1; //方块初始下落位置
+				color(userInfo->fd, userInfo->nextShape); //颜色设置为下一个方块的颜色
+				DrawBlock(userInfo->fd, userInfo->nextShape, userInfo->nextForm, 3, COL + 3); //将下一个方块显示在右上角
+				color(userInfo->fd, userInfo->shape); //颜色设置为当前正在下落的方块
+				DrawBlock(userInfo->fd, userInfo->shape, userInfo->form, userInfo->row, userInfo->col); //将该方块显示在初始下落位置
+
+			}
+			else if (*buffer == 'n' || *buffer == 'N')
+			{
+				overuser.erase(it);
+
+				printf("Client[%d] disconnected!\n", userInfo->fd);
+				//qiut.push_back(userInfo->fd);
+				close(userInfo->fd);
+				//close(serverSocket);
+				delete userInfo;
+				epoll_ctl(epollfd, EPOLL_CTL_DEL, userInfo->fd, nullptr);
+			}
+			else
+			{
+				moveTo(userInfo->fd, ROW / 2 + 4, 2 * (COL / 3));
+				//printf("选择错误，请再次选择");
+				output(userInfo->fd, "选择错误，请再次选择");
 			}
 		}
 	}
 }
 
-void processEvents(int readyCount, epoll_event* events, int serverSocket, int timerfd, vector<int>& qiut, unordered_map<int, UserInfo*>& p, int epollfd)
+void processEvents(int readyCount, epoll_event* events, int serverSocket, int timerfd, int epollfd)
 {
 	for (int i = 0; i < readyCount; ++i)
 	{
@@ -675,11 +741,11 @@ void processEvents(int readyCount, epoll_event* events, int serverSocket, int ti
 
 		if (currentFd == serverSocket)
 		{
-			HandleClientConnection(serverSocket, p, epollfd);
+			HandleClientConnection(serverSocket, epollfd);
 		}
 		else if (currentFd == timerfd)
 		{
-			processTimerEvent(timerfd, qiut, p, epollfd);
+			processTimerEvent();
 		}
 		else
 		{
@@ -775,7 +841,7 @@ int main()
 	// 创建定时器
 	int timerfd = timerfd_create(CLOCK_MONOTONIC, 0);
 	struct itimerspec timer_spec;
-	timer_spec.it_interval.tv_sec = 1;  // 一秒触发一次
+	timer_spec.it_interval.tv_sec = 0;  // 避免重复触发
 	timer_spec.it_interval.tv_nsec = 0;
 	timer_spec.it_value.tv_sec = 1;     // 初始延时一秒
 	timer_spec.it_value.tv_nsec = 0;
@@ -803,7 +869,7 @@ int main()
 			std::cerr << "Failed on epoll_wait" << std::endl;
 			continue;
 		}
-		processEvents(readyCount, events, serverSocket, timerfd, qiut, p, epollfd);
+		processEvents(readyCount, events, serverSocket, timerfd, epollfd);
 
 	}
 	return 0;
