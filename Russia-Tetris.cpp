@@ -147,12 +147,10 @@ bool outputgrade(UserInfo* user, int row, int col, int n, string s, int grade)
 
 	if (!moveTo(user, row, col))
 	{
-		printf("Client[%d] Print Grade Move Error\n", user->fd);
 		return false;
 	}
 	if (!ChangeCurrentColor(user, n))
 	{
-		printf("Client[%d] Print Grade ChangeCurrentColor Error\n", user->fd);
 		return false;
 	}
 
@@ -160,10 +158,8 @@ bool outputgrade(UserInfo* user, int row, int col, int n, string s, int grade)
 
 	if (!output(user, command))
 	{
-		printf("Client[%d] Print Grade Output Error\n", user->fd);
 		return false;
 	}
-
 	return true;
 }
 
@@ -171,17 +167,14 @@ bool outputText(UserInfo* user, int row, int col, int n, string s)
 {
 	if (!moveTo(user, row, col))
 	{
-		printf("Client[%d] Move Error\n", user->fd);
 		return false;
 	}
 	if (!ChangeCurrentColor(user, n))
 	{
-		printf("Client[%d] ChangeCurrentColor Error\n", user->fd);
 		return false;
 	}
 	if (!output(user, s))
 	{
-		printf("Client[%d] Output Error\n", user->fd);
 		return false;
 	}
 	return true;
@@ -644,14 +637,12 @@ void processUserLogic(UserInfo* user)
 			}
 			else if (Is_Increase_Score(user) == -1)
 			{
-				printf("Client[%d] Judge Increase Score Error\n", user->fd);
 				return;
 			}
 		}
 
 		if (!UpdateCurrentScore(user))
 		{
-			printf("Client[%d] Update Current Score Error\n", user->fd);
 			return;
 		}
 
@@ -662,7 +653,6 @@ void processUserLogic(UserInfo* user)
 
 			if (!DrawSpace(user, user->nextShape, user->nextForm, 3, WINDOW_COL_COUNT + 3))
 			{
-				printf("Client[%d] Draw Space Error\n", user->fd);
 				return;
 			}
 
@@ -672,18 +662,13 @@ void processUserLogic(UserInfo* user)
 			user->row = 1;
 			user->col = WINDOW_COL_COUNT / 2 - 1;
 
-
 			if (!DrawBlock(user, user->nextShape, user->nextForm, 3, WINDOW_COL_COUNT + 3))//将下一个方块显示在右上角
 			{
-				printf("Client[%d] Draw next Block Error\n", user->fd);
 				return;
 			}
 
-
-
 			if (!DrawBlock(user, user->shape, user->form, user->row, user->col))//将该方块显示在初始下落位置
 			{
-				printf("Client[%d] Draw Falling Block Error\n", user->fd);
 				return;
 			}
 		}
@@ -699,7 +684,6 @@ void processUserLogic(UserInfo* user)
 
 		if (!DrawSpace(user, user->shape, user->form, user->row, user->col))
 		{
-			printf("Client[%d] Draw Space Error\n", user->fd);
 			return;
 		}
 
@@ -707,7 +691,6 @@ void processUserLogic(UserInfo* user)
 
 		if (!DrawBlock(user, user->shape, user->form, user->row, user->col))
 		{
-			printf("Client[%d] Draw next Block Error\n", user->fd);
 			return;
 		}
 	}
@@ -785,7 +768,6 @@ void handleClientData(UserInfo* userInfo)
 					//方块下落后合法才进行以下操作
 					if (!DrawSpace(userInfo, userInfo->shape, userInfo->form, userInfo->row, userInfo->col))//用空格覆盖当前方块所在位置
 					{
-						printf("Client[%d] Draw Space Error\n", userInfo->fd);
 						return;
 					}
 
@@ -793,7 +775,6 @@ void handleClientData(UserInfo* userInfo)
 
 					if (!DrawBlock(userInfo, userInfo->shape, userInfo->form, userInfo->row, userInfo->col))
 					{
-						printf("Client[%d] Draw next Block Error\n", userInfo->fd);
 						return;
 					}
 				}
@@ -805,7 +786,6 @@ void handleClientData(UserInfo* userInfo)
 					//方块左移后合法才进行以下操作
 					if (!DrawSpace(userInfo, userInfo->shape, userInfo->form, userInfo->row, userInfo->col))//用空格覆盖当前方块所在位置
 					{
-						printf("Client[%d] Draw Space Error\n", userInfo->fd);
 						return;
 					}
 
@@ -813,7 +793,6 @@ void handleClientData(UserInfo* userInfo)
 
 					if (!DrawBlock(userInfo, userInfo->shape, userInfo->form, userInfo->row, userInfo->col))
 					{
-						printf("Client[%d] Draw next Block Error\n", userInfo->fd);
 						return;
 					}
 				}
@@ -825,14 +804,12 @@ void handleClientData(UserInfo* userInfo)
 					//方块右移后合法才进行以下操作
 					if (!DrawSpace(userInfo, userInfo->shape, userInfo->form, userInfo->row, userInfo->col))//用空格覆盖当前方块所在位置
 					{
-						printf("Client[%d] Draw Space Error\n", userInfo->fd);
 						return;
 					}
 					userInfo->col++; //横坐标自增（下一次显示方块时就相当于右移了一格了）
 
 					if (!DrawBlock(userInfo, userInfo->shape, userInfo->form, userInfo->row, userInfo->col))
 					{
-						printf("Client[%d] Draw next Block Error\n", userInfo->fd);
 						return;
 					}
 				}
@@ -844,7 +821,6 @@ void handleClientData(UserInfo* userInfo)
 					//方块旋转后合法才进行以下操作
 					if (!DrawSpace(userInfo, userInfo->shape, userInfo->form, userInfo->row, userInfo->col))//用空格覆盖当前方块所在位置
 					{
-						printf("Client[%d] Draw Space Error\n", userInfo->fd);
 						return;
 					}
 
@@ -853,7 +829,6 @@ void handleClientData(UserInfo* userInfo)
 
 					if (!DrawBlock(userInfo, userInfo->shape, userInfo->form, userInfo->row, userInfo->col))
 					{
-						printf("Client[%d] Draw next Block Error\n", userInfo->fd);
 						return;
 					}
 				}
@@ -879,7 +854,6 @@ void handleClientData(UserInfo* userInfo)
 
 					if (!InitInterface(userInfo))//初始化界面
 					{
-						printf("Client[%d] InitInterface Error\n", userInfo->fd);
 						return;
 					}
 					InitBlockInfo(); //初始化方块信息
@@ -893,18 +867,13 @@ void handleClientData(UserInfo* userInfo)
 					userInfo->col = WINDOW_COL_COUNT / 2 - 1; //方块初始下落位置
 
 
-
 					if (!DrawBlock(userInfo, userInfo->nextShape, userInfo->nextForm, 3, WINDOW_COL_COUNT + 3))//将下一个方块显示在右上角
 					{
-						printf("Client[%d] Draw next Block Error\n", userInfo->fd);
 						return;
 					}
 
-
-
 					if (!DrawBlock(userInfo, userInfo->shape, userInfo->form, userInfo->row, userInfo->col)) //将该方块显示在初始下落位置
 					{
-						printf("Client[%d] Draw Falling Block Error\n", userInfo->fd);
 						return;
 					}
 				}
@@ -916,23 +885,24 @@ void handleClientData(UserInfo* userInfo)
 			}
 			else
 			{
-				moveTo(userInfo, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3));
-				//printf("选择错误，请再次选择");
-				if (!output(userInfo, "选择错误，请再次选择"))
+				if (!outputText(userInfo, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "选择错误，请再次选择"))
 					return;
 			}
 		}
 	}
 }
 
-void processEvents(int readyCount, epoll_event* events, int timerfd)
+void processEvents(int readyCount, epoll_event* events, int serverSocket, int timerfd, int epollfd)
 {
 	for (int i = 0; i < readyCount; ++i)
 	{
 		UserInfo* userInfo = (UserInfo*)(events[i].data.ptr);
 		int currentFd = events[i].data.fd;
-
-		if (currentFd == timerfd)
+		if (currentFd == serverSocket)
+		{
+			handleNewClientConnection(serverSocket, epollfd);
+		}
+		else if (currentFd == timerfd)
 		{
 			processTimerEvent();
 		}
@@ -1013,10 +983,8 @@ int main()
 		return 1;
 	}
 
+
 	printf("======waiting for client's request======\n");
-
-
-	handleNewClientConnection(serverSocket, epollfd);
 
 
 	while (1)
@@ -1027,10 +995,7 @@ int main()
 			printf("Failed on epoll_wait: %s (errno: %d)\n", strerror(errno), errno);
 			continue;
 		}
-		processEvents(readyCount, events, timerfd);
-
+		processEvents(readyCount, events, serverSocket, timerfd, epollfd);
 	}
 	return 0;
 }
-
-
