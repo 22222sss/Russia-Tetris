@@ -22,7 +22,7 @@
 #include<vector>
 #include <thread>
 #define MAXSIZE 2048
-#define DEFAULT_PORT 9998// 指定端口为9999
+#define DEFAULT_PORT 9994// 指定端口为9999
 #define BUFFSIZE 2048
 #define MAXLINK 2048
 
@@ -37,14 +37,14 @@ using namespace std;
 
 enum GameStatus
 {
-	STATUS_PLAYING,
-	STATUS_OVER_CONFIRMING,
-	STATUS_OVER_QUIT
+	STATUS_PLAYING = 1,
+	STATUS_OVER_CONFIRMING = 0,
+	STATUS_OVER_QUIT = -1
 };
 
 struct UserInfo
 {
-	GameStatus status;
+	int status;
 	int epollfd;
 	int fd;
 	int line;
@@ -89,53 +89,6 @@ enum Color
 	COLOR_DEEPBLUE = 34,
 	COLOR_WHITE = 37
 };
-
-
-void output(int client, string s);//输出到客户端函数
-
-void outputgrade(int client, string s, int grade);//输出分数到客户端
-
-void moveTo(int client, int row, int col);//打印移动函数
-
-void ChangeCurrentColor(int client, int n);//更改目前字体及方块颜色函数
-
-/*
-void SetSocketBlocking(int socket, bool blocking);//将客户端套接字设置为阻塞与非阻塞
-
-void InitBlockInfo();//初始化方块信息
-
-void DrawBlock(int client, int shape, int form, int row, int col);//画出方块
-
-void DrawSpace(int client, int shape, int form, int row, int col);//空格覆盖
-
-void color(int client, int c);//颜色设置
-
-bool IsLegal(UserInfo* user, int shape, int form, int row, int col);//合法性判断
-
-bool Is_Increase_Score(UserInfo* userInfo);//判断是否得分
-
-void UpdateCurrentScore(UserInfo* userInfo);//更新目前得分
-
-void clear(int client);//清屏函数
-
-bool IsOver(UserInfo* user);//判断游戏是否结束
-
-void showover(UserInfo* user);//输出游戏结束界面到客户端
-
-void HandleClientConnection(int serverSocket, int epollfd);//处理客户端连接
-
-void processUserLogic(UserInfo* user);//判断方块下降逻辑函数
-
-void processTimerEvent();//处理各个客户端的方块下降函数
-
-void handleClientData(int epollfd, UserInfo* userInfo);//处理各个客户端发来的信息并及时响应
-
-void processEvents(int readyCount, epoll_event* events, int serverSocket, int timerfd, int epollfd);
-
-*/
-
-bool InitInterface(UserInfo* user);//初始化界面
-
 
 bool output(UserInfo* user, string s)
 {
@@ -228,6 +181,49 @@ bool outputText(UserInfo* user, int row, int col, int n, string s)
 	return true;
 }
 
+bool InitInterface(UserInfo* user)
+{
+	for (int i = 0; i < WINDOW_ROW_COUNT; i++)
+	{
+		for (int j = 0; j < WINDOW_COL_COUNT + 10; j++)
+		{
+			if (j == 0 || j == WINDOW_COL_COUNT - 1 || j == WINDOW_COL_COUNT + 9)
+			{
+				user->data[i][j] = 1; //标记该位置有方块
+
+				if (!outputText(user, i + 1, 2 * (j + 1) - 1, COLOR_WHITE, "■"))
+					return false;
+			}
+			else if (i == WINDOW_ROW_COUNT - 1)
+			{
+				user->data[i][j] = 1; //标记该位置有方块
+
+				if (!outputText(user, i + 1, 2 * (j + 1) - 1, COLOR_WHITE, "■"))
+					return false;
+			}
+			else
+				user->data[i][j] = 0; //标记该位置无方块
+		}
+	}
+
+	for (int i = WINDOW_COL_COUNT; i < WINDOW_COL_COUNT + 10; i++)
+	{
+		user->data[11][i] = 1; //标记该位置有方块
+		if (!outputText(user, 11 + 1, 2 * i + 1, COLOR_WHITE, "■"))
+			return false;
+	}
+
+	if (!outputText(user, 2, 2 * WINDOW_COL_COUNT + 1 + 1, COLOR_WHITE, "Next:"))
+		return false;
+
+
+	if (!outputText(user, 14, 2 * WINDOW_COL_COUNT + 2, COLOR_WHITE, "Score: "))
+		return false;
+
+	return true;
+}
+
+
 bool SuccessSetSocketBlocking(int socket, bool blocking) {
 	// 获取套接字标志
 	int flags = fcntl(socket, F_GETFL, 0);
@@ -252,6 +248,28 @@ bool SuccessSetSocketBlocking(int socket, bool blocking) {
 		return false;
 	}
 	return true;
+}
+
+//颜色设置
+int color(int c)
+{
+	switch (c)
+	{
+	case SHAPE_T:
+		return COLOR_PURPLE;//“T”形方块设置为紫色
+	case SHAPE_L:
+	case SHAPE_J:
+		return COLOR_RED;//“L”形和“J”形方块设置为红色
+	case SHAPE_Z:
+	case SHAPE_S:
+		return COLOR_LOWBLUE;//“Z”形和“S”形方块设置为浅蓝色
+	case SHAPE_O:
+		return COLOR_YELLO;//“O”形方块设置为黄色
+	case SHAPE_I:
+		return COLOR_DEEPBLUE;//“I”形方块设置为深蓝色
+	default:
+		return COLOR_WHITE;
+	}
 }
 
 //初始化方块信息
@@ -340,7 +358,7 @@ bool DrawBlock(UserInfo* user, int shape, int form, int row, int col)//row和col
 		{
 			if (blockDefines[shape][form].space[i][j] == 1)//如果该位置有方块
 			{
-				if (!outputText(user, row + i, 2 * (col + j) - 1, COLOR_WHITE, "■"))
+				if (!outputText(user, row + i, 2 * (col + j) - 1, color(shape), "■"))
 					return false;
 			}
 		}
@@ -368,63 +386,6 @@ bool DrawSpace(UserInfo* user, int shape, int form, int row, int col)
 		}
 	}
 	return true;
-}
-
-//颜色设置
-bool color(UserInfo* user, int c)
-{
-	switch (c)
-	{
-	case SHAPE_T:
-		if (!ChangeCurrentColor(user, COLOR_PURPLE)) //“T”形方块设置为紫色
-		{
-			printf("Client[%d] Change SHAPE_T Block Color Error\n", user->fd);
-			return false;
-		}
-		return true;
-	case SHAPE_L:
-		if (!ChangeCurrentColor(user, COLOR_RED)) //“L”形方块设置为红色
-		{
-			printf("Client[%d] Change SHAPE_L Block Color Error\n", user->fd);
-			return false;
-		}
-		return true;
-	case SHAPE_J:
-		if (!ChangeCurrentColor(user, COLOR_RED)) //“J”形方块设置为红色
-		{
-			printf("Client[%d] Change SHAPE_J Block Color Error\n", user->fd);
-			return false;
-		}
-		return true;
-	case SHAPE_Z:
-		if (!ChangeCurrentColor(user, COLOR_LOWBLUE))//“Z”形方块设置为浅蓝色
-		{
-			printf("Client[%d] Change SHAPE_Z Block Color Error\n", user->fd);
-			return false;
-		}
-		return true;
-	case SHAPE_S:
-		if (!ChangeCurrentColor(user, COLOR_LOWBLUE))//“S”形方块设置为浅蓝色
-		{
-			printf("Client[%d] Change SHAPE_S Block Color Error\n", user->fd);
-			return false;
-		}
-		return true;
-	case SHAPE_O:
-		if (!ChangeCurrentColor(user, COLOR_YELLO))//“O”形方块设置为黄色
-		{
-			printf("Client[%d] Change SHAPE_O Block Color Error\n", user->fd);
-			return false;
-		}
-		return true;
-	case SHAPE_I:
-		if (!ChangeCurrentColor(user, COLOR_DEEPBLUE))//“I”形方块设置为深蓝色
-		{
-			printf("Client[%d] Change SHAPE_I Block Color Error\n", user->fd);
-			return false;
-		}
-		return true;
-	}
 }
 
 //其实在方块移动过程中，无时无刻都在判断方块下一次变化后的位置是否合法，只有合法才会允许该变化的进行。
@@ -627,21 +588,9 @@ void handleNewClientConnection(int serverSocket, int epollfd)
 	newUser->row = 1;
 	newUser->col = WINDOW_COL_COUNT / 2 - 1; //方块初始下落位置
 
-	if (!color(newUser, newUser->nextShape)) //颜色设置为下一个方块的颜色
-	{
-		printf("Client[%d] Draw next Block Color Error In handleNewClientConnection\n", newUser->fd);
-		return;
-	}
-
 	if (!DrawBlock(newUser, newUser->nextShape, newUser->nextForm, 3, WINDOW_COL_COUNT + 3))//将下一个方块显示在右上角
 	{
 		printf("Client[%d] Draw next Block Error In handleNewClientConnection\n", newUser->fd);
-		return;
-	}
-
-	if (!color(newUser, newUser->shape)) //颜色设置为当前正在下落的方块
-	{
-		printf("Client[%d] Draw Falling Block Color Error In handleNewClientConnection\n", newUser->fd);
 		return;
 	}
 
@@ -712,21 +661,9 @@ void processUserLogic(UserInfo* user)
 			user->row = 1;
 			user->col = WINDOW_COL_COUNT / 2 - 1;
 
-			if (!color(user, user->nextShape)) //颜色设置为下一个方块的颜色
-			{
-				printf("Client[%d] Draw next Block Color Error\n", user->fd);
-				return;
-			}
-
 			if (!DrawBlock(user, user->nextShape, user->nextForm, 3, WINDOW_COL_COUNT + 3))//将下一个方块显示在右上角
 			{
 				printf("Client[%d] Draw next Block Error\n", user->fd);
-				return;
-			}
-
-			if (!color(user, user->shape)) //颜色设置为当前正在下落的方块
-			{
-				printf("Client[%d] Draw Falling Block Color Error\n", user->fd);
 				return;
 			}
 
@@ -763,47 +700,49 @@ void processUserLogic(UserInfo* user)
 
 void processTimerEvent()
 {
-	// 记录上次触发时间
-	static std::chrono::steady_clock::time_point lastTriggerTime = std::chrono::steady_clock::now();
-
-	// 获取当前时间
-	std::chrono::steady_clock::time_point currentTime = std::chrono::steady_clock::now();
-
-	// 计算距离上次触发经过的时间
-	std::chrono::duration<double> elapsed_time = currentTime - lastTriggerTime;
-
-	// 如果时间差大于等于1秒
-	if (elapsed_time >= std::chrono::seconds(1))
+	if (!g_playing_gamer.empty())
 	{
-		// 执行相应的逻辑处理
+		// 记录上次触发时间
+		static std::chrono::steady_clock::time_point lastTriggerTime = std::chrono::steady_clock::now();
 
-		for (auto i = g_playing_gamer.begin(); i != g_playing_gamer.end(); )
+		// 获取当前时间
+		std::chrono::steady_clock::time_point currentTime = std::chrono::steady_clock::now();
+
+		// 计算距离上次触发经过的时间
+		std::chrono::duration<double> elapsed_time = currentTime - lastTriggerTime;
+
+		// 如果时间差大于等于1秒
+		if (elapsed_time >= std::chrono::seconds(1))
 		{
-			// 执行一些条件检查
-			if (i->second->status == STATUS_OVER_CONFIRMING)
-			{
-				auto eraseIter = i++;
-				g_playing_gamer.erase(eraseIter); // 先使用后缀递增运算符，然后再删除元素
-			}
-			else if (i->second->status == STATUS_OVER_QUIT)
-			{
-				auto eraseIter = i++;
-				g_playing_gamer.erase(eraseIter);
-				printf("Client[%d] disconnected!\n", i->second->fd);
-				close(i->second->fd);
-				delete i->second;
-				epoll_ctl(i->second->epollfd, EPOLL_CTL_DEL, i->second->fd, nullptr);
-			}
-			else
-			{
-				processUserLogic(i->second);
-				i++; // 移动到下一个元素
-			}
-		}
-		// 将上次触发时间更新为当前时间
-		lastTriggerTime = currentTime;
-	}
+			// 执行相应的逻辑处理
 
+			for (auto i = g_playing_gamer.begin(); i != g_playing_gamer.end(); )
+			{
+				// 执行一些条件检查
+				if (i->second->status == STATUS_OVER_CONFIRMING)
+				{
+					auto eraseIter = i++;
+					g_playing_gamer.erase(eraseIter); // 先使用后缀递增运算符，然后再删除元素
+				}
+				else if (i->second->status == STATUS_OVER_QUIT)
+				{
+					auto eraseIter = i++;
+					g_playing_gamer.erase(eraseIter);// 先使用后缀递增运算符，然后再删除元素
+					printf("Client[%d] disconnected!\n", i->second->fd);
+					close(i->second->fd);
+					delete i->second;
+					epoll_ctl(i->second->epollfd, EPOLL_CTL_DEL, i->second->fd, nullptr);
+				}
+				else
+				{
+					processUserLogic(i->second);
+					i++; // 移动到下一个元素
+				}
+			}
+			// 将上次触发时间更新为当前时间
+			lastTriggerTime = currentTime;
+		}
+	}
 }
 
 void handleClientData(UserInfo* userInfo)
@@ -812,6 +751,7 @@ void handleClientData(UserInfo* userInfo)
 	char buffer[1024];
 	int bytesRead = recv(userInfo->fd, buffer, sizeof(buffer), 0);
 	if (bytesRead == -1) {
+		userInfo->status = STATUS_OVER_QUIT;
 		printf("Client[%d] recv Error: %s (errno: %d)\n", userInfo->fd, strerror(errno), errno);
 	}
 	else if (bytesRead == 0) {
@@ -904,11 +844,13 @@ void handleClientData(UserInfo* userInfo)
 				}
 			}
 		}
-		else
+		else if (userInfo->status == STATUS_OVER_CONFIRMING)
 		{
 			if (*buffer == 'Y' || *buffer == 'y')
 			{
-				auto it = find(g_playing_gamer.begin(), g_playing_gamer.end(), userInfo);
+				auto it = find_if(g_playing_gamer.begin(), g_playing_gamer.end(), [userInfo](const pair<int, UserInfo*>& element) {
+					return element.second == userInfo;
+					});
 
 				if (it == g_playing_gamer.end())
 				{
@@ -935,21 +877,9 @@ void handleClientData(UserInfo* userInfo)
 					userInfo->row = 1;
 					userInfo->col = WINDOW_COL_COUNT / 2 - 1; //方块初始下落位置
 
-					if (!color(userInfo, userInfo->nextShape)) //颜色设置为下一个方块的颜色
-					{
-						printf("Client[%d] Draw next Block Color Error\n", userInfo->fd);
-						return;
-					}
-
 					if (!DrawBlock(userInfo, userInfo->nextShape, userInfo->nextForm, 3, WINDOW_COL_COUNT + 3))//将下一个方块显示在右上角
 					{
 						printf("Client[%d] Draw next Block Error\n", userInfo->fd);
-						return;
-					}
-
-					if (!color(userInfo, userInfo->shape)) //颜色设置为当前正在下落的方块
-					{
-						printf("Client[%d] Draw Falling Block Color Error\n", userInfo->fd);
 						return;
 					}
 
@@ -967,80 +897,21 @@ void handleClientData(UserInfo* userInfo)
 			}
 			else
 			{
-				moveTo(userInfo, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3));
-				//printf("选择错误，请再次选择");
-				if (!output(userInfo, "选择错误，请再次选择"))
+				if (!outputText(userInfo, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "选择错误，请再次选择"))
 					return;
 			}
 		}
 	}
 }
 
-void processEvents(int readyCount, epoll_event* events, int serverSocket, int timerfd, int epollfd)
+void processEvents(int readyCount, epoll_event* events)
 {
 	for (int i = 0; i < readyCount; ++i)
 	{
 		UserInfo* userInfo = (UserInfo*)(events[i].data.ptr);
-		int currentFd = events[i].data.fd;
-
-		if (currentFd == serverSocket)
-		{
-			handleNewClientConnection(serverSocket, epollfd);
-		}
-		else if (currentFd == timerfd)
-		{
-			processTimerEvent();
-		}
-		else
-		{
-			handleClientData(userInfo);
-		}
+		handleClientData(userInfo);
 	}
 }
-
-bool InitInterface(UserInfo* user)
-{
-	for (int i = 0; i < WINDOW_ROW_COUNT; i++)
-	{
-		for (int j = 0; j < WINDOW_COL_COUNT + 10; j++)
-		{
-			if (j == 0 || j == WINDOW_COL_COUNT - 1 || j == WINDOW_COL_COUNT + 9)
-			{
-				user->data[i][j] = 1; //标记该位置有方块
-
-				if (!outputText(user, i + 1, 2 * (j + 1) - 1, COLOR_WHITE, "■"))
-					return false;
-			}
-			else if (i == WINDOW_ROW_COUNT - 1)
-			{
-				user->data[i][j] = 1; //标记该位置有方块
-
-				if (!outputText(user, i + 1, 2 * (j + 1) - 1, COLOR_WHITE, "■"))
-					return false;
-			}
-			else
-				user->data[i][j] = 0; //标记该位置无方块
-		}
-	}
-
-	for (int i = WINDOW_COL_COUNT; i < WINDOW_COL_COUNT + 10; i++)
-	{
-		user->data[11][i] = 1; //标记该位置有方块
-		if (!outputText(user, 11 + 1, 2 * i + 1, COLOR_WHITE, "■"))
-			return false;
-	}
-
-	if (!outputText(user, 2, 2 * WINDOW_COL_COUNT + 1 + 1, COLOR_WHITE, "Next:"))
-		return false;
-
-
-	if (!outputText(user, 2, 2 * WINDOW_COL_COUNT + 1 + 1, COLOR_WHITE, "Score: "))
-		return false;
-
-	return true;
-}
-
-
 
 int main()
 {
@@ -1114,6 +985,9 @@ int main()
 	printf("======waiting for client's request======\n");
 
 
+	handleNewClientConnection(serverSocket, epollfd);
+
+
 	while (1)
 	{
 		struct epoll_event events[MAXSIZE];
@@ -1122,8 +996,10 @@ int main()
 			printf("Failed on epoll_wait: %s (errno: %d)\n", strerror(errno), errno);
 			continue;
 		}
-		processEvents(readyCount, events, serverSocket, timerfd, epollfd);
+		processEvents(readyCount, events);
 
 	}
 	return 0;
 }
+
+
