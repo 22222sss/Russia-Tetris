@@ -23,7 +23,7 @@
 #include <signal.h>
 #include <thread>
 #define MAXSIZE 2048
-#define DEFAULT_PORT 9993// 指定端口为9999
+#define DEFAULT_PORT 9997// 指定端口为9999
 #define BUFFSIZE 2048
 #define MAXLINK 2048
 
@@ -97,12 +97,14 @@ bool output(UserInfo* user, string s)
 	if (bytesSent == -1)
 	{
 		user->status = STATUS_OVER_QUIT;
+		close(user->fd);
 		printf("Client[%d] send Error: %s (errno: %d)\n", user->fd, strerror(errno), errno);
 		return false;
 	}
 	else if (bytesSent == 0) {
 		// 客户端连接已关闭
 		user->status = STATUS_OVER_QUIT;
+		close(user->fd);
 		return false;
 	}
 	return true;
@@ -750,11 +752,13 @@ void handleClientData(UserInfo* userInfo)
 	int bytesRead = recv(userInfo->fd, buffer, sizeof(buffer), 0);
 	if (bytesRead == -1) {
 		userInfo->status = STATUS_OVER_QUIT;
+		close(userInfo->fd);
 		printf("Client[%d] recv Error: %s (errno: %d)\n", userInfo->fd, strerror(errno), errno);
 	}
 	else if (bytesRead == 0) {
 		// 客户端连接已关闭
 		userInfo->status = STATUS_OVER_QUIT;
+		close(userInfo->fd);
 	}
 	else
 	{
@@ -881,6 +885,7 @@ void handleClientData(UserInfo* userInfo)
 			else if (*buffer == 'n' || *buffer == 'N')
 			{
 				userInfo->status = STATUS_OVER_QUIT;
+				close(userInfo->fd);
 				printf("Client[%d] disconnected!\n", userInfo->fd);
 			}
 			else
