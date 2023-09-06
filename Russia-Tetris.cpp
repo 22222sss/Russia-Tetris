@@ -23,7 +23,7 @@
 #include<vector>
 #include <thread>
 #define MAXSIZE 2048
-#define DEFAULT_PORT 9990// 指定端口为9999
+#define DEFAULT_PORT 9998// 指定端口为9999
 #define BUFFSIZE 2048
 #define MAXLINK 2048
 
@@ -753,18 +753,14 @@ void handleClientData(UserInfo* userInfo)
 	}
 }
 
-void processEvents(int readyCount, epoll_event* events, int serverSocket, int timerfd, int epollfd)
+void processEvents(int readyCount, epoll_event* events, int timerfd)
 {
 	for (int i = 0; i < readyCount; ++i)
 	{
 		UserInfo* userInfo = (UserInfo*)(events[i].data.ptr);
 		int currentFd = events[i].data.fd;
 
-		if (currentFd == serverSocket)
-		{
-			HandleClientConnection(serverSocket, epollfd);
-		}
-		else if (currentFd == timerfd)
+		if (currentFd == timerfd)
 		{
 			processTimerEvent();
 		}
@@ -896,7 +892,7 @@ int main()
 			std::cerr << "Failed on epoll_wait" << std::endl;
 			continue;
 		}
-		processEvents(readyCount, events, serverSocket, timerfd, epollfd);
+		processEvents(readyCount, events, timerfd);
 
 	}
 	return 0;
