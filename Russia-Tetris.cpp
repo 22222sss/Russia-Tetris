@@ -56,7 +56,7 @@ struct UserInfo
 
 map<int, UserInfo*> p;
 
-vector<int> qiut;
+vector<int> quit;
 
 vector<UserInfo*>overuser;
 
@@ -139,7 +139,7 @@ bool output(UserInfo* user, string s) {
 
 	int bytesSent = send(user->fd, s.c_str(), s.length(), 0);
 	if (bytesSent == -1) {
-		qiut.push_back(user->fd);
+		quit.push_back(user->fd);
 		cerr << "Failed to send data to client" << "[" << user->fd << "]" << endl;
 		printf("Client[%d] disconnected!\n", user->fd);
 		close(user->fd);
@@ -500,7 +500,7 @@ void showover(UserInfo* user)
 	if (!output(user, "Start Again ? (y/n):"))
 		return;
 
-	qiut.push_back(user->fd);
+	quit.push_back(user->fd);
 
 	overuser.push_back(user);
 }
@@ -628,11 +628,11 @@ void processTimerEvent()
 				processUserLogic(i->second);
 			}
 
-			for (auto i = qiut.begin(); i != qiut.end(); i++)
+			for (auto i = quit.begin(); i != quit.end(); i++)
 			{
 				p.erase(*i);
 			}
-			qiut.clear();
+			quit.clear();
 		}
 
 		// 将上次触发时间更新为当前时间
@@ -753,14 +753,18 @@ void handleClientData(UserInfo* userInfo)
 	}
 }
 
-void processEvents(int readyCount, epoll_event* events, int timerfd)
+void processEvents(int readyCount, epoll_event* events, int serverSocket, int timerfd, int epollfd)
 {
 	for (int i = 0; i < readyCount; ++i)
 	{
 		UserInfo* userInfo = (UserInfo*)(events[i].data.ptr);
 		int currentFd = events[i].data.fd;
 
-		if (currentFd == timerfd)
+		if (currentFd == serverSocket)
+		{
+			HandleClientConnection(serverSocket, epollfd);
+		}
+		else if (currentFd == timerfd)
 		{
 			processTimerEvent();
 		}
@@ -882,7 +886,6 @@ int main()
 
 	printf("======waiting for client's request======\n");
 
-	HandleClientConnection(serverSocket, epollfd);
 
 	while (1)
 	{
@@ -892,7 +895,7 @@ int main()
 			std::cerr << "Failed on epoll_wait" << std::endl;
 			continue;
 		}
-		processEvents(readyCount, events, timerfd);
+		processEvents(readyCount, events, serverSocket, timerfd, epollfd);
 
 	}
 	return 0;
