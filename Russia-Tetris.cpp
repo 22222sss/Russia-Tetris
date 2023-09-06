@@ -20,9 +20,10 @@
 #include<map>
 #include <algorithm>
 #include<vector>
+#include <signal.h>
 #include <thread>
 #define MAXSIZE 2048
-#define DEFAULT_PORT 9994// 指定端口为9999
+#define DEFAULT_PORT 9993// 指定端口为9999
 #define BUFFSIZE 2048
 #define MAXLINK 2048
 
@@ -97,6 +98,11 @@ bool output(UserInfo* user, string s)
 	{
 		user->status = STATUS_OVER_QUIT;
 		printf("Client[%d] send Error: %s (errno: %d)\n", user->fd, strerror(errno), errno);
+		return false;
+	}
+	else if (bytesSent == 0) {
+		// 客户端连接已关闭
+		user->status = STATUS_OVER_QUIT;
 		return false;
 	}
 	return true;
@@ -272,6 +278,7 @@ int color(int c)
 	}
 }
 
+
 //初始化方块信息
 void InitBlockInfo()
 {
@@ -445,7 +452,7 @@ int Is_Increase_Score(UserInfo* userInfo)
 					userInfo->color[m][n] = userInfo->color[m - 1][n];//将上一行方块的颜色编号移到下一行
 					if (userInfo->data[m][n] == 1)
 					{
-						if (!outputText(userInfo, m + 1, 2 * n + 1, COLOR_WHITE, "■"))
+						if (!outputText(userInfo, m + 1, 2 * n + 1, color(userInfo->color[m][n]), "■"))
 							return -1;
 					}
 					else
@@ -588,11 +595,15 @@ void handleNewClientConnection(int serverSocket, int epollfd)
 	newUser->row = 1;
 	newUser->col = WINDOW_COL_COUNT / 2 - 1; //方块初始下落位置
 
+
+
 	if (!DrawBlock(newUser, newUser->nextShape, newUser->nextForm, 3, WINDOW_COL_COUNT + 3))//将下一个方块显示在右上角
 	{
 		printf("Client[%d] Draw next Block Error In handleNewClientConnection\n", newUser->fd);
 		return;
 	}
+
+
 
 	if (!DrawBlock(newUser, newUser->shape, newUser->form, newUser->row, newUser->col)) //将该方块显示在初始下落位置
 	{
@@ -661,11 +672,14 @@ void processUserLogic(UserInfo* user)
 			user->row = 1;
 			user->col = WINDOW_COL_COUNT / 2 - 1;
 
+
 			if (!DrawBlock(user, user->nextShape, user->nextForm, 3, WINDOW_COL_COUNT + 3))//将下一个方块显示在右上角
 			{
 				printf("Client[%d] Draw next Block Error\n", user->fd);
 				return;
 			}
+
+
 
 			if (!DrawBlock(user, user->shape, user->form, user->row, user->col))//将该方块显示在初始下落位置
 			{
@@ -690,6 +704,7 @@ void processUserLogic(UserInfo* user)
 		}
 
 		user->row++;
+
 		if (!DrawBlock(user, user->shape, user->form, user->row, user->col))
 		{
 			printf("Client[%d] Draw next Block Error\n", user->fd);
@@ -727,11 +742,11 @@ void processTimerEvent()
 				else if (i->second->status == STATUS_OVER_QUIT)
 				{
 					auto eraseIter = i++;
+					printf("Client[%d] disconnected!\n", eraseIter->second->fd);
+					close(eraseIter->second->fd);
 					g_playing_gamer.erase(eraseIter);// 先使用后缀递增运算符，然后再删除元素
-					printf("Client[%d] disconnected!\n", i->second->fd);
-					close(i->second->fd);
-					delete i->second;
-					epoll_ctl(i->second->epollfd, EPOLL_CTL_DEL, i->second->fd, nullptr);
+					delete eraseIter->second;
+					epoll_ctl(eraseIter->second->epollfd, EPOLL_CTL_DEL, eraseIter->second->fd, nullptr);
 				}
 				else
 				{
@@ -877,11 +892,15 @@ void handleClientData(UserInfo* userInfo)
 					userInfo->row = 1;
 					userInfo->col = WINDOW_COL_COUNT / 2 - 1; //方块初始下落位置
 
+
+
 					if (!DrawBlock(userInfo, userInfo->nextShape, userInfo->nextForm, 3, WINDOW_COL_COUNT + 3))//将下一个方块显示在右上角
 					{
 						printf("Client[%d] Draw next Block Error\n", userInfo->fd);
 						return;
 					}
+
+
 
 					if (!DrawBlock(userInfo, userInfo->shape, userInfo->form, userInfo->row, userInfo->col)) //将该方块显示在初始下落位置
 					{
@@ -897,24 +916,36 @@ void handleClientData(UserInfo* userInfo)
 			}
 			else
 			{
-				if (!outputText(userInfo, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "选择错误，请再次选择"))
+				moveTo(userInfo, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3));
+				//printf("选择错误，请再次选择");
+				if (!output(userInfo, "选择错误，请再次选择"))
 					return;
 			}
 		}
 	}
 }
 
-void processEvents(int readyCount, epoll_event* events)
+void processEvents(int readyCount, epoll_event* events, int timerfd)
 {
 	for (int i = 0; i < readyCount; ++i)
 	{
 		UserInfo* userInfo = (UserInfo*)(events[i].data.ptr);
-		handleClientData(userInfo);
+		int currentFd = events[i].data.fd;
+
+		if (currentFd == timerfd)
+		{
+			processTimerEvent();
+		}
+		else
+		{
+			handleClientData(userInfo);
+		}
 	}
 }
 
 int main()
 {
+	signal(SIGPIPE, SIG_IGN);  // 忽略SIGPIPE信号
 	int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
 	if (serverSocket == -1) {
 		printf("create socket Error: %s (errno: %d)\n", strerror(errno), errno);
@@ -996,7 +1027,7 @@ int main()
 			printf("Failed on epoll_wait: %s (errno: %d)\n", strerror(errno), errno);
 			continue;
 		}
-		processEvents(readyCount, events);
+		processEvents(readyCount, events, timerfd);
 
 	}
 	return 0;
