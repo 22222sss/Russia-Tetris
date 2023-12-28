@@ -1,3 +1,4 @@
+
 #pragma once
 #ifndef UserInfo_H
 #define UserInfo_H
@@ -6,7 +7,7 @@
 
 class UserInfo {
 public:
-    UserInfo(int fd, int status, int epollfd);
+    UserInfo(int fd);
 
     bool output(string s);
 
@@ -33,7 +34,7 @@ public:
     //其实在方块移动过程中，无时无刻都在判断方块下一次变化后的位置是否合法，只有合法才会允许该变化的进行。
     //所谓非法，就是指该方块进行了该变化后落在了本来就有方块的位置。
     //合法性判断
-    
+
     bool IsLegal(int shape, int form, int row, int col);
 
     //判断得分与结束
@@ -53,8 +54,73 @@ public:
     //游戏结束后询问玩家是否再来一局。
 
     bool IsOver();
-
+    
+    //展示结束界面
     bool showover();
+
+    bool showInitMenu();
+
+    // 注册新用户
+    bool registerUser(int epollfd);
+
+    //返回初始菜单界面
+    int returnToInitMenu(int epollfd);
+
+    //接收用户信息
+    int ReceiveData(int epollfd);
+
+    // 用户登录
+    bool loadUser(int epollfd);
+
+    // 写入用户数据文件，保存更新后的用户数据
+    void saveUserData();
+
+    bool InitGameFace();
+
+    //展示登录界面
+    bool showLoadMenu();
+
+    // 查看本人最近20次比赛的分数
+    bool showRecentScores(int epollfd);
+
+    // 查看全服top成绩
+    bool showTopScores(int epollfd);
+
+    //展示游戏难度
+    bool showGameDifficulty(int epollfd);
+
+    //返回登录界面
+    int returnToLoadMenu(int i,int epollfd);
+
+    //更新用户最高分
+    bool Update_TopScore_RecentScore();
+
+    //重置用户信息
+    void resetUserInfo();
+
+    //接收注册用户名
+    int receive_username_register(int epollfd);
+
+    //接收注册密码
+    int receive_password_register(int epollfd);
+    
+    //接收登录用户名
+    int receive_username_load(int epollfd);
+
+    //接收登录密码
+    int receive_password_load(int epollfd);
+
+    //处理用户登录成功后的逻辑
+    int loginUser(int epollfd);
+
+    //选择游戏难度
+    int select_game_difficulty(int epollfd);
+
+    // 定义处理用户逻辑的函数
+    void processBlockDown();
+
+    //处理定时触发逻辑
+    void handleTimedUserLogic();
 
 
 public:
@@ -62,7 +128,6 @@ public:
     int line;
     int score;
     int status;
-    int epollfd;
     int shape;
     int form;
     int nextShape;
@@ -71,11 +136,24 @@ public:
     int col;
     int data[WINDOW_ROW_COUNT][WINDOW_COL_COUNT + 10];
     int color[WINDOW_ROW_COUNT][WINDOW_COL_COUNT + 10];
+
+    string username;
+    string password;
+    int Maximum_score;
+    queue<int> scores;
+    string timestamp;
+    string receivedata;
+
+    double speed;
+
+
+    //static std::chrono::steady_clock::time_point& lastTriggerTime;
+    std::chrono::steady_clock::time_point lastTriggerTime;
+    std::chrono::steady_clock::time_point currentTime;
+
 };
 
 extern map<int, UserInfo*> g_playing_gamer;
-
-
 
 #endif 
 

@@ -1,29 +1,51 @@
 #include"UserInfo.h"
 #include"Tetris.h"
+#include"Player.h"
 
-map<int, UserInfo*> g_playing_gamer = {};
+extern vector<Player*> players;
+
+extern map<int, UserInfo*> g_playing_gamer;
 
 extern Block blockDefines[7][4];//ÓÃÓÚ´æ´¢7ÖÖ»ù±¾ÐÎ×´·½¿éµÄ¸÷×ÔµÄ4ÖÖÐÎÌ¬µÄÐÅÏ¢£¬¹²28ÖÖ
 
-UserInfo::UserInfo(int fd,int status,int epollfd):fd(fd),line(0),score(0),status(status),epollfd(epollfd)
+UserInfo::UserInfo(int fd) :fd(fd), line(0), score(0)
 {
-	memset(data, 0, sizeof(data));
-	memset(color, -1, sizeof(color));
-}
+    this->username = "";
+    this->status = STATUS_NOTSTART;
+    this->password = "";
+    this->Maximum_score = 0;
+    this->scores = {};
+    this->timestamp = "";
 
+    this->lastTriggerTime= std::chrono::steady_clock::now();
+
+    memset(data, 0, sizeof(data));
+    memset(color, -1, sizeof(color));
+}
 
 bool UserInfo::output(string s)
 {
     int bytesSent = send(fd, s.c_str(), s.length(), 0);
     if (bytesSent == -1)
     {
+        if (this->status == STATUS_PLAYING)
+        {
+            Update_TopScore_RecentScore();
+        }
         status = STATUS_OVER_QUIT;
+        close(this->fd);
         printf("Client[%d] send Error: %s (errno: %d)\n", fd, strerror(errno), errno);
         return false;
     }
-    else if (bytesSent == 0) {
+    else if (bytesSent == 0) 
+    {
+        if (this->status == STATUS_PLAYING)
+        {
+            Update_TopScore_RecentScore();
+        }
         // ¿Í»§¶ËÁ¬½ÓÒÑ¹Ø±Õ
         status = STATUS_OVER_QUIT;
+        close(this->fd);
         return false;
     }
     return true;
@@ -66,7 +88,7 @@ bool UserInfo::outputgrade(int row, int col, int n, string s, int grade)
         return false;
     }
 
-    if (!moveTo( row, col))
+    if (!moveTo(row, col))
     {
         return false;
     }
@@ -86,6 +108,36 @@ bool UserInfo::outputgrade(int row, int col, int n, string s, int grade)
 
 bool UserInfo::outputText(int row, int col, int n, string s)
 {
+    
+    if (this->status == STATUS_PLAYING)
+    {
+        if (!moveTo(row, 0))
+        {
+            return false;
+        }
+
+        if (!output(string("  ")))
+        {
+            return false;
+        }
+
+        if (!moveTo(row, 0))
+        {
+            return false;
+        }
+
+        if (!ChangeCurrentColor(COLOR_WHITE))
+        {
+            return false;
+        }
+
+        if (!output(string("¡ö")))
+        {
+            return false;
+        }
+    }
+    
+
     if (!moveTo(row, col))
     {
         return false;
@@ -98,6 +150,21 @@ bool UserInfo::outputText(int row, int col, int n, string s)
     {
         return false;
     }
+    
+    
+    if (this->status==STATUS_PLAYING)
+    {
+        if (!moveTo(row, 500))
+        {
+            return false;
+        }
+        
+        if (!output(string(" ")))
+        {
+            return false;
+        }
+    }
+    
     return true;
 }
 
@@ -151,7 +218,7 @@ bool UserInfo::DrawBlock(int shape, int form, int row, int col)//rowºÍcol£¬Ö¸µÄÊ
         {
             if (blockDefines[shape][form].space[i][j] == 1)//Èç¹û¸ÃÎ»ÖÃÓÐ·½¿é
             {
-                if (!outputText( row + i, 2 * (col + j) - 1, Color(shape), "¡ö"))
+                if (!outputText(row + i, 2 * (col + j) - 1, Color(shape), "¡ö"))
                     return false;
             }
         }
@@ -266,12 +333,12 @@ bool UserInfo::clear()
 {
     int i;
     string emptyLine(4 * WINDOW_COL_COUNT, ' ');
-    for (i = 1; i <= WINDOW_ROW_COUNT; i++)
+    for (i = 1; i <= WINDOW_ROW_COUNT * 10; i++)
     {
         if (!outputText(i, 1, COLOR_WHITE, emptyLine))
             return false;
     }
-    return false;
+    return true;
 }
 
 bool UserInfo::IsOver()
@@ -299,3 +366,899 @@ bool UserInfo::showover()
     return true;
 }
 
+void UserInfo::saveUserData()
+{
+    ofstream file("userdata.csv", std::ios::app );// ´ò¿ªÎÄ¼þ½øÐÐ×·¼ÓÐ´Èë
+
+    if (file.is_open() && file.good())
+    { // ¼ì²éÎÄ¼þÊÇ·ñ³É¹¦´ò¿ª
+        file << this->username << "," << this->password << endl;
+        file.close(); // ¹Ø±ÕÎÄ¼þ
+    }
+    else 
+    {
+        std::cerr << "Unable to open file or file opening failed! Error message: " << std::strerror(errno) << std::endl;
+    }
+}
+
+int UserInfo::ReceiveData(int epollfd) 
+{
+    string endMarker = "\r\n";
+
+    char buffer[1024] = { '\0' };
+    int bytesRead = recv(this->fd, buffer, sizeof(buffer) - 1, 0);
+    if (bytesRead == -1) 
+    {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) 
+        {
+            // Ã»ÓÐ¿ÉÓÃÊý¾Ý£¬¼ÌÐøµÈ´ý
+            return 0;
+        }
+            close(fd);
+            printf("Client[%d] recv Error: %s (errno: %d)\n", fd, strerror(errno), errno);
+            return -1;
+    }
+    else if (bytesRead == 0)
+    {
+        // ¿Í»§¶ËÁ¬½ÓÒÑ¹Ø±Õ
+        printf("Client[%d] disconnect!\n", this->fd);
+        if (!epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, nullptr)) {
+            perror("epoll_ctl EPOLL_CTL_DEL");
+        }
+        close(this->fd);
+        return -1;
+    }
+
+    this->receivedata += buffer;
+
+    size_t endPos = this->receivedata.find(endMarker);
+    if (endPos != string::npos)
+    {
+        this->receivedata = this->receivedata.substr(0, endPos);
+        return 1;
+    }
+    return 2;
+}
+
+int UserInfo::returnToInitMenu(int epollfd)
+{
+    int temp = this->ReceiveData(epollfd);
+    if (temp==-1)
+    {
+        delete this;
+        return -1;
+    }
+    else if (temp == 1)
+    {
+        if (this->receivedata == "3")
+        {
+            if (!this->showInitMenu())
+                return -1;
+            return 1;
+        }
+        else
+        {   
+            string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+            if (!outputText(WINDOW_ROW_COUNT / 2 + 6, 1, COLOR_WHITE, emptyLine))
+                return -1;
+            if (!outputText(WINDOW_ROW_COUNT / 2 + 6, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÊäÈë´íÎó£¬ÇëÖØÐÂÊäÈë:"))
+                return -1;
+
+            this->receivedata = "";
+        }
+    }
+    return 2;
+}
+
+int UserInfo::returnToLoadMenu(int i,int epollfd)
+{
+        i++;
+
+        int temp = this->ReceiveData(epollfd);
+
+        if (temp == -1)
+        {
+            delete this;
+            return -1;
+        }
+        else if (temp == 1)
+        {
+            if (this->receivedata == "3")
+            {
+                if (!this->showLoadMenu())
+                    return -1;
+                return 1;
+            }
+            else
+            {
+                this->receivedata = "";
+                string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+                if (!outputText(WINDOW_ROW_COUNT / 2 + i, 1, COLOR_WHITE, emptyLine))
+                    return -1;
+                if (!outputText(WINDOW_ROW_COUNT / 2 + i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÊäÈë´íÎó£¬ÇëÖØÐÂÊäÈë:"))
+                    return -1;
+            }
+        }
+
+    return 2;
+}
+
+bool UserInfo::registerUser(int epollfd)
+{
+    if (!clear())
+        return false;
+
+    if (!outputText(WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÇëÊäÈëÓÃ»§Ãû£º"))
+        return false;
+    return true;
+}
+
+bool UserInfo::loadUser(int epollfd) 
+{
+    if (!clear())
+        return false;
+    
+    if (!outputText(WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÇëÊäÈëÓÃ»§Ãû£º"))
+        return false;    
+    return true;
+}
+
+bool UserInfo::showInitMenu()
+{
+    if (!clear())
+        return false;
+
+    if (!outputText(WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÇëÑ¡Ôñ²Ù×÷£º"))
+        return false;
+    if (!outputText(WINDOW_ROW_COUNT / 2 + 1, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "1. ×¢²áÕÊºÅ"))
+        return false;
+    if (!outputText(WINDOW_ROW_COUNT / 2 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE,"2. µÇÂ¼"))
+        return false;
+
+    if (!outputText(WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE , "ÇëÑ¡Ôñ²Ù×÷£º"))
+        return false;
+    return true;
+}
+
+bool UserInfo::showLoadMenu()
+{
+    if (!clear())
+        return false;
+
+    if (!outputText(WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÇëÑ¡Ôñ²Ù×÷£º"))
+        return false;
+    if (!outputText(WINDOW_ROW_COUNT / 2 + 1, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "1. ÎÒ×î½üµÄ³É¼¨"))
+        return false;
+    if (!outputText(WINDOW_ROW_COUNT / 2 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "2. È«·þtop³É¼¨"))
+        return false;
+    if (!outputText(WINDOW_ROW_COUNT / 2 + 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "3. ¿ªÊ¼ÓÎÏ·"))
+        return false;
+    if (!outputText(WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "4. ·µ»Ø·þÎñ"))
+        return false;
+    if (!outputText(WINDOW_ROW_COUNT / 2 + 6, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÄãµÄÑ¡ÔñÊÇ£º"))
+        return false;
+    return true;
+}
+
+bool UserInfo::InitGameFace()
+{
+    if (!clear())
+        return false;
+
+    if (!InitInterface())//³õÊ¼»¯½çÃæ
+    {
+        printf("Client[%d] InitInterface Error In handleNewClientConnection\n", fd);
+        return false;
+    }
+
+    InitBlockInfo(); //³õÊ¼»¯·½¿éÐÅÏ¢
+    srand((unsigned int)time(NULL)); //ÉèÖÃËæ»úÊýÉú³ÉµÄÆðµã
+    this->shape = rand() % 7;
+    this->form = rand() % 4; //Ëæ»ú»ñÈ¡·½¿éµÄÐÎ×´ºÍÐÎÌ¬
+    this->nextShape = rand() % 7;
+    this->nextForm = rand() % 4;
+    //Ëæ»ú»ñÈ¡ÏÂÒ»¸ö·½¿éµÄÐÎ×´ºÍÐÎÌ¬
+    this->row = 1;
+    this->col = WINDOW_COL_COUNT / 2 - 1; //·½¿é³õÊ¼ÏÂÂäÎ»ÖÃ
+
+    if (!DrawBlock(this->nextShape, this->nextForm, 3, WINDOW_COL_COUNT + 3))//½«ÏÂÒ»¸ö·½¿éÏÔÊ¾ÔÚÓÒÉÏ½Ç
+    {
+        return false;
+    }
+
+    if (!DrawBlock(this->shape, this->form, this->row, this->col)) //½«¸Ã·½¿éÏÔÊ¾ÔÚ³õÊ¼ÏÂÂäÎ»ÖÃ
+    {
+        return false;
+    }
+    return true;
+}
+
+bool UserInfo::showRecentScores(int epollfd)
+{
+    int i = 0;
+
+    if (!clear())
+        return false;
+
+    ifstream file("userdata.csv");
+
+    if (!file.is_open())
+    {
+        std::cerr << "Unable to open file or file opening failed! Error message: " << std::strerror(errno) << std::endl;
+        return false;
+    }
+
+    string line;
+    getline(file, line); // Ìø¹ýµÚÒ»ÐÐ
+
+    while (getline(file, line))
+    {
+        istringstream ss(line);
+
+        string cell;
+
+        getline(ss, cell, ',');//Ìø¹ýÓÃ»§Ãû
+
+        if (cell == this->username)
+        {
+            getline(ss, cell, ',');//Ìø¹ýÃÜÂë
+            getline(ss, cell, ',');//Ìø¹ý×î¸ß·Ö
+            getline(ss, cell, ',');//Ìø¹ý×î¸ß·Ö¶ÔÓ¦Ê±¼ä
+
+            while (getline(ss, cell, ','))
+            {
+                if (cell!="")
+                {
+                    if (!outputText(WINDOW_ROW_COUNT / 3 + i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, cell))
+                        return false;
+                    i++;
+                }
+            }
+            file.close();
+            break;
+        }
+        else
+        {
+            continue;
+        }
+    }
+
+    if (!outputText(WINDOW_ROW_COUNT / 2 + 20, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "Çë°´3·µ»Ø²Ëµ¥£º"))
+        return false;
+    return true;
+}
+
+bool UserInfo::showTopScores(int epollfd)
+{
+    if (!clear())
+        return false;
+
+    ifstream file("userdata.csv");
+
+    vector<Player*> show;
+
+    if (!file.is_open())
+    {
+        std::cerr << "Unable to open file or file opening failed! Error message: " << std::strerror(errno) << std::endl;
+        return false;
+    }
+
+    string line;
+    getline(file, line); // Ìø¹ýµÚÒ»ÐÐ
+
+    while (getline(file, line))
+    {
+        istringstream ss(line);
+        string cell;
+        Player* gamer = new Player;
+        getline(ss, gamer->playername, ',');//Ìø¹ýÓÃ»§Ãû
+        getline(ss, gamer->password, ',');//Ìø¹ýÃÜÂë
+        getline(ss, cell, ',');//Ìø¹ý×î¸ß·Ö
+
+        if (cell != "")
+        {
+            gamer->Maximum_score = stoi(cell);
+        }
+        else
+        {
+            continue;
+        }
+
+        getline(ss, gamer->timestamp, ',');
+
+        show.push_back(gamer);
+    }
+
+    file.close();
+
+    sort(show.begin(), show.end(), cmp);
+
+    int i = 0;
+
+    if (show.size() <= 10)
+    {
+        for (auto& player : show)
+        {
+            string buffer = player->playername + " " + to_string(player->Maximum_score) + " " + player->timestamp;
+
+            if (!outputText(WINDOW_ROW_COUNT / 3 + i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, buffer))
+                return false;
+
+            i++;
+        }
+    }
+    else
+    {
+        for (auto& player : show)
+        {
+            string buffer = player->playername + " " + to_string(player->Maximum_score) + " " + player->timestamp;
+
+            if (!outputText(WINDOW_ROW_COUNT / 3 + i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, buffer))
+                return false;
+
+            i++;
+
+            if (i == 10)
+            {
+                break;
+            }
+        }
+    }
+
+    if (!outputText(WINDOW_ROW_COUNT / 2 + 20, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "Çë°´3·µ»Ø²Ëµ¥£º"))
+        return false;
+    return true;
+}
+
+bool UserInfo::showGameDifficulty(int epollfd)
+{
+    if (!clear())
+        return false;
+
+    if (!outputText(WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "1. ¼òµ¥"))
+        return false;
+    if (!outputText(WINDOW_ROW_COUNT / 2 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "2. ÆÕÍ¨"))
+        return false;
+    if (!outputText(WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "3. À§ÄÑ"))
+        return false;
+
+    if (!outputText(WINDOW_ROW_COUNT / 2 + 6, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÇëÑ¡Ôñ²Ù×÷£º"))
+        return false;
+    return true;
+}
+
+bool UserInfo::Update_TopScore_RecentScore()
+{
+
+    if (this->scores.size() < 20)
+    {
+        this->scores.push(this->score);
+    }
+    else
+    {
+        this->scores.push(this->score);
+        this->scores.pop();
+    }
+
+    const string filename = "userdata.csv";
+
+    ifstream file(filename);
+    ofstream tempFile("temp_file.csv");
+
+    if (!file.is_open() || !tempFile.is_open()) {
+        cerr << "Error opening files." << endl;
+        return false;
+    }
+
+    string line;
+
+    getline(file, line);//Ìø¹ýµÚÒ»ÐÐ
+
+    tempFile << line << endl;
+
+    while (getline(file, line)) {
+        istringstream iss(line);
+        string username, password, Maximum_score, timestamp, cell;
+        getline(iss, username, ',');
+        getline(iss, password, ',');
+        getline(iss, Maximum_score, ',');
+        getline(iss, timestamp, ',');
+
+        if (username == this->username) {
+            // ÔÚÕÒµ½Æ¥ÅäÐÐÊ±£¬Ìí¼ÓÐÂÊý¾Ý
+            if (this->score > this->Maximum_score)
+            {
+                this->Maximum_score = this->score;
+
+                tempFile << username << "," << password << "," << this->score << "," << log() << ",";
+
+                queue<int> tempQueue = this->scores;
+                while (!tempQueue.empty()) {
+                    tempFile << tempQueue.front() << ",";
+                    tempQueue.pop();
+                }
+
+                tempFile << endl;
+            }
+            else
+            {
+                tempFile << username << "," << password << "," << Maximum_score << "," << timestamp << ",";
+
+                queue<int> tempQueue = this->scores;
+                while (!tempQueue.empty()) {
+                    tempFile << tempQueue.front() << ",";
+                    tempQueue.pop();
+                }
+
+                tempFile << endl;
+            }
+        }
+        else {
+            tempFile << line << endl;
+        }
+    }
+
+    file.close();
+    tempFile.close();
+
+    // É¾³ýÔ­ÎÄ¼þ
+    remove(filename.c_str());
+
+    // ÖØÃüÃûÁÙÊ±ÎÄ¼þÎªÔ­ÎÄ¼þ
+    rename("temp_file.csv", filename.c_str());
+
+    return true;
+}
+
+void UserInfo::resetUserInfo()
+{
+    this->line = 0;
+    this->score = 0;
+    this->username = "";
+    this->status = STATUS_NOTSTART;
+    this->password = "";
+    this->Maximum_score = 0;
+    this->scores = {};
+    this->timestamp = "";
+    memset(data, 0, sizeof(data));
+    memset(color, -1, sizeof(color));
+}
+
+int UserInfo::receive_username_register(int epollfd)
+{
+    string username = "";
+
+    int temp = this->ReceiveData(epollfd);
+
+    if (temp == -1)
+    {
+        delete this;
+        return -1;
+    }
+    else if (temp == 1)
+    {
+        if (this->receivedata!="")
+        {
+            username = this->receivedata;
+            this->receivedata = "";
+        }
+        else
+        {
+            string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+            if (!outputText(WINDOW_ROW_COUNT / 2 + 1, 1, COLOR_WHITE, emptyLine))
+                return -1;
+
+            if (!outputText(WINDOW_ROW_COUNT / 2 + 1, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÓÃ»§Ãû²»¿ÉÎª¿Õ£¬ÇëÖØÐÂÊäÈëÓÃ»§Ãû£º"))
+                return -1;
+        }
+    }
+
+    if (username!="")
+    {
+        if (isUserExists(username))
+        {
+            string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+            if (!outputText(WINDOW_ROW_COUNT / 2 + 1, 1, COLOR_WHITE, emptyLine))
+                return -1;
+
+            if (!outputText(WINDOW_ROW_COUNT / 2 + 1, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "¸ÃÓÃ»§ÃûÒÑ±»×¢²á£¬ÇëÑ¡ÔñÆäËûÓÃ»§Ãû:"))
+                return -1;
+
+            this->receivedata = "";
+            return 0;
+        }
+        else
+        {
+            this->username = username;
+
+            if (!outputText(WINDOW_ROW_COUNT / 2 + 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÇëÊäÈëÃÜÂë£º"))
+                return false;
+            
+            return 1;
+        }
+    }
+   
+    return 2;
+}
+
+int UserInfo::receive_password_register(int epollfd)
+{
+    if (!loadPlayerData())
+        return false;
+
+    string password = "";
+
+    int temp = this->ReceiveData(epollfd);
+
+    if (temp == -1)
+    {
+        delete this;
+        return -1;
+    }
+    else if (temp == 1)
+    {
+        if (this->receivedata != "")
+        {
+            password = this->receivedata;
+            this->receivedata = "";
+        }
+        else
+        {
+            string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+            if (!outputText(WINDOW_ROW_COUNT / 2 + 3, 1, COLOR_WHITE, emptyLine))
+                return -1;
+
+            if (!outputText(WINDOW_ROW_COUNT / 2 + 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÃÜÂë²»¿ÉÎª¿Õ£¬ÇëÖØÐÂÊäÈëÃÜÂë£º"))
+                return -1;
+            this->receivedata = "";
+        }
+    }
+
+    if (password != "")
+    {
+        this->password = password;
+
+        saveUserData();
+
+        if (!outputText(WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "×¢²á³É¹¦£¡"))
+            return -1;
+
+        if (!outputText(WINDOW_ROW_COUNT / 2 + 5, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "Çë°´3·µ»ØÉÏ¼¶²Ëµ¥£º"))
+            return -1;
+
+        return 1;
+    }
+    return 0;
+}
+
+int UserInfo::receive_username_load(int epollfd)
+{
+    string username = "";
+
+    int temp = this->ReceiveData(epollfd);
+
+    if (temp == -1)
+    {
+        delete this;
+        return -1;
+    }
+    else if (temp == 1)
+    {
+        if (this->receivedata != "")
+        {
+            username = this->receivedata;
+            this->receivedata = "";
+        }
+        else
+        {
+            string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+            if (!outputText(WINDOW_ROW_COUNT / 2 + 1, 1, COLOR_WHITE, emptyLine))
+                return -1;
+
+            if (!outputText(WINDOW_ROW_COUNT / 2 + 1, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÓÃ»§Ãû²»¿ÉÎª¿Õ£¬ÇëÖØÐÂÊäÈëÓÃ»§Ãû£º"))
+                return -1;
+        }
+    }
+
+    if (username != "")
+    {
+        this->username = username;
+
+        if (!outputText(WINDOW_ROW_COUNT / 2 + 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÇëÊäÈëÃÜÂë£º"))
+            return false;
+
+        return 1;
+    }
+
+    return 2;
+}
+
+int UserInfo::receive_password_load(int epollfd)
+{
+    if (!loadPlayerData())
+        return false;
+
+    string password = "";
+
+    int temp = this->ReceiveData(epollfd);
+
+    if (temp == -1)
+    {
+        delete this;
+        return -1;
+    }
+    else if (temp == 1)
+    {
+        if (this->receivedata != "")
+        {
+            password = this->receivedata;
+            this->receivedata = "";
+        }
+        else
+        {
+            string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+            if (!outputText(WINDOW_ROW_COUNT / 2 + 3, 1, COLOR_WHITE, emptyLine))
+                return -1;
+
+            if (!outputText(WINDOW_ROW_COUNT / 2 + 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÃÜÂë²»¿ÉÎª¿Õ£¬ÇëÖØÐÂÊäÈëÃÜÂë£º"))
+                return -1;
+        }
+    }
+
+    if (password != "")
+    {
+        this->password = password;
+
+        for (const auto& player : players)
+        {
+            if (player->playername == this->username && player->password == this->password)
+            {
+                this->Maximum_score = player->Maximum_score;
+
+                for (const auto& score : player->scores)
+                {
+                    this->scores.push(score);
+                }
+                return 1;
+            }
+        }
+
+        if (!outputText(WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "µÇÂ¼Ê§°Ü£¬ÓÃ»§Ãû»òÃÜÂë´íÎó¡£"))
+            return -1;
+
+        if (!outputText(WINDOW_ROW_COUNT / 2 + 5, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "°´3·µ»ØÉÏ¼¶²Ëµ¥:"))
+            return -1;
+        return 0;
+    }
+    return 2;
+}
+
+int UserInfo::loginUser(int epollfd)
+{
+    int temp = this->ReceiveData(epollfd);
+    if (temp == -1)
+    {
+        delete this;
+        return -1;
+    }
+    else if (temp == 1)
+    {
+        if (this->receivedata == "1")
+        {
+            if (!this->showRecentScores(epollfd))
+            {
+                return -1;
+            }
+
+            return 1;
+        }
+        else if (this->receivedata == "2")
+        {
+            if (!this->showTopScores(epollfd))
+            {
+                return -1;
+            }
+
+            return 2;
+        }
+        else if (this->receivedata == "3")
+        {
+            if (!this->showGameDifficulty(epollfd))
+            {
+                return -1;
+            }
+            return 3;
+        }
+        else if (this->receivedata == "4")
+        {
+            if (!this->showInitMenu())
+            {
+                return -1;
+            }
+            
+            return 4;
+        }
+        else
+        {
+            if (!this->outputText(WINDOW_ROW_COUNT / 2 + 7, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÊäÈë´íÎó£¬ÇëÖØÐÂÊäÈë: "))
+                return -1;
+            this->receivedata = "";
+        }
+    }
+    return 5;
+}
+
+int UserInfo::select_game_difficulty(int epollfd)
+{
+    int temp = this->ReceiveData(epollfd);
+    if (temp == -1)
+    {
+        delete this;
+        return -1;
+    }
+    else if (temp == 1)
+    {
+        if (this->receivedata == "1")
+        {
+            if (!this->InitGameFace())
+            {
+                return -1;
+            }
+
+            g_playing_gamer.insert(make_pair(this->fd, this));
+
+            this->speed = 1;
+
+            return 1;
+        }
+        else if (this->receivedata == "2")
+        {
+            if (!this->InitGameFace())
+            {
+                return -1;
+            }
+
+            g_playing_gamer.insert(make_pair(this->fd, this));
+
+            this->speed = 0.5;
+
+            return 2;
+        }
+        else if (this->receivedata == "3")
+        {
+            if (!this->InitGameFace())
+            {
+                return -1;
+            }
+
+            g_playing_gamer.insert(make_pair(this->fd, this));
+
+            this->speed = 0.2;
+
+            return 3;
+        }
+        else
+        {
+            if (!this->outputText(WINDOW_ROW_COUNT / 2 + 7, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÊäÈë´íÎó£¬ÇëÖØÐÂÊäÈë: "))
+                return -1;
+            this->receivedata = "";
+        }
+    }
+    return 4;
+}
+
+
+
+void UserInfo::processBlockDown()
+{
+    if (this->IsLegal(this->shape, this->form, this->row + 1, this->col) == 0)
+    {
+        for (int i = 0; i < 4; i++)
+        {
+            for (int j = 0; j < 4; j++)
+            {
+                if (blockDefines[this->shape][this->form].space[i][j] == 1)
+                {
+                    this->data[this->row + i - 1][this->col + j - 1] = 1;
+                    this->color[this->row + i - 1][this->col + j - 1] = this->shape;
+                }
+            }
+        }
+
+        this->line = 0;
+
+        while (1)
+        {
+            if (this->Is_Increase_Score() == 1)
+            {
+                continue;
+            }
+            else if (this->Is_Increase_Score() == 0)
+            {
+                break;
+            }
+            else if (this->Is_Increase_Score() == -1)
+            {
+                return;
+            }
+        }
+
+        if (!this->UpdateCurrentScore())
+        {
+            return;
+        }
+
+        if (!this->IsOver())//ÅÐ¶ÏÊÇ·ñ½áÊø
+        {
+            this->shape = this->nextShape;
+            this->form = this->nextForm;
+
+            if (!this->DrawSpace(this->nextShape, this->nextForm, 3, WINDOW_COL_COUNT + 3))
+            {
+                return;
+            }
+
+            this->nextShape = rand() % 7;
+            this->nextForm = rand() % 4;
+
+            this->row = 1;
+            this->col = WINDOW_COL_COUNT / 2 - 1;
+
+            if (!this->DrawBlock(this->nextShape, this->nextForm, 3, WINDOW_COL_COUNT + 3))//½«ÏÂÒ»¸ö·½¿éÏÔÊ¾ÔÚÓÒÉÏ½Ç
+            {
+                return;
+            }
+
+            if (!this->DrawBlock(this->shape, this->form, this->row, this->col))//½«¸Ã·½¿éÏÔÊ¾ÔÚ³õÊ¼ÏÂÂäÎ»ÖÃ
+            {
+                return;
+            }
+        }
+        else
+        {
+            if (!this->Update_TopScore_RecentScore())
+                return;
+
+            if (!this->showover())
+                return;
+        }
+    }
+    else
+    {
+
+        if (!this->DrawSpace(this->shape, this->form, this->row, this->col))
+        {
+            return;
+        }
+
+        this->row++;
+
+        if (!this->DrawBlock(this->shape, this->form, this->row, this->col))
+        {
+            return;
+        }
+    }
+}
+
+void UserInfo::handleTimedUserLogic()
+{
+    
+    // ¼ÇÂ¼ÉÏ´Î´¥·¢Ê±¼ä
+    //this->lastTriggerTime = std::chrono::steady_clock::now();
+
+    // »ñÈ¡µ±Ç°Ê±¼ä
+    this->currentTime = std::chrono::steady_clock::now();
+
+    // ¼ÆËã¾àÀëÉÏ´Î´¥·¢¾­¹ýµÄÊ±¼ä
+    std::chrono::duration<double> elapsed_time = this->currentTime - this->lastTriggerTime;
+
+    // ¼ÆËãÊ±¼ä²î
+    if (elapsed_time >= std::chrono::duration<double>(this->speed))
+    {
+        // Ö´ÐÐÏàÓ¦µÄÂß¼­´¦Àí
+        this->processBlockDown();
+
+        // ½«ÉÏ´Î´¥·¢Ê±¼ä¸üÐÂÎªµ±Ç°Ê±¼ä
+        this->lastTriggerTime = this->currentTime;
+    }
+}

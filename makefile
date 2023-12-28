@@ -1,11 +1,16 @@
-object = Tetris.o UserInfo.o Server.o main.o
+CXX=g++
+TARGET=main
+SRC=$(wildcard *.cpp)
+OBJ=$(patsubst %.cpp, %.o ,$(SRC))
 
-main: $(object)
-	g++ -o main $(object)
+CXXFLAGS = -c -Wall
 
-%.o: %.c
-	g++ -c $<
+$(TARGET): $(OBJ)
+	$(CXX) -o $@ $^
 
+%.o:  %.cpp
+	$(CXX) $(CXXFLAGS) $< -o $@
+
+.PHONY:  clean
 clean:
-	rm *.o
-	rm main
+	rm -f *.o $(TARGET)

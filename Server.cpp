@@ -1,16 +1,17 @@
 #include"Tetris.h"
 #include"UserInfo.h"
 #include"Server.h"
+#include"Player.h"
 
-
+extern vector<Player*> players;
 
 extern Block blockDefines[7][4];//用于存储7种基本形状方块的各自的4种形态的信息，共28种
 
 extern map<int, UserInfo*> g_playing_gamer;
 
-Server::Server(int serverSocket, int epollfd, int timerfd): serverSocket(serverSocket) , epollfd(epollfd), timerfd(timerfd){}
+Server::Server(int serverSocket,int timerfd) : serverSocket(serverSocket), timerfd(timerfd) {}
 
-void Server::handleNewClientConnection()
+void Server::handleNewClientConnection(int epollfd)
 {
     int clientSocket = accept(serverSocket, NULL, NULL);
     if (clientSocket == -1)
@@ -24,20 +25,20 @@ void Server::handleNewClientConnection()
         //Client.push_back(client);
     }
 
+    // 创建新的用户信息结构体
+    UserInfo* newUser = new UserInfo(clientSocket);
+
     // 设置客户端连接为非阻塞模式
     if (!IsSetSocketBlocking(clientSocket, false))
         return;
 
-    // 创建新的用户信息结构体
-    UserInfo* newUser = new UserInfo(clientSocket, STATUS_PLAYING, epollfd);
-
-    if (newUser == nullptr) {
+    if (newUser == nullptr) 
+    {
         close(clientSocket);
         printf("allocate memory for newUser Error In handleNewClientConnection");
         return;
     }
 
-    g_playing_gamer.insert(make_pair(newUser->fd, newUser));
 
     // 将新连接的事件添加到 epoll 实例中
 
@@ -45,156 +46,41 @@ void Server::handleNewClientConnection()
     newEvent.events = EPOLLIN | EPOLLET; // 监听读事件并将EPOLL设为边缘触发(Edge Triggered)模式，
     newEvent.data.ptr = newUser; // 将指针指向用户信息结构体
 
-    if (epoll_ctl(newUser->epollfd, EPOLL_CTL_ADD, clientSocket, &newEvent) < 0)
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, clientSocket, &newEvent) < 0)
     {
         printf("add new client event to epoll instance Error: %s (errno: %d) In handleNewClientConnection\n", strerror(errno), errno);
         close(clientSocket);
-        g_playing_gamer.erase(newUser->fd);
         delete newUser;
         return;
     }
 
-    if (!newUser->InitInterface())//初始化界面
-    {
-        printf("Client[%d] InitInterface Error In handleNewClientConnection\n", newUser->fd);
+    if (!newUser->showInitMenu())
         return;
-    }
-    InitBlockInfo(); //初始化方块信息
-    srand((unsigned int)time(NULL)); //设置随机数生成的起点
-    newUser->shape = rand() % 7;
-    newUser->form = rand() % 4; //随机获取方块的形状和形态
-    newUser->nextShape = rand() % 7;
-    newUser->nextForm = rand() % 4;
-    //随机获取下一个方块的形状和形态
-    newUser->row = 1;
-    newUser->col = WINDOW_COL_COUNT / 2 - 1; //方块初始下落位置
-
-
-
-    if (!newUser->DrawBlock(newUser->nextShape, newUser->nextForm, 3, WINDOW_COL_COUNT + 3))//将下一个方块显示在右上角
-    {
-        printf("Client[%d] Draw next Block Error In handleNewClientConnection\n", newUser->fd);
-        return;
-    }
-
-
-
-    if (!newUser->DrawBlock(newUser->shape, newUser->form, newUser->row, newUser->col)) //将该方块显示在初始下落位置
-    {
-        printf("Client[%d] Draw Falling Block Error In handleNewClientConnection\n", newUser->fd);
-        return;
-    }
 }
 
-// 定义处理用户逻辑的函数
-void Server::processUserLogic(UserInfo* user)
-{
-    if (user->IsLegal(user->shape, user->form, user->row + 1, user->col) == 0)
-    {
-        for (int i = 0; i < 4; i++)
-        {
-            for (int j = 0; j < 4; j++)
-            {
-                if (blockDefines[user->shape][user->form].space[i][j] == 1)
-                {
-                    user->data[user->row + i - 1][user->col + j - 1] = 1;
-                    user->color[user->row + i - 1][user->col + j - 1] = user->shape;
-                }
-            }
-        }
-
-        user->line = 0;
-
-        while (1)
-        {
-            if (user->Is_Increase_Score() == 1)
-            {
-                continue;
-            }
-            else if (user->Is_Increase_Score() == 0)
-            {
-                break;
-            }
-            else if (user->Is_Increase_Score() == -1)
-            {
-                return;
-            }
-        }
-
-        if (!user->UpdateCurrentScore())
-        {
-            return;
-        }
-
-        if (!user->IsOver())//判断是否结束
-        {
-            user->shape = user->nextShape;
-            user->form = user->nextForm;
-
-            if (!user->DrawSpace(user->nextShape, user->nextForm, 3, WINDOW_COL_COUNT + 3))
-            {
-                return;
-            }
-
-            user->nextShape = rand() % 7;
-            user->nextForm = rand() % 4;
-
-            user->row = 1;
-            user->col = WINDOW_COL_COUNT / 2 - 1;
-
-            if (!user->DrawBlock(user->nextShape, user->nextForm, 3, WINDOW_COL_COUNT + 3))//将下一个方块显示在右上角
-            {
-                return;
-            }
-
-            if (!user->DrawBlock(user->shape, user->form, user->row, user->col))//将该方块显示在初始下落位置
-            {
-                return;
-            }
-        }
-
-        else
-        {
-            if (!user->showover())
-                return;
-        }
-    }
-    else
-    {
-
-        if (!user->DrawSpace(user->shape, user->form, user->row, user->col))
-        {
-            return;
-        }
-
-        user->row++;
-
-        if (!user->DrawBlock(user->shape, user->form, user->row, user->col))
-        {
-            return;
-        }
-    }
-}
-
-void Server::handleClientData(UserInfo* userInfo)
+void Server::handleClientData(UserInfo* userInfo,int epollfd)
 {
     // 处理已连接客户端的数据接收事件
-    char buffer[1024];
-    int bytesRead = recv(userInfo->fd, buffer, sizeof(buffer), 0);
-    if (bytesRead == -1) {
-        userInfo->status = STATUS_OVER_QUIT;
-        close(userInfo->fd);
-        printf("Client[%d] recv Error: %s (errno: %d)\n", userInfo->fd, strerror(errno), errno);
-    }
-    else if (bytesRead == 0) {
-        // 客户端连接已关闭
-        userInfo->status = STATUS_OVER_QUIT;
-        close(userInfo->fd);
-    }
-    else
-    {
         if (userInfo->status == STATUS_PLAYING)
         {
+            char buffer[1024];
+            int bytesRead = recv(userInfo->fd, buffer, sizeof(buffer), 0);
+            if (bytesRead == -1) {
+                userInfo->status = STATUS_OVER_QUIT;
+                close(userInfo->fd);
+                userInfo->Update_TopScore_RecentScore();
+                printf("Client[%d] recv Error: %s (errno: %d)\n", userInfo->fd, strerror(errno), errno);
+                return;
+            }
+            else if (bytesRead == 0) {
+                // 客户端连接已关闭
+                userInfo->status = STATUS_OVER_QUIT;
+                close(userInfo->fd);
+                userInfo->Update_TopScore_RecentScore();
+                return;
+            }
+
+
             // 处理接收到的数据
             if (strcmp(buffer, KEY_DOWN) == 0)//下
             {
@@ -271,53 +157,48 @@ void Server::handleClientData(UserInfo* userInfo)
         }
         else if (userInfo->status == STATUS_OVER_CONFIRMING)
         {
+            char buffer[1024];
+            int bytesRead = recv(userInfo->fd, buffer, sizeof(buffer), 0);
+            if (bytesRead == -1) {
+                userInfo->status = STATUS_OVER_QUIT;
+                close(userInfo->fd);
+                printf("Client[%d] recv Error: %s (errno: %d)\n", userInfo->fd, strerror(errno), errno);
+                return;
+            }
+            else if (bytesRead == 0) {
+                printf("Client[%d] disconnect!\n", userInfo->fd);
+                // 客户端连接已关闭
+                userInfo->status = STATUS_OVER_QUIT;
+                close(userInfo->fd);
+                return;
+            }
+
+
             if (*buffer == 'Y' || *buffer == 'y')
             {
-                auto it = find_if(g_playing_gamer.begin(), g_playing_gamer.end(), [userInfo](const pair<int, UserInfo*>& element) {
-                    return element.second == userInfo;
-                    });
 
-                if (it == g_playing_gamer.end())
+                if (!userInfo->showGameDifficulty(epollfd))
                 {
-                    userInfo->status = STATUS_PLAYING;
-
-                    g_playing_gamer.insert(make_pair(userInfo->fd, userInfo));
-
-                    userInfo->clear();
-
-                    userInfo->score = 0;
-
-                    if (!userInfo->InitInterface())//初始化界面
-                    {
-                        return;
-                    }
-                    InitBlockInfo(); //初始化方块信息
-                    srand((unsigned int)time(NULL)); //设置随机数生成的起点
-                    userInfo->shape = rand() % 7;
-                    userInfo->form = rand() % 4; //随机获取方块的形状和形态
-                    userInfo->nextShape = rand() % 7;
-                    userInfo->nextForm = rand() % 4;
-                    //随机获取下一个方块的形状和形态
-                    userInfo->row = 1;
-                    userInfo->col = WINDOW_COL_COUNT / 2 - 1; //方块初始下落位置
-
-
-                    if (!userInfo->DrawBlock(userInfo->nextShape, userInfo->nextForm, 3, WINDOW_COL_COUNT + 3))//将下一个方块显示在右上角
-                    {
-                        return;
-                    }
-
-                    if (!userInfo->DrawBlock(userInfo->shape, userInfo->form, userInfo->row, userInfo->col)) //将该方块显示在初始下落位置
-                    {
-                        return;
-                    }
+                    return ;
                 }
+
+                userInfo->status = STATUS_SELECT_GAME_DIFFICULTY;
+
+                userInfo->score = 0;
             }
             else if (*buffer == 'n' || *buffer == 'N')
             {
-                userInfo->status = STATUS_OVER_QUIT;
-                close(userInfo->fd);
-                printf("Client[%d] disconnected!\n", userInfo->fd);
+
+                // 在这里删除 g_playing_gamer 的元素
+                auto it = g_playing_gamer.find(userInfo->fd);
+                if (it != g_playing_gamer.end()) {
+                    g_playing_gamer.erase(it); // 从 map 中删除元素
+                }
+
+                userInfo->resetUserInfo();
+
+                if(!userInfo->showInitMenu())
+                    return;
             }
             else
             {
@@ -325,79 +206,252 @@ void Server::handleClientData(UserInfo* userInfo)
                     return;
             }
         }
-    }
-}
-
-void Server::processTimerEvent()
-{
-    if (!g_playing_gamer.empty())
-    {
-            // 记录上次触发时间
-            static std::chrono::steady_clock::time_point lastTriggerTime = std::chrono::steady_clock::now();
-
-            // 获取当前时间
-            std::chrono::steady_clock::time_point currentTime = std::chrono::steady_clock::now();
-
-            // 计算距离上次触发经过的时间
-            std::chrono::duration<double> elapsed_time = currentTime - lastTriggerTime;
-
-            // 如果时间差大于等于1秒
-            if (elapsed_time >= std::chrono::seconds(1))
+        else if (userInfo->status == STATUS_NOTSTART)
+        {
+            int temp = userInfo->ReceiveData(epollfd);
+            if (temp == -1)
             {
-                // 执行相应的逻辑处理
-
-                for (auto i = g_playing_gamer.begin(); i != g_playing_gamer.end(); )
-                {
-                    // 执行一些条件检查
-                    if (i->second->status == STATUS_OVER_CONFIRMING)
-                    {
-                        auto eraseIter = i++;
-                        g_playing_gamer.erase(eraseIter); // 先使用后缀递增运算符，然后再删除元素
-                    }
-                    else if (i->second->status == STATUS_OVER_QUIT)
-                    {
-                        auto eraseIter = i++;
-                        printf("Client[%d] disconnected!\n", eraseIter->second->fd);
-                        close(eraseIter->second->fd);
-                        g_playing_gamer.erase(eraseIter);// 先使用后缀递增运算符，然后再删除元素
-                        delete eraseIter->second;
-                        epoll_ctl(eraseIter->second->epollfd, EPOLL_CTL_DEL, eraseIter->second->fd, nullptr);
-                    }
-                    else
-                    {
-                        processUserLogic(i->second);
-                        i++; // 移动到下一个元素
-                    }
-                }
-                // 将上次触发时间更新为当前时间
-                lastTriggerTime = currentTime;
+                delete userInfo;
+                return;
             }
-    }
-    
+            else if (temp == 1)
+            {
+                if (userInfo->receivedata == "1")
+                {   
+                    if (!userInfo->registerUser(epollfd))
+                        return;
+                     
+                    userInfo->status = STATUS_RECEIVE_USERNAME_REGISTER;
+                    userInfo->receivedata = "";
+                }
+                else if (userInfo->receivedata == "2")
+                {
+                    if (!userInfo->loadUser(epollfd))
+                        return;
+
+                    userInfo->status = STATUS_RECEIVE_USERNAME_LOAD;
+                    userInfo->receivedata = "";
+                }
+                else
+                {
+                    userInfo->receivedata = "";
+                    string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+                    if (!userInfo->outputText(WINDOW_ROW_COUNT / 2 + 4, 1, COLOR_WHITE, emptyLine))
+                        return;
+                    if (!userInfo->outputText(WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "输入错误，请重新输入: "))
+                        return;
+                }
+            }
+        }
+        else if (userInfo->status == STATUS_RECEIVE_USERNAME_REGISTER)
+        {
+            int key = userInfo->receive_username_register(epollfd);
+
+            if (key == -1)
+            {
+                return;
+            }
+            else if (key == 1)
+            {
+                userInfo->status = STATUS_RECEIVE_PASSWORD_REGISTER;
+                userInfo->receivedata = "";
+            }
+        }
+        else if (userInfo->status == STATUS_RECEIVE_PASSWORD_REGISTER)
+        {
+            int key = userInfo->receive_password_register(epollfd);
+
+            if (key == -1)
+            {
+                return;
+            }
+            else if (key == 1)
+            {
+                userInfo->status = STATUS_REGISTER_OR_LOAD_OVER;
+                userInfo->receivedata = "";
+            }
+        }
+        else if (userInfo->status == STATUS_RECEIVE_USERNAME_LOAD)
+        {
+            int key = userInfo->receive_username_load(epollfd);
+
+            if (key == -1)
+            {
+                return;
+            }
+            else if (key == 1)
+            {
+                userInfo->status = STATUS_RECEIVE_PASSWORD_LOAD;
+                userInfo->receivedata = "";
+            }
+        }
+        else if (userInfo->status == STATUS_RECEIVE_PASSWORD_LOAD)
+        {
+            int key = userInfo->receive_password_load(epollfd);
+
+            if (key == -1)
+            {
+                return; 
+            }
+            else if (key == 1)
+            {
+                if (!userInfo->showLoadMenu())
+                    return;
+                userInfo->status = STATUS_LOGIN;
+                userInfo->receivedata = "";
+            }
+            else if (key==0)
+            {
+                userInfo->status = STATUS_REGISTER_OR_LOAD_OVER;
+                userInfo->receivedata = "";
+            }
+            
+        }
+        else if (userInfo->status == STATUS_LOGIN)
+        {
+            int key = userInfo->loginUser(epollfd);
+
+            if (key==-1)
+            {
+                return;
+            }
+            else if (key == 1)
+            {
+                userInfo->receivedata = "";
+                userInfo->status = STATUS_LOGIN_OVER;
+            }
+            else if (key == 2)
+            {
+                userInfo->receivedata = "";
+                userInfo->status = STATUS_LOGIN_OVER;
+            }
+            else if (key == 3)
+            {
+                userInfo->receivedata = "";
+                userInfo->status = STATUS_SELECT_GAME_DIFFICULTY;
+            }
+            else if (key == 4)
+            {
+                userInfo->receivedata = "";
+                userInfo->status = STATUS_NOTSTART;
+            }
+        }
+        else if (userInfo->status==STATUS_SELECT_GAME_DIFFICULTY)
+        {
+            int key = userInfo->select_game_difficulty(epollfd);
+
+            if (key == -1)
+            {
+                return;
+            }
+            else if (key == 1)
+            {
+                userInfo->receivedata = "";
+                userInfo->status = STATUS_PLAYING;
+            }
+            else if (key == 2)
+            {
+                userInfo->receivedata = "";
+                userInfo->status = STATUS_PLAYING;
+            }
+            else if (key == 3)
+            {
+                userInfo->receivedata = "";
+                userInfo->status = STATUS_PLAYING;
+            }
+
+        }
+        else if (userInfo->status == STATUS_LOGIN_OVER)
+        {
+            int key = userInfo->returnToLoadMenu(WINDOW_ROW_COUNT / 3 + 20, epollfd);
+
+            if (key == -1)
+            {
+                return;
+            }
+            else if (key == 1)
+            {
+                userInfo->status = STATUS_LOGIN;
+                userInfo->receivedata = "";
+            }
+        }
+        else if (userInfo->status == STATUS_REGISTER_OR_LOAD_OVER)
+        {
+            int key = userInfo->returnToInitMenu(epollfd);
+            if (key == -1)
+            {
+                return;
+            }
+            else if (key == 1)
+            {
+                userInfo->status = STATUS_NOTSTART;
+                userInfo->receivedata = "";
+            }
+        }
 }
 
-void Server::processEvents(int readyCount, epoll_event* events)
+void Server::processTimerEvent(int epollfd)
+{
+    for (auto i = g_playing_gamer.begin(); i != g_playing_gamer.end(); )
+    {
+        // 执行一些条件检查
+        if (i->second->status == STATUS_OVER_CONFIRMING)
+        {
+            auto eraseIter = i++;
+            g_playing_gamer.erase(eraseIter); // 先使用后缀递增运算符，然后再删除元素
+        }
+        else if (i->second->status == STATUS_OVER_QUIT)
+        {
+            auto eraseIter = i++;
+            printf("Client[%d] disconnected!\n", eraseIter->second->fd);
+            close(eraseIter->second->fd);
+
+            auto it = g_playing_gamer.find(eraseIter->second->fd);
+            if (it != g_playing_gamer.end()) {
+                g_playing_gamer.erase(eraseIter); // 从 map 中删除元素
+            }
+            delete eraseIter->second;
+
+            if (!epoll_ctl(epollfd, EPOLL_CTL_DEL, eraseIter->second->fd, nullptr)) {
+                perror("epoll_ctl EPOLL_CTL_DEL");
+            }
+        }
+        else
+        {
+            i->second->handleTimedUserLogic();
+
+            i++; // 移动到下一个元素
+        }
+    }
+}
+
+void Server::processEvents(int readyCount, epoll_event* events, int epollfd)
 {
     for (int i = 0; i < readyCount; ++i)
     {
         UserInfo* userInfo = (UserInfo*)(events[i].data.ptr);
         int currentFd = events[i].data.fd;
+
         if (currentFd == serverSocket)
         {
-            handleNewClientConnection();
+            handleNewClientConnection(epollfd);
         }
         else if (currentFd == timerfd)
         {
-            processTimerEvent();
+            if (!g_playing_gamer.empty())
+            {
+                processTimerEvent(epollfd);
+            }
         }
         else
         {
-            handleClientData(userInfo);
+            handleClientData(userInfo,epollfd);
         }
     }
+
 }
 
-void Server::Run()
+void Server::Run(int epollfd)
 {
     while (1)
     {
@@ -407,6 +461,6 @@ void Server::Run()
             printf("Failed on epoll_wait: %s (errno: %d)\n", strerror(errno), errno);
             continue;
         }
-        processEvents(readyCount, events);
+        processEvents(readyCount, events ,epollfd);
     }
 }

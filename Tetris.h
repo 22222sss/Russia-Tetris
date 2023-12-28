@@ -18,12 +18,16 @@
 #include <chrono>
 #include <ctime>
 #include <algorithm>
+#include <fstream>
+#include <sstream>
 #include <fcntl.h>
+#include <algorithm>
+#include <queue>
 
 using namespace std;
 
 #define MAXSIZE 2048
-#define DEFAULT_PORT 9991// 指定端口为9999
+#define DEFAULT_PORT 9997// 指定端口为9999
 #define BUFFSIZE 2048
 #define MAXLINK 2048
 
@@ -69,9 +73,29 @@ enum Color
 
 enum GameStatus
 {
-    STATUS_PLAYING = 1,
-    STATUS_OVER_CONFIRMING = 0,
-    STATUS_OVER_QUIT = -1
+    STATUS_NOTSTART ,
+    STATUS_PLAYING ,
+    STATUS_OVER_CONFIRMING ,
+    STATUS_OVER_QUIT,
+
+
+    //STATUS_LOAD_OVER,
+    //STATUS_LOAD,
+
+    STATUS_LOGIN,
+    STATUS_LOGIN_OVER,
+
+    //STATUS_REGISTER_OVER,
+
+    STATUS_RECEIVE_USERNAME_REGISTER,
+    STATUS_RECEIVE_PASSWORD_REGISTER,
+
+    STATUS_RECEIVE_USERNAME_LOAD,
+    STATUS_RECEIVE_PASSWORD_LOAD,
+
+    STATUS_REGISTER_OR_LOAD_OVER,
+
+    STATUS_SELECT_GAME_DIFFICULTY
 };
 
 
@@ -82,5 +106,14 @@ int Color(int c);
 
 //初始化方块信息
 void InitBlockInfo();
+
+// 检查用户是否存在
+bool isUserExists(const std::string& username);
+
+// 读取用户数据文件，初始化users向量
+bool loadPlayerData();
+
+//日志函数
+string log();
 
 #endif

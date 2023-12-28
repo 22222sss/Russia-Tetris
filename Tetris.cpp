@@ -1,6 +1,11 @@
 #include"Tetris.h"
+#include"UserInfo.h"
+#include"Server.h"
+#include"Player.h"
 
-Block blockDefines[7][4]={0};//用于存储7种基本形状方块的各自的4种形态的信息，共28种
+extern Block blockDefines[7][4];
+
+extern vector<Player*> players;
 
 bool IsSetSocketBlocking(int socket, bool blocking) {
     // 获取套接字标志
@@ -47,6 +52,81 @@ int Color(int c)
     default:
         return COLOR_WHITE;
     }
+}
+
+bool isUserExists(const string& playername) 
+{
+    for (auto& player : players) 
+    {
+        if (player->playername == playername) 
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool loadPlayerData()
+{
+    players.clear();
+
+    ifstream file("userdata.csv");
+
+    if (!file.is_open()) 
+    {
+        std::cerr << "Unable to open file or file opening failed! Error message: " << std::strerror(errno) << std::endl;
+        return false;
+    }
+
+    string line;
+    string column_name;
+    getline(file, line); // 跳过第一行
+
+
+    while (getline(file, line))
+    {
+        istringstream ss(line);
+
+        string cell;
+
+        Player* player = new Player;
+        getline(ss, player->playername, ',');
+        getline(ss, player->password, ',');
+        
+        if (player->playername==""&&player->password=="")
+        {
+            return true;
+        }
+
+        getline(ss, cell, ',');
+        if (cell!="")
+        {
+            player->Maximum_score = stoi(cell);
+        }
+        else
+        {
+            player->Maximum_score = 0;
+        }
+    
+        getline(ss, player->timestamp, ',');
+
+        while (getline(ss, cell, ',')) 
+        {
+            if (cell != "")
+            {
+                player->scores.push_back(stoi(cell));
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        players.push_back(player);
+    }
+
+    file.close();
+    return true;
 }
 
 void InitBlockInfo()
@@ -124,3 +204,16 @@ void InitBlockInfo()
         }
     }
 }
+
+string log()//日志函数
+{
+    char timestamp[20];
+    time_t now = time(nullptr);
+
+    struct tm* timeinfo = localtime(&now);
+
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", timeinfo);
+
+    return timestamp;
+}
+
