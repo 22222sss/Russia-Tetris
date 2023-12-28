@@ -1,11 +1,13 @@
 #include"Server.h"
 #include"Tetris.h"
 #include"UserInfo.h"
+#include"Player.h"
 
-extern Block blockDefines[7][4];//用于存储7种基本形状方块的各自的4种形态的信息，共28种
+vector<Player*> players = {};
 
-extern map<int, UserInfo*> g_playing_gamer;
+map<int, UserInfo*> g_playing_gamer = {};
 
+Block blockDefines[7][4] = { 0 };
 
 int main() {
     signal(SIGPIPE, SIG_IGN);  // 忽略SIGPIPE信号
@@ -78,10 +80,13 @@ int main() {
 
     printf("======waiting for client's request======\n");
 
-    Server server(serverSocket, epollfd, timerfd);
+    Server server(serverSocket, timerfd);
 
-    server.handleNewClientConnection();
+    //server.handleNewClientConnection(epollfd);
 
-    server.Run();
+    server.Run(epollfd);
+    
+
+
     return 0;
 }

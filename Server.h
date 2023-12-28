@@ -6,24 +6,20 @@
 
 class Server {
 public:
-    Server(int serverSocket, int epollfd, int timerfd);
+    Server(int serverSocket, int timerfd);
 
-    void handleNewClientConnection();
+    void handleNewClientConnection(int epollfd);
 
-    // 定义处理用户逻辑的函数
-    void processUserLogic(UserInfo* user);
+    void processTimerEvent(int eploofd);
 
-    void processTimerEvent();
+    void handleClientData(UserInfo* userInfo,int epollfd);
 
-    void handleClientData(UserInfo* userInfo);
+    void processEvents(int readyCount, epoll_event* events, int epollfd);
 
-    void processEvents(int readyCount, epoll_event* events);
-
-    void Run();
+    void Run(int epollfd);
 
 private:
     int serverSocket;
-    int epollfd;
     int timerfd;
 };
 
