@@ -1,6 +1,6 @@
 #pragma once
-#ifndef Tetris_H
-#define Tetris_H
+#ifndef Public_H
+#define Public_H
 
 #include <iostream>
 #include <cstdio>
@@ -24,6 +24,9 @@
 #include <algorithm>
 #include <queue>
 
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/basic_file_sink.h>
+
 using namespace std;
 
 #define MAXSIZE 2048
@@ -38,14 +41,14 @@ using namespace std;
 #define KEY_LEFT "\x1b[D" //方向键：左
 #define KEY_RIGHT "\x1b[C" //方向键：右
 
-using namespace std;
-
 struct Block
 {
     int space[4][4];
 };
 
 extern Block blockDefines[7][4];//用于存储7种基本形状方块的各自的4种形态的信息，共28种
+
+extern shared_ptr<spdlog::logger> logger;
 
 
 enum Shape
@@ -69,8 +72,6 @@ enum Color
     COLOR_WHITE = 37
 };
 
-
-
 enum GameStatus
 {
     STATUS_NOTSTART ,
@@ -78,14 +79,8 @@ enum GameStatus
     STATUS_OVER_CONFIRMING ,
     STATUS_OVER_QUIT,
 
-
-    //STATUS_LOAD_OVER,
-    //STATUS_LOAD,
-
     STATUS_LOGIN,
     STATUS_LOGIN_OVER,
-
-    //STATUS_REGISTER_OVER,
 
     STATUS_RECEIVE_USERNAME_REGISTER,
     STATUS_RECEIVE_PASSWORD_REGISTER,
@@ -98,7 +93,7 @@ enum GameStatus
     STATUS_SELECT_GAME_DIFFICULTY
 };
 
-
+//设置非阻塞/阻塞套接字
 bool IsSetSocketBlocking(int socket, bool blocking);
 
 //颜色设置
@@ -113,7 +108,7 @@ bool isUserExists(const std::string& username);
 // 读取用户数据文件，初始化users向量
 bool loadPlayerData();
 
-//日志函数
-string log();
+//获取目前时间
+string currenttime();
 
 #endif

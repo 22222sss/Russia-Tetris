@@ -1,18 +1,25 @@
-#include"Tetris.h"
+#include"Public.h"
 #include"UserInfo.h"
-#include"Server.h"
 #include"Player.h"
-
-extern Block blockDefines[7][4];
+#include"Public_game.h"
 
 extern vector<Player*> players;
+
+extern Block blockDefines[7][4];//用于存储7种基本形状方块的各自的4种形态的信息，共28种
+
+extern map<int, UserInfo*> g_playing_gamer;
+
+extern shared_ptr<spdlog::logger> logger;
+
 
 bool IsSetSocketBlocking(int socket, bool blocking) {
     // 获取套接字标志
     int flags = fcntl(socket, F_GETFL, 0);
     if (flags < 0) {
         close(socket);
-        std::cerr << "Failed to get socket flags" << std::endl;
+        //std::cerr << "Failed to get socket flags" << std::endl;
+        logger->error("Failed to get socket flags");
+        logger->flush();
         return false;
     }
 
@@ -27,7 +34,9 @@ bool IsSetSocketBlocking(int socket, bool blocking) {
     // 设置套接字的新标志
     if (fcntl(socket, F_SETFL, flags) < 0) {
         close(socket);
-        std::cerr << "Failed to set socket mode" << std::endl;
+        //std::cerr << "Failed to set socket mode" << std::endl;
+        logger->error("Failed to get socket flags");
+        logger->flush();
         return false;
     }
     return true;
@@ -52,81 +61,6 @@ int Color(int c)
     default:
         return COLOR_WHITE;
     }
-}
-
-bool isUserExists(const string& playername) 
-{
-    for (auto& player : players) 
-    {
-        if (player->playername == playername) 
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool loadPlayerData()
-{
-    players.clear();
-
-    ifstream file("userdata.csv");
-
-    if (!file.is_open()) 
-    {
-        std::cerr << "Unable to open file or file opening failed! Error message: " << std::strerror(errno) << std::endl;
-        return false;
-    }
-
-    string line;
-    string column_name;
-    getline(file, line); // 跳过第一行
-
-
-    while (getline(file, line))
-    {
-        istringstream ss(line);
-
-        string cell;
-
-        Player* player = new Player;
-        getline(ss, player->playername, ',');
-        getline(ss, player->password, ',');
-        
-        if (player->playername==""&&player->password=="")
-        {
-            return true;
-        }
-
-        getline(ss, cell, ',');
-        if (cell!="")
-        {
-            player->Maximum_score = stoi(cell);
-        }
-        else
-        {
-            player->Maximum_score = 0;
-        }
-    
-        getline(ss, player->timestamp, ',');
-
-        while (getline(ss, cell, ',')) 
-        {
-            if (cell != "")
-            {
-                player->scores.push_back(stoi(cell));
-            }
-            else
-            {
-                break;
-            }
-        }
-
-        players.push_back(player);
-    }
-
-    file.close();
-    return true;
 }
 
 void InitBlockInfo()
@@ -205,7 +139,85 @@ void InitBlockInfo()
     }
 }
 
-string log()//日志函数
+bool isUserExists(const string& playername)
+{
+
+    for (auto& player : players)
+    {
+        if (player->playername == playername)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool loadPlayerData()
+{
+    players.clear();
+
+    ifstream file("userdata.csv");
+
+    if (!file.is_open())
+    {
+        //std::cerr << "Unable to open file or file opening failed! Error message: " << std::strerror(errno) << std::endl;
+        logger->error("Unable to open file or file opening failed! Error message: %s\n", strerror(errno));
+        logger->flush();
+        return false;
+    }
+
+    string line;
+    string column_name;
+    getline(file, line); // 跳过第一行
+
+
+    while (getline(file, line))
+    {
+        istringstream ss(line);
+
+        string cell;
+
+        Player* player = new Player;
+        getline(ss, player->playername, ',');
+        getline(ss, player->password, ',');
+
+        if (player->playername == "" && player->password == "")
+        {
+            return true;
+        }
+
+        getline(ss, cell, ',');
+        if (cell != "")
+        {
+            player->Maximum_score = stoi(cell);
+        }
+        else
+        {
+            player->Maximum_score = 0;
+        }
+
+        getline(ss, player->timestamp, ',');
+
+        while (getline(ss, cell, ','))
+        {
+            if (cell != "")
+            {
+                player->scores.push_back(stoi(cell));
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        players.push_back(player);
+    }
+
+    file.close();
+    return true;
+}
+
+string currenttime()//日志函数
 {
     char timestamp[20];
     time_t now = time(nullptr);
@@ -216,4 +228,7 @@ string log()//日志函数
 
     return timestamp;
 }
+
+
+
 
