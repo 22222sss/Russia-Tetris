@@ -1,0 +1,14 @@
+[2024-01-09 09:37:51.337] [logger] [info] Client[7], welcome!
+
+[2024-01-09 09:38:40.110] [logger] [error] Client[7] disconnect!
+
+[2024-01-09 09:41:42.716] [logger] [info] Client[7], welcome!
+
+[2024-01-09 09:42:25.182] [logger] [info] Client[8], welcome!
+
+[2024-01-09 09:47:12.394] [logger] [info] Client[8] disconnect!
+
+[2024-01-09 09:47:12.395] [logger] [error] epoll_ctl EPOLL_CTL_DEL: No such file or directory
+[2024-01-09 09:47:15.711] [logger] [info] Client[7] disconnect!
+
+[2024-01-09 09:47:15.712] [logger] [error] epoll_ctl EPOLL_CTL_DEL: No such file or directory

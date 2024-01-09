@@ -1,7 +1,10 @@
-#include"Tetris.h"
+#include"Game.h"
+#include"Public.h"
 #include"UserInfo.h"
-#include"Server.h"
+#include"Public_game.h"
 #include"Player.h"
+#include"EventLoop.h"
+#include"Server.h"
 
 extern vector<Player*> players;
 
@@ -9,458 +12,788 @@ extern Block blockDefines[7][4];//用于存储7种基本形状方块的各自的4种形态的信息，
 
 extern map<int, UserInfo*> g_playing_gamer;
 
-Server::Server(int serverSocket,int timerfd) : serverSocket(serverSocket), timerfd(timerfd) {}
+extern shared_ptr<spdlog::logger> logger;
 
-void Server::handleNewClientConnection(int epollfd)
+Server::Server(){}
+
+bool Server::showInitMenu(UserInfo* user)
 {
-    int clientSocket = accept(serverSocket, NULL, NULL);
-    if (clientSocket == -1)
+    if (!clear(user))
+        return false;
+
+    if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请选择操作："))
+        return false;
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 1, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "1. 注册帐号"))
+        return false;
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "2. 登录"))
+        return false;
+
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请选择操作："))
+        return false;
+    return true;
+}
+
+bool Server::registerUser(UserInfo* user, int epollfd)
+{
+    if (!clear(user))
+        return false;
+
+    if (!outputText(user,WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请输入用户名："))
+        return false;
+    return true;
+}
+
+int Server::returnToInitMenu(UserInfo* user, int epollfd)
+{
+    int temp = this->ReceiveData(user,epollfd);
+    if (temp == -1)
     {
-        printf("accept Error: %s (errno: %d) In handleNewClientConnection\n", strerror(errno), errno);
-        return;
+        delete user;
+        return -1;
+    }
+    else if (temp == 1)
+    {
+        if (user->receivedata == "3")
+        {
+            if (!this->showInitMenu(user))
+                return -1;
+            return 1;
+        }
+        else
+        {
+            string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+            if (!outputText(user,WINDOW_ROW_COUNT / 2 + 6, 1, COLOR_WHITE, emptyLine))
+                return -1;
+            if (!outputText(user,WINDOW_ROW_COUNT / 2 + 6, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "输入错误，请重新输入:"))
+                return -1;
+
+            user->receivedata = "";
+        }
+    }
+    return 2;
+}
+
+int Server::ReceiveData(UserInfo* user, int epollfd)
+{
+    string endMarker = "\r\n";
+
+    char buffer[1024] = { '\0' };
+    int bytesRead = recv(user->fd, buffer, sizeof(buffer) - 1, 0);
+    if (bytesRead == -1)
+    {
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            // 没有可用数据，继续等待
+            return 0;
+        }
+        close(user->fd);
+        //printf("Client[%d] recv Error: %s (errno: %d)\n", fd, strerror(errno), errno);
+        logger->error("Client[{}] recv Error: {} (errno: {})\n", user->fd, strerror(errno), errno);
+        logger->flush();
+        return -1;
+    }
+    else if (bytesRead == 0)
+    {
+        // 客户端连接已关闭
+        //printf("Client[%d] disconnect!\n", this->fd);
+        logger->info("Client[{}] disconnect!\n", user->fd);
+        logger->flush();
+        if (!epoll_ctl(epollfd, EPOLL_CTL_DEL, user->fd, nullptr)) {
+            perror("epoll_ctl EPOLL_CTL_DEL");
+            logger->error("epoll_ctl EPOLL_CTL_DEL: {}", strerror(errno));
+            logger->flush();
+        }
+        close(user->fd);
+        return -1;
+    }
+
+    user->receivedata += buffer;
+
+    size_t endPos = user->receivedata.find(endMarker);
+    if (endPos != string::npos)
+    {
+        user->receivedata = user->receivedata.substr(0, endPos);
+        return 1;
+    }
+    return 2;
+}
+
+bool Server::loadUser(UserInfo* user, int epollfd)
+{
+    if (!clear(user))
+        return false;
+
+    if (!outputText(user,WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请输入用户名："))
+        return false;
+    return true;
+}
+
+void Server::saveUserData(UserInfo* user)
+{
+    ofstream file("userdata.csv", std::ios::app);// 打开文件进行追加写入
+
+    if (file.is_open() && file.good())
+    { // 检查文件是否成功打开
+        file << user->username << "," << user->password << endl;
+        file.close(); // 关闭文件
     }
     else
     {
-        printf("Client[%d], welcome!\n", clientSocket);
-        //Client.push_back(client);
+        //std::cerr << "Unable to open file or file opening failed! Error message: " << std::strerror(errno) << std::endl;
+        logger->error("Unable to open file or file opening failed! Error message: {}\n", std::strerror(errno));
+        logger->flush();
     }
-
-    // 创建新的用户信息结构体
-    UserInfo* newUser = new UserInfo(clientSocket);
-
-    // 设置客户端连接为非阻塞模式
-    if (!IsSetSocketBlocking(clientSocket, false))
-        return;
-
-    if (newUser == nullptr) 
-    {
-        close(clientSocket);
-        printf("allocate memory for newUser Error In handleNewClientConnection");
-        return;
-    }
-
-
-    // 将新连接的事件添加到 epoll 实例中
-
-    struct epoll_event newEvent;
-    newEvent.events = EPOLLIN | EPOLLET; // 监听读事件并将EPOLL设为边缘触发(Edge Triggered)模式，
-    newEvent.data.ptr = newUser; // 将指针指向用户信息结构体
-
-    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, clientSocket, &newEvent) < 0)
-    {
-        printf("add new client event to epoll instance Error: %s (errno: %d) In handleNewClientConnection\n", strerror(errno), errno);
-        close(clientSocket);
-        delete newUser;
-        return;
-    }
-
-    if (!newUser->showInitMenu())
-        return;
 }
 
-void Server::handleClientData(UserInfo* userInfo,int epollfd)
+
+
+bool Server::showLoadMenu(UserInfo* user)
 {
-    // 处理已连接客户端的数据接收事件
-        if (userInfo->status == STATUS_PLAYING)
-        {
-            char buffer[1024];
-            int bytesRead = recv(userInfo->fd, buffer, sizeof(buffer), 0);
-            if (bytesRead == -1) {
-                userInfo->status = STATUS_OVER_QUIT;
-                close(userInfo->fd);
-                userInfo->Update_TopScore_RecentScore();
-                printf("Client[%d] recv Error: %s (errno: %d)\n", userInfo->fd, strerror(errno), errno);
-                return;
-            }
-            else if (bytesRead == 0) {
-                // 客户端连接已关闭
-                userInfo->status = STATUS_OVER_QUIT;
-                close(userInfo->fd);
-                userInfo->Update_TopScore_RecentScore();
-                return;
-            }
+    if (!clear(user))
+        return false;
 
-
-            // 处理接收到的数据
-            if (strcmp(buffer, KEY_DOWN) == 0)//下
-            {
-                if (userInfo->IsLegal(userInfo->shape, userInfo->form, userInfo->row + 1, userInfo->col) == 1) //判断方块向下移动一位后是否合法
-                {
-                    //方块下落后合法才进行以下操作
-                    if (!userInfo->DrawSpace(userInfo->shape, userInfo->form, userInfo->row, userInfo->col))//用空格覆盖当前方块所在位置
-                    {
-                        return;
-                    }
-
-                    userInfo->row++; //纵坐标自增（下一次显示方块时就相当于下落了一格了）
-
-                    if (!userInfo->DrawBlock(userInfo->shape, userInfo->form, userInfo->row, userInfo->col))
-                    {
-                        return;
-                    }
-                }
-            }
-            else if (strcmp(buffer, KEY_LEFT) == 0)//左
-            {
-                if (userInfo->IsLegal(userInfo->shape, userInfo->form, userInfo->row, userInfo->col - 1) == 1) //判断方块向左移动一位后是否合法
-                {
-                    //方块左移后合法才进行以下操作
-                    if (!userInfo->DrawSpace(userInfo->shape, userInfo->form, userInfo->row, userInfo->col))//用空格覆盖当前方块所在位置
-                    {
-                        return;
-                    }
-
-                    userInfo->col--; //横坐标自减（下一次显示方块时就相当于左移了一格了）
-
-                    if (!userInfo->DrawBlock(userInfo->shape, userInfo->form, userInfo->row, userInfo->col))
-                    {
-                        return;
-                    }
-                }
-            }
-            else if (strcmp(buffer, KEY_RIGHT) == 0)//右
-            {
-                if (userInfo->IsLegal(userInfo->shape, userInfo->form, userInfo->row, userInfo->col + 1) == 1) //判断方块向右移动一位后是否合法
-                {
-                    //方块右移后合法才进行以下操作
-                    if (!userInfo->DrawSpace(userInfo->shape, userInfo->form, userInfo->row, userInfo->col))//用空格覆盖当前方块所在位置
-                    {
-                        return;
-                    }
-                    userInfo->col++; //横坐标自增（下一次显示方块时就相当于右移了一格了）
-
-                    if (!userInfo->DrawBlock(userInfo->shape, userInfo->form, userInfo->row, userInfo->col))
-                    {
-                        return;
-                    }
-                }
-            }
-            else if (*buffer == ' ')
-            {
-                if (userInfo->IsLegal(userInfo->shape, (userInfo->form + 1) % 4, userInfo->row + 1, userInfo->col) == 1) //判断方块旋转后是否合法
-                {
-                    //方块旋转后合法才进行以下操作
-                    if (!userInfo->DrawSpace(userInfo->shape, userInfo->form, userInfo->row, userInfo->col))//用空格覆盖当前方块所在位置
-                    {
-                        return;
-                    }
-
-                    userInfo->row++; //纵坐标自增（总不能原地旋转吧）
-                    userInfo->form = (userInfo->form + 1) % 4; //方块的形态自增（下一次显示方块时就相当于旋转了）
-
-                    if (!userInfo->DrawBlock(userInfo->shape, userInfo->form, userInfo->row, userInfo->col))
-                    {
-                        return;
-                    }
-                }
-            }
-        }
-        else if (userInfo->status == STATUS_OVER_CONFIRMING)
-        {
-            char buffer[1024];
-            int bytesRead = recv(userInfo->fd, buffer, sizeof(buffer), 0);
-            if (bytesRead == -1) {
-                userInfo->status = STATUS_OVER_QUIT;
-                close(userInfo->fd);
-                printf("Client[%d] recv Error: %s (errno: %d)\n", userInfo->fd, strerror(errno), errno);
-                return;
-            }
-            else if (bytesRead == 0) {
-                printf("Client[%d] disconnect!\n", userInfo->fd);
-                // 客户端连接已关闭
-                userInfo->status = STATUS_OVER_QUIT;
-                close(userInfo->fd);
-                return;
-            }
-
-
-            if (*buffer == 'Y' || *buffer == 'y')
-            {
-
-                if (!userInfo->showGameDifficulty(epollfd))
-                {
-                    return ;
-                }
-
-                userInfo->status = STATUS_SELECT_GAME_DIFFICULTY;
-
-                userInfo->score = 0;
-            }
-            else if (*buffer == 'n' || *buffer == 'N')
-            {
-
-                // 在这里删除 g_playing_gamer 的元素
-                auto it = g_playing_gamer.find(userInfo->fd);
-                if (it != g_playing_gamer.end()) {
-                    g_playing_gamer.erase(it); // 从 map 中删除元素
-                }
-
-                userInfo->resetUserInfo();
-
-                if(!userInfo->showInitMenu())
-                    return;
-            }
-            else
-            {
-                if (!userInfo->outputText(WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "选择错误，请再次选择"))
-                    return;
-            }
-        }
-        else if (userInfo->status == STATUS_NOTSTART)
-        {
-            int temp = userInfo->ReceiveData(epollfd);
-            if (temp == -1)
-            {
-                delete userInfo;
-                return;
-            }
-            else if (temp == 1)
-            {
-                if (userInfo->receivedata == "1")
-                {   
-                    if (!userInfo->registerUser(epollfd))
-                        return;
-                     
-                    userInfo->status = STATUS_RECEIVE_USERNAME_REGISTER;
-                    userInfo->receivedata = "";
-                }
-                else if (userInfo->receivedata == "2")
-                {
-                    if (!userInfo->loadUser(epollfd))
-                        return;
-
-                    userInfo->status = STATUS_RECEIVE_USERNAME_LOAD;
-                    userInfo->receivedata = "";
-                }
-                else
-                {
-                    userInfo->receivedata = "";
-                    string emptyLine(4 * WINDOW_COL_COUNT, ' ');
-                    if (!userInfo->outputText(WINDOW_ROW_COUNT / 2 + 4, 1, COLOR_WHITE, emptyLine))
-                        return;
-                    if (!userInfo->outputText(WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "输入错误，请重新输入: "))
-                        return;
-                }
-            }
-        }
-        else if (userInfo->status == STATUS_RECEIVE_USERNAME_REGISTER)
-        {
-            int key = userInfo->receive_username_register(epollfd);
-
-            if (key == -1)
-            {
-                return;
-            }
-            else if (key == 1)
-            {
-                userInfo->status = STATUS_RECEIVE_PASSWORD_REGISTER;
-                userInfo->receivedata = "";
-            }
-        }
-        else if (userInfo->status == STATUS_RECEIVE_PASSWORD_REGISTER)
-        {
-            int key = userInfo->receive_password_register(epollfd);
-
-            if (key == -1)
-            {
-                return;
-            }
-            else if (key == 1)
-            {
-                userInfo->status = STATUS_REGISTER_OR_LOAD_OVER;
-                userInfo->receivedata = "";
-            }
-        }
-        else if (userInfo->status == STATUS_RECEIVE_USERNAME_LOAD)
-        {
-            int key = userInfo->receive_username_load(epollfd);
-
-            if (key == -1)
-            {
-                return;
-            }
-            else if (key == 1)
-            {
-                userInfo->status = STATUS_RECEIVE_PASSWORD_LOAD;
-                userInfo->receivedata = "";
-            }
-        }
-        else if (userInfo->status == STATUS_RECEIVE_PASSWORD_LOAD)
-        {
-            int key = userInfo->receive_password_load(epollfd);
-
-            if (key == -1)
-            {
-                return; 
-            }
-            else if (key == 1)
-            {
-                if (!userInfo->showLoadMenu())
-                    return;
-                userInfo->status = STATUS_LOGIN;
-                userInfo->receivedata = "";
-            }
-            else if (key==0)
-            {
-                userInfo->status = STATUS_REGISTER_OR_LOAD_OVER;
-                userInfo->receivedata = "";
-            }
-            
-        }
-        else if (userInfo->status == STATUS_LOGIN)
-        {
-            int key = userInfo->loginUser(epollfd);
-
-            if (key==-1)
-            {
-                return;
-            }
-            else if (key == 1)
-            {
-                userInfo->receivedata = "";
-                userInfo->status = STATUS_LOGIN_OVER;
-            }
-            else if (key == 2)
-            {
-                userInfo->receivedata = "";
-                userInfo->status = STATUS_LOGIN_OVER;
-            }
-            else if (key == 3)
-            {
-                userInfo->receivedata = "";
-                userInfo->status = STATUS_SELECT_GAME_DIFFICULTY;
-            }
-            else if (key == 4)
-            {
-                userInfo->receivedata = "";
-                userInfo->status = STATUS_NOTSTART;
-            }
-        }
-        else if (userInfo->status==STATUS_SELECT_GAME_DIFFICULTY)
-        {
-            int key = userInfo->select_game_difficulty(epollfd);
-
-            if (key == -1)
-            {
-                return;
-            }
-            else if (key == 1)
-            {
-                userInfo->receivedata = "";
-                userInfo->status = STATUS_PLAYING;
-            }
-            else if (key == 2)
-            {
-                userInfo->receivedata = "";
-                userInfo->status = STATUS_PLAYING;
-            }
-            else if (key == 3)
-            {
-                userInfo->receivedata = "";
-                userInfo->status = STATUS_PLAYING;
-            }
-
-        }
-        else if (userInfo->status == STATUS_LOGIN_OVER)
-        {
-            int key = userInfo->returnToLoadMenu(WINDOW_ROW_COUNT / 3 + 20, epollfd);
-
-            if (key == -1)
-            {
-                return;
-            }
-            else if (key == 1)
-            {
-                userInfo->status = STATUS_LOGIN;
-                userInfo->receivedata = "";
-            }
-        }
-        else if (userInfo->status == STATUS_REGISTER_OR_LOAD_OVER)
-        {
-            int key = userInfo->returnToInitMenu(epollfd);
-            if (key == -1)
-            {
-                return;
-            }
-            else if (key == 1)
-            {
-                userInfo->status = STATUS_NOTSTART;
-                userInfo->receivedata = "";
-            }
-        }
+    if (!outputText(user,WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请选择操作："))
+        return false;
+    if (!outputText(user,WINDOW_ROW_COUNT / 2 + 1, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "1. 我最近的成绩"))
+        return false;
+    if (!outputText(user,WINDOW_ROW_COUNT / 2 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "2. 全服top成绩"))
+        return false;
+    if (!outputText(user,WINDOW_ROW_COUNT / 2 + 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "3. 开始游戏"))
+        return false;
+    if (!outputText(user,WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "4. 返回服务"))
+        return false;
+    if (!outputText(user,WINDOW_ROW_COUNT / 2 + 6, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "你的选择是："))
+        return false;
+    return true;
 }
 
-void Server::processTimerEvent(int epollfd)
+bool Server::showRecentScores(UserInfo* user, int epollfd)
 {
-    for (auto i = g_playing_gamer.begin(); i != g_playing_gamer.end(); )
+    int i = 0;
+
+    if (!clear(user))
+        return false;
+
+    ifstream file("userdata.csv");
+
+    if (!file.is_open())
     {
-        // 执行一些条件检查
-        if (i->second->status == STATUS_OVER_CONFIRMING)
-        {
-            auto eraseIter = i++;
-            g_playing_gamer.erase(eraseIter); // 先使用后缀递增运算符，然后再删除元素
-        }
-        else if (i->second->status == STATUS_OVER_QUIT)
-        {
-            auto eraseIter = i++;
-            printf("Client[%d] disconnected!\n", eraseIter->second->fd);
-            close(eraseIter->second->fd);
+        //std::cerr << "Unable to open file or file opening failed! Error message: " << std::strerror(errno) << std::endl;
+        logger->error("Unable to open file or file opening failed! Error message: {}\n", strerror(errno));
+        logger->flush();
+        return false;
+    }
 
-            auto it = g_playing_gamer.find(eraseIter->second->fd);
-            if (it != g_playing_gamer.end()) {
-                g_playing_gamer.erase(eraseIter); // 从 map 中删除元素
-            }
-            delete eraseIter->second;
+    string line;
+    getline(file, line); // 跳过第一行
 
-            if (!epoll_ctl(epollfd, EPOLL_CTL_DEL, eraseIter->second->fd, nullptr)) {
-                perror("epoll_ctl EPOLL_CTL_DEL");
+    while (getline(file, line))
+    {
+        istringstream ss(line);
+
+        string cell;
+
+        getline(ss, cell, ',');//跳过用户名
+
+        if (cell == user->username)
+        {
+            getline(ss, cell, ',');//跳过密码
+            getline(ss, cell, ',');//跳过最高分
+            getline(ss, cell, ',');//跳过最高分对应时间
+
+            while (getline(ss, cell, ','))
+            {
+                if (cell != "")
+                {
+                    if (!outputText(user,WINDOW_ROW_COUNT / 3 + i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, cell))
+                        return false;
+                    i++;
+                }
             }
+            file.close();
+            break;
         }
         else
         {
-            i->second->handleTimedUserLogic();
-
-            i++; // 移动到下一个元素
-        }
-    }
-}
-
-void Server::processEvents(int readyCount, epoll_event* events, int epollfd)
-{
-    for (int i = 0; i < readyCount; ++i)
-    {
-        UserInfo* userInfo = (UserInfo*)(events[i].data.ptr);
-        int currentFd = events[i].data.fd;
-
-        if (currentFd == serverSocket)
-        {
-            handleNewClientConnection(epollfd);
-        }
-        else if (currentFd == timerfd)
-        {
-            if (!g_playing_gamer.empty())
-            {
-                processTimerEvent(epollfd);
-            }
-        }
-        else
-        {
-            handleClientData(userInfo,epollfd);
-        }
-    }
-
-}
-
-void Server::Run(int epollfd)
-{
-    while (1)
-    {
-        struct epoll_event events[MAXSIZE];
-        int readyCount = epoll_wait(epollfd, events, MAXSIZE, -1);
-        if (readyCount == -1) {
-            printf("Failed on epoll_wait: %s (errno: %d)\n", strerror(errno), errno);
             continue;
         }
-        processEvents(readyCount, events ,epollfd);
     }
+
+    if (!outputText(user,WINDOW_ROW_COUNT / 2 + 20, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请按3返回菜单："))
+        return false;
+    return true;
+}
+
+bool Server::showTopScores(UserInfo* user, int epollfd)
+{
+    if (!loadPlayerData())
+        return false;
+
+    if (!clear(user))
+        return false;
+
+    ifstream file("userdata.csv");
+
+    vector<Player*> show;
+
+    if (!file.is_open())
+    {
+        //std::cerr << "Unable to open file or file opening failed! Error message: " << std::strerror(errno) << std::endl;
+        logger->error("Unable to open file or file opening failed! Error message: {}\n", std::strerror(errno));
+        logger->flush();
+        return false;
+    }
+
+    string line;
+    getline(file, line); // 跳过第一行
+
+    while (getline(file, line))
+    {
+        istringstream ss(line);
+        string cell;
+        Player* gamer = new Player;
+        getline(ss, gamer->playername, ',');//跳过用户名
+        getline(ss, gamer->password, ',');//跳过密码
+        getline(ss, cell, ',');//跳过最高分
+
+        if (cell != "")
+        {
+            gamer->Maximum_score = stoi(cell);
+        }
+        else
+        {
+            continue;
+        }
+
+        getline(ss, gamer->timestamp, ',');
+
+        show.push_back(gamer);
+    }
+
+    file.close();
+
+    sort(show.begin(), show.end(), cmp);
+
+    int i = 0;
+
+    if (show.size() <= 10)
+    {
+        for (auto& player : show)
+        {
+            string buffer = player->playername + " " + to_string(player->Maximum_score) + " " + player->timestamp;
+
+            if (!outputText(user,WINDOW_ROW_COUNT / 3 + i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, buffer))
+                return false;
+
+            i++;
+        }
+    }
+    else
+    {
+        for (auto& player : show)
+        {
+            string buffer = player->playername + " " + to_string(player->Maximum_score) + " " + player->timestamp;
+
+            if (!outputText(user,WINDOW_ROW_COUNT / 3 + i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, buffer))
+                return false;
+
+            i++;
+
+            if (i == 10)
+            {
+                break;
+            }
+        }
+    }
+
+    if (!outputText(user,WINDOW_ROW_COUNT / 2 + 20, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请按3返回菜单："))
+        return false;
+    return true;
+}
+
+bool Server::showGameDifficulty(UserInfo* user, int epollfd)
+{
+    if (!clear(user))
+        return false;
+
+    if (!outputText(user,WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "1. 简单"))
+        return false;
+    if (!outputText(user,WINDOW_ROW_COUNT / 2 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "2. 普通"))
+        return false;
+    if (!outputText(user,WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "3. 困难"))
+        return false;
+
+    if (!outputText(user,WINDOW_ROW_COUNT / 2 + 6, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请选择操作："))
+        return false;
+    return true;
+}
+
+int Server::returnToLoadMenu(UserInfo* user, int i, int epollfd)
+{
+    i++;
+
+    int temp = this->ReceiveData(user,epollfd);
+
+    if (temp == -1)
+    {
+        delete user;
+        return -1;
+    }
+    else if (temp == 1)
+    {
+        if (user->receivedata == "3")
+        {
+            if (!this->showLoadMenu(user))
+                return -1;
+            return 1;
+        }
+        else
+        {
+            user->receivedata = "";
+            string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+            if (!outputText(user,WINDOW_ROW_COUNT / 2 + i, 1, COLOR_WHITE, emptyLine))
+                return -1;
+            if (!outputText(user,WINDOW_ROW_COUNT / 2 + i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "输入错误，请重新输入:"))
+                return -1;
+        }
+    }
+
+    return 2;
+}
+
+int Server::receive_username_register(UserInfo* user, int epollfd)
+{
+    string username = "";
+
+    int temp = this->ReceiveData(user,epollfd);
+
+    if (temp == -1)
+    {
+        delete user;
+        return -1;
+    }
+    else if (temp == 1)
+    {
+        if (user->receivedata != "")
+        {
+            username = user->receivedata;
+            user->receivedata = "";
+        }
+        else
+        {
+            string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+            if (!outputText(user,WINDOW_ROW_COUNT / 2 + 1, 1, COLOR_WHITE, emptyLine))
+                return -1;
+
+            if (!outputText(user,WINDOW_ROW_COUNT / 2 + 1, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "用户名不可为空，请重新输入用户名："))
+                return -1;
+        }
+    }
+
+    if (username != "")
+    {
+        if (isUserExists(username))
+        {
+            string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+            if (!outputText(user,WINDOW_ROW_COUNT / 2 + 1, 1, COLOR_WHITE, emptyLine))
+                return -1;
+
+            if (!outputText(user,WINDOW_ROW_COUNT / 2 + 1, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "该用户名已被注册，请选择其他用户名:"))
+                return -1;
+
+            user->receivedata = "";
+            return 0;
+        }
+        else
+        {
+            user->username = username;
+
+            if (!outputText(user,WINDOW_ROW_COUNT / 2 + 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请输入密码："))
+                return false;
+
+            return 1;
+        }
+    }
+
+    return 2;
+}
+
+int Server::receive_password_register(UserInfo* user, int epollfd)
+{
+    if (!loadPlayerData())
+        return false;
+
+    string password = "";
+
+    int temp = this->ReceiveData(user,epollfd);
+
+    if (temp == -1)
+    {
+        delete user;
+        return -1;
+    }
+    else if (temp == 1)
+    {
+        if (user->receivedata != "")
+        {
+            password = user->receivedata;
+            user->receivedata = "";
+        }
+        else
+        {
+            string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+            if (!outputText(user,WINDOW_ROW_COUNT / 2 + 3, 1, COLOR_WHITE, emptyLine))
+                return -1;
+
+            if (!outputText(user,WINDOW_ROW_COUNT / 2 + 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "密码不可为空，请重新输入密码："))
+                return -1;
+            user->receivedata = "";
+        }
+    }
+
+    if (password != "")
+    {
+        user->password = password;
+
+        this->saveUserData(user);
+
+        if (!outputText(user,WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "注册成功！"))
+            return -1;
+
+        if (!outputText(user,WINDOW_ROW_COUNT / 2 + 5, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请按3返回上级菜单："))
+            return -1;
+
+        return 1;
+    }
+    return 0;
+}
+
+int Server::receive_username_load(UserInfo* user, int epollfd)
+{
+    string username = "";
+
+    int temp = this->ReceiveData(user,epollfd);
+
+    if (temp == -1)
+    {
+        delete user;
+        return -1;
+    }
+    else if (temp == 1)
+    {
+        if (user->receivedata != "")
+        {
+            username = user->receivedata;
+            user->receivedata = "";
+        }
+        else
+        {
+            string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+            if (!outputText(user,WINDOW_ROW_COUNT / 2 + 1, 1, COLOR_WHITE, emptyLine))
+                return -1;
+
+            if (!outputText(user,WINDOW_ROW_COUNT / 2 + 1, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "用户名不可为空，请重新输入用户名："))
+                return -1;
+        }
+    }
+
+    if (username != "")
+    {
+        user->username = username;
+
+        if (!outputText(user,WINDOW_ROW_COUNT / 2 + 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请输入密码："))
+            return false;
+
+        return 1;
+    }
+
+    return 2;
+}
+
+int Server::receive_password_load(UserInfo* user, int epollfd)
+{
+    if (!loadPlayerData())
+        return false;
+
+    string password = "";
+
+    int temp = this->ReceiveData(user,epollfd);
+
+    if (temp == -1)
+    {
+        delete user;
+        return -1;
+    }
+    else if (temp == 1)
+    {
+        if (user->receivedata != "")
+        {
+            password = user->receivedata;
+            user->receivedata = "";
+        }
+        else
+        {
+            string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+            if (!outputText(user,WINDOW_ROW_COUNT / 2 + 3, 1, COLOR_WHITE, emptyLine))
+                return -1;
+
+            if (!outputText(user,WINDOW_ROW_COUNT / 2 + 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "密码不可为空，请重新输入密码："))
+                return -1;
+        }
+    }
+
+    if (password != "")
+    {
+        user->password = password;
+
+        for (const auto& player : players)
+        {
+            if (player->playername == user->username && player->password == user->password)
+            {
+                user->Maximum_score = player->Maximum_score;
+
+                for (const auto& score : player->scores)
+                {
+                    user->scores.push(score);
+                }
+                return 1;
+            }
+        }
+
+        if (!outputText(user,WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "登录失败，用户名或密码错误。"))
+            return -1;
+
+        if (!outputText(user,WINDOW_ROW_COUNT / 2 + 5, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "按3返回上级菜单:"))
+            return -1;
+        return 0;
+    }
+    return 2;
+}
+
+int Server::loginUser(UserInfo* user, int epollfd)
+{
+    int temp = this->ReceiveData(user,epollfd);
+    if (temp == -1)
+    {
+        delete user;
+        return -1;
+    }
+    else if (temp == 1)
+    {
+        if (user->receivedata == "1")
+        {
+            if (!this->showRecentScores(user,epollfd))
+            {
+                return -1;
+            }
+
+            return 1;
+        }
+        else if (user->receivedata == "2")
+        {
+            if (!this->showTopScores(user,epollfd))
+            {
+                return -1;
+            }
+
+            return 2;
+        }
+        else if (user->receivedata == "3")
+        {
+            if (!this->showGameDifficulty(user,epollfd))
+            {
+                return -1;
+            }
+            return 3;
+        }
+        else if (user->receivedata == "4")
+        {
+            if (!this->showInitMenu(user))
+            {
+                return -1;
+            }
+
+            return 4;
+        }
+        else
+        {
+            if (!outputText(user,WINDOW_ROW_COUNT / 2 + 7, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "输入错误，请重新输入: "))
+                return -1;
+            user->receivedata = "";
+        }
+    }
+    return 5;
+}
+
+bool Server::process_STATUS_NOTSTART(UserInfo* user, int epollfd)
+{
+    int temp = this->ReceiveData(user, epollfd);
+    if (temp == -1)
+    {
+        delete user;
+        return false;
+    }
+    else if (temp == 1)
+    {
+        if (user->receivedata == "1")
+        {
+            if (!this->registerUser(user, epollfd))
+                return false;
+            user->status = STATUS_RECEIVE_USERNAME_REGISTER;
+            user->receivedata = "";
+        }
+        else if (user->receivedata == "2")
+        {
+            if (!this->loadUser(user, epollfd))
+                return false;
+            user->status = STATUS_RECEIVE_USERNAME_LOAD;
+            user->receivedata = "";
+        }
+        else
+        {
+            user->receivedata = "";
+            std::string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+            if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 1, COLOR_WHITE, emptyLine))
+                return false;
+            if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "输入错误，请重新输入: "))
+                return false;
+        }
+    }
+    return true;
+}
+
+bool Server::process_STATUS_RECEIVE_USERNAME_REGISTER(UserInfo* user, int epollfd)
+{
+    if (!loadPlayerData())
+    {
+        return false;
+    }
+
+    int key = this->receive_username_register(user, epollfd);
+
+    if (key == -1) {
+        return false;
+    }
+    else if (key == 1) {
+        user->status = STATUS_RECEIVE_PASSWORD_REGISTER;
+        user->receivedata = "";
+    }
+    return true;
+}
+
+bool Server::process_STATUS_RECEIVE_PASSWORD_REGISTER(UserInfo* user, int epollfd)
+{
+    int key = this->receive_password_register(user, epollfd);
+
+    if (key == -1)
+    {
+        return false;
+    }
+    else if (key == 1)
+    {
+        user->status = STATUS_REGISTER_OR_LOAD_OVER;
+        user->receivedata = "";
+    }
+    return true;
+}
+
+bool Server::process_STATUS_RECEIVE_USERNAME_LOAD(UserInfo* user, int epollfd)
+{
+    int key = this->receive_username_load(user, epollfd);
+
+    if (key == -1)
+    {
+        return false;
+    }
+    else if (key == 1)
+    {
+        user->status = STATUS_RECEIVE_PASSWORD_LOAD;
+        user->receivedata = "";
+    }
+    return true;
+}
+
+bool Server::process_STATUS_RECEIVE_PASSWORD_LOAD(UserInfo* user, int epollfd)
+{
+    int key = this->receive_password_load(user, epollfd);
+
+    if (key == -1)
+    {
+        return false;
+    }
+    else if (key == 1)
+    {
+        if (!this->showLoadMenu(user))
+            return false;
+        user->status = STATUS_LOGIN;
+        user->receivedata = "";
+    }
+    else if (key == 0)
+    {
+        user->status = STATUS_REGISTER_OR_LOAD_OVER;
+        user->receivedata = "";
+    }
+    return true;
+}
+
+bool Server::process_STATUS_LOGIN(UserInfo* user, int epollfd) 
+{
+    int key = this->loginUser(user, epollfd);
+
+    if (key == -1)
+    {
+        return false; 
+    }
+    else if (key == 1)
+    {
+        user->receivedata = "";
+        user->status = STATUS_LOGIN_OVER;
+    }
+    else if (key == 2)
+    {
+        user->receivedata = "";
+        user->status = STATUS_LOGIN_OVER;
+    }
+    else if (key == 3)
+    {
+        user->receivedata = "";
+        user->status = STATUS_SELECT_GAME_DIFFICULTY;
+    }
+    else if (key == 4)
+    {
+        user->receivedata = "";
+        user->status = STATUS_NOTSTART;
+    }
+    return true;
+}
+
+bool Server::process_STATUS_LOGIN_OVER(UserInfo* user, int epollfd)
+{
+    int key = this->returnToLoadMenu(user, WINDOW_ROW_COUNT / 3 + 20, epollfd);
+
+    if (key == -1)
+    {
+        return false;
+    }
+    else if (key == 1)
+    {
+        user->status = STATUS_LOGIN;
+        user->receivedata = "";
+    }
+    return true;
+}
+
+bool Server::process_STATUS_REGISTER_OR_LOAD_OVER(UserInfo* user, int epollfd)
+{
+    int key = this->returnToInitMenu(user, epollfd);
+    if (key == -1)
+    {
+        return false;
+    }
+    else if (key == 1)
+    {
+        user->status = STATUS_NOTSTART;
+        user->receivedata = "";
+    }
+    return true;
 }

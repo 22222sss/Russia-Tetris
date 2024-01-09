@@ -1,5 +1,5 @@
 #pragma once
-#include"Tetris.h"
+#include"Public.h"
 #ifndef Player_H
 #define Player_H
 
