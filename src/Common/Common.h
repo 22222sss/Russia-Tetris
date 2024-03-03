@@ -1,6 +1,6 @@
 #pragma once
-#ifndef Public_H
-#define Public_H
+#ifndef Common_H
+#define Common_H
 
 #include <iostream>
 #include <cstdio>
@@ -27,10 +27,22 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/basic_file_sink.h>
 
+#include <event2/event.h>  
+#include <event2/bufferevent.h>  
+#include <event2/listener.h>  
+#include <event2/bufferevent.h>  
+#include <event2/buffer.h>  
+#include <event2/util.h>
+#include <event2/thread.h>
+
+#include <event.h>
+#include <time.h>
+
+
 using namespace std;
 
 #define MAXSIZE 2048
-#define DEFAULT_PORT 9997// 指定端口为9999
+#define DEFAULT_PORT 9999// 指定端口为9999
 #define BUFFSIZE 2048
 #define MAXLINK 2048
 
@@ -93,22 +105,5 @@ enum GameStatus
     STATUS_SELECT_GAME_DIFFICULTY
 };
 
-//设置非阻塞/阻塞套接字
-bool IsSetSocketBlocking(int socket, bool blocking);
-
-//颜色设置
-int Color(int c);
-
-//初始化方块信息
-void InitBlockInfo();
-
-// 检查用户是否存在
-bool isUserExists(const std::string& username);
-
-// 读取用户数据文件，初始化users向量
-bool loadPlayerData();
-
-//获取目前时间
-string currenttime();
 
 #endif
