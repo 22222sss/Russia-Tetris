@@ -16,9 +16,10 @@ extern map<int, User*> users;
 
 extern shared_ptr<spdlog::logger> logger;
 
-EventLoop::EventLoop(int serverSocket, int timerfd) : serverSocket(serverSocket), timerfd(timerfd) {}
+extern map<evutil_socket_t, struct event*> event;
 
-void EventLoop::handleNewClientConnection(int epollfd)
+
+void handleNewClientConnection(int serverSocket, short events, void* arg)
 {
     int clientSocket = accept(serverSocket, NULL, NULL);
     if (clientSocket == -1)
@@ -50,25 +51,21 @@ void EventLoop::handleNewClientConnection(int epollfd)
 
     users.insert(make_pair(clientSocket, newUser));
 
+    // 创建并添加客户端数据事件
+    struct event_base* base = (event_base*)arg;
+
+    // 创建并添加客户端套接字事件
+    struct event* clientEvent = event_new(base, clientSocket, EV_READ | EV_PERSIST, handleClientData, (void*)newUser);
+
+    event.insert(make_pair(clientSocket, clientEvent));
+
+    event_add(clientEvent, NULL);
+
     // 设置客户端连接为非阻塞模式
     if (!IsSetSocketBlocking(clientSocket, false))
         return;
 
-    // 将新连接的事件添加到 epoll 实例中
-
-    struct epoll_event newEvent;
-    newEvent.events = EPOLLIN | EPOLLET; // 监听读事件并将EPOLL设为边缘触发(Edge Triggered)模式，
-    newEvent.data.ptr = newUser; // 将指针指向用户信息结构体
-
-    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, clientSocket, &newEvent) < 0)
-    {
-        //printf("add new client event to epoll instance Error: %s (errno: %d) In handleNewClientConnection\n", strerror(errno), errno);
-        logger->error("add new client event to epoll instance Error: {} (errno: {}) In handleNewClientConnection\n", strerror(errno), errno);
-        logger->flush();
-        close(clientSocket);
-        delete newUser;
-        return;
-    }
+   
 
     std::unique_ptr<UImanage> UI(new UImanage);
 
@@ -76,15 +73,13 @@ void EventLoop::handleNewClientConnection(int epollfd)
         return;
 }
 
-void EventLoop::handleClientData(User* user)
+void handleClientData(int clientSocket, short events, void* arg)
 {
-    //std::unique_ptr<Server> server(new Server);
+    User* user = (User*)arg;
 
-    //std::unique_ptr<TetrisGame> game(new TetrisGame);
+    std::unique_ptr<Server> server(new Server);
 
-    Server* server = new Server;
-
-    TetrisGame* game = new TetrisGame;
+    std::unique_ptr<TetrisGame> game(new TetrisGame);
 
     // 处理已连接客户端的数据接收事件
     if (user->getStatus() == STATUS_PLAYING)
@@ -168,7 +163,7 @@ void EventLoop::handleClientData(User* user)
     }
 }
 
-void EventLoop::processBlockDown(User* user)
+void processBlockDown(User* user)
 {
     std::unique_ptr<TetrisGame> game(new TetrisGame);
 
@@ -268,7 +263,7 @@ void EventLoop::processBlockDown(User* user)
     }
 }
 
-void EventLoop::handleTimedUserLogic(User* user)
+void handleTimedUserLogic(User* user)
 {
     // 获取当前时间
     user->setCurrentTime(std::chrono::steady_clock::now());
@@ -287,7 +282,7 @@ void EventLoop::handleTimedUserLogic(User* user)
     }
 }
 
-void EventLoop::processTimerEvent()
+void processTimerEvent(int timerfd, short events, void* arg)
 {
     if (!users.empty())
     {
@@ -300,6 +295,17 @@ void EventLoop::processTimerEvent()
                 //printf("Client[%d] disconnected!\n", eraseIter->second->fd);
                 logger->info("Client[{}] disconnected!\n", eraseIter->second->getFd());
                 logger->flush();
+
+                // 删除特定文件描述符对应的事件
+                auto it1 = event.find(eraseIter->second->getFd());
+
+                if (it1 != event.end())
+                {
+                    struct event* ev_to_delete = it1->second;
+                    event_del(ev_to_delete);
+                    event_free(ev_to_delete);
+                    event.erase(it1); // 从哈希表中删除对应的映射
+                }
 
                 close(eraseIter->second->getFd());
 
@@ -322,45 +328,5 @@ void EventLoop::processTimerEvent()
             }
         }
     }
-
 }
 
-
-void EventLoop::processEvents(int readyCount, epoll_event* events, int epollfd)
-{
-    for (int i = 0; i < readyCount; ++i)
-    {
-        User* user = (User*)(events[i].data.ptr);
-        int currentFd = events[i].data.fd;
-
-        if (currentFd == serverSocket)
-        {
-            this->handleNewClientConnection(epollfd);
-        }
-        else if (currentFd == timerfd)
-        {
-            this->processTimerEvent();
-        }
-        else
-        {
-            this->handleClientData(user);
-        }
-    }
-
-}
-
-void EventLoop::Run(int epollfd)
-{
-    while (1)
-    {
-        struct epoll_event events[MAXSIZE];
-        int readyCount = epoll_wait(epollfd, events, MAXSIZE, -1);
-        if (readyCount == -1) 
-        {
-            logger->error("Failed on epoll_wait: {} (errno: {})\n", strerror(errno), errno);
-            logger->flush();
-            continue;
-        }
-        processEvents(readyCount, events, epollfd);
-    }
-}

@@ -14,6 +14,8 @@ map<int, User*> users = {};
 
 Block blockDefines[7][4] = { 0 };
 
+map<evutil_socket_t, struct event*> event = {};
+
 // 创建 spdlog::logger 对象
 std::shared_ptr<spdlog::logger> logger = spdlog::basic_logger_mt("logger", "log.txt");
 
@@ -50,61 +52,47 @@ int main()
         return -1;
     }
 
-    int epollfd = epoll_create(MAXSIZE);
-    if (epollfd < 0)	//创建epoll实例
-    {
-        close(serverSocket);
-        //printf("epoll_create Error: %s (errno: %d)\n", strerror(errno), errno);
-        logger->error("epoll_create Error: {} (errno: {})\n", strerror(errno), errno);
+    // 初始化 libevent
+    struct event_base* base = event_base_new();
+    if (!base) {
+        logger->error("Error initializing libevent: {} (errno: {})\n", strerror(errno), errno);
         logger->flush();
-        exit(-1);
-    }
 
-    struct epoll_event event;
-    event.events = EPOLLIN;
-    event.data.fd = serverSocket;
-
-    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, serverSocket, &event) == -1)
-    {
-        //printf("add server socket to epoll Error: %s (errno: %d)\n", strerror(errno), errno);
-        logger->error("add server socket to epoll Error: {} (errno: {})\n", strerror(errno), errno);
-        logger->flush();
-        close(serverSocket);
-        close(epollfd);
-        return -1;
-    }
-
-    // 创建定时器
-    int timerfd = timerfd_create(CLOCK_MONOTONIC, 0);
-    struct itimerspec timer_spec;
-    timer_spec.it_interval.tv_sec = 0;  // 避免重复触发
-    timer_spec.it_interval.tv_nsec = 0;
-    timer_spec.it_value.tv_sec = 1;     // 初始延时一秒
-    timer_spec.it_value.tv_nsec = 0;
-    timerfd_settime(timerfd, 0, &timer_spec, NULL);
-
-
-    // 将定时器加入 epoll 监听集合
-    struct epoll_event timer_event;
-    timer_event.events = EPOLLIN;
-    timer_event.data.fd = timerfd;
-
-    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, timerfd, &timer_event) == -1)
-    {
-        //printf("add timerfd to epoll Error: %s (errno: %d)\n", strerror(errno), errno);
-        logger->error("add timerfd to epoll Error: {} (errno: {})\n", strerror(errno), errno);
-        logger->flush();
-        close(serverSocket);
-        close(epollfd);
         return 1;
     }
 
+
+
+    //创建并添加服务器套接字事件
+    struct event* serverEvent = event_new(base, serverSocket, EV_READ | EV_PERSIST, handleNewClientConnection, (void*)base);
+
+    if (!serverEvent)
+    {
+        logger->error("Error creating serverEvent.");
+        logger->flush();
+        return 1;
+    }
+
+    event_add(serverEvent, NULL);
+
+
+    // 创建定时器事件
+    struct event* timerEvent = event_new(base, -1, EV_PERSIST, processTimerEvent, NULL);
+    if (!timerEvent) {
+        logger->error("Error creating timer event.");
+        logger->flush();
+        return 1;
+    }
+
+    // 设置定时器的超时时间为 0.1 秒
+    struct timeval delay = { 0, 100000 }; // 100000 微秒 = 0.1 秒
+
+    event_add(timerEvent, &delay);
+
+
     printf("======waiting for client's request======\n");
 
-    EventLoop eventloop(serverSocket, timerfd);
-
-    eventloop.Run(epollfd);
-
+    event_base_dispatch(base);
 
     return 0;
 }

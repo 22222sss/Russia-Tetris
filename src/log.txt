@@ -682,3 +682,11 @@
 
 [2024-03-03 09:07:45.925] [logger] [info] Client[7] disconnected!
 
+[2024-03-03 10:04:13.133] [logger] [info] Client[8], welcome!
+
+[2024-03-03 10:05:07.353] [logger] [info] Client[8] disconnect!
+
+[2024-03-03 10:05:07.385] [logger] [info] Client[8] disconnected!
+
+[2024-03-03 10:06:05.295] [logger] [info] Client[8], welcome!
+
