@@ -1,14 +1,16 @@
-#include"Player.h"
-#include"Public.h"
-#include"Public_game.h"
-#include"UserInfo.h"
-#include"Game.h"
-#include"EventLoop.h"
-#include"UserInfo.h"
+#include"../Server/Server.h"
+#include"../Common/Common.h"
+#include"../Utility/Utility.h"
+#include"../PlayerInfo/PlayerInfo.h"
+#include"../TetrisGame/TetrisGame.h"
+#include"../EventLoop/EventLoop.h"
+#include"../User/User.h"
+#include"../UImanage/UImanage.h"
+#include"../Filedata_manage/Filedata.h"
 
-vector<Player*> players = {};
+vector<PlayerInfo*> players = {};
 
-map<int, UserInfo*> g_playing_gamer = {};
+map<int, User*> users = {};
 
 Block blockDefines[7][4] = { 0 };
 
@@ -101,12 +103,8 @@ int main()
 
     EventLoop eventloop(serverSocket, timerfd);
 
-    Server* server = new Server;
-
-    Game* game = new Game;
-
-    eventloop.Run(server, game, epollfd);
+    eventloop.Run(epollfd);
 
 
-	return 0;
+    return 0;
 }
