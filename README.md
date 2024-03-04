@@ -404,6 +404,7 @@ ifconfig
 
 - `spdlog`：https://github.com/gabime/spdlog.git
 - `libevent`：https://github.com/yaoxiaokui/libevent-2.0.21-stable.git
+- `业务参考项目`：https://blog.csdn.net/chenlong_cxy/article/details/119680671
 
 同时也感谢其他没有明确写出来的开源组件提供给与维护者。
 
