@@ -690,3 +690,21 @@
 
 [2024-03-03 10:06:05.295] [logger] [info] Client[8], welcome!
 
+[2025-07-05 09:36:14.367] [logger] [info] Client[8], welcome!
+
+[2025-07-05 09:45:48.794] [logger] [error] Client[8] disconnect!
+
+[2025-07-05 09:45:48.875] [logger] [info] Client[8] disconnected!
+
+[2025-07-14 07:39:41.665] [logger] [info] Client[8], welcome!
+
+[2025-07-14 07:39:50.910] [logger] [info] Client[8] disconnect!
+
+[2025-07-14 07:39:50.910] [logger] [info] Client[8] disconnected!
+
+[2025-09-13 12:52:43.386] [logger] [info] Client[8], welcome!
+
+[2025-09-13 12:58:12.800] [logger] [error] Client[8] recv Error: No such file or directory (errno: 2)
+
+[2025-09-13 12:58:12.883] [logger] [info] Client[8] disconnected!
+
