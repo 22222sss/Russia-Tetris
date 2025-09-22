@@ -15,18 +15,18 @@
 
 
 
-    void handleNewClientConnection(int serverSocket, short events, void* arg);
+void handleNewClientConnection(int serverSocket, short events, void* arg);
 
-    void handleClientData(int clientSocket, short events, void* arg);
+void handleClientData(int clientSocket, short events, void* arg);
 
-    // 定义处理方块下降逻辑的函数
-    void processBlockDown(User* user);
+// 定义处理方块下降逻辑的函数
+void processBlockDown(User* user);
 
-    //处理定时触发逻辑
-    void handleTimedUserLogic(User* user);
+//处理定时触发逻辑
+void handleTimedUserLogic(User* user);
 
-    //没有键盘输入时，方块自动下降
-    void processTimerEvent(int timerfd, short events, void* arg);
+//没有键盘输入时，方块自动下降
+void processTimerEvent(int timerfd, short events, void* arg);
 
 
 

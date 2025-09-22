@@ -20,9 +20,8 @@ Server::Server() {}
 
 int Server::returnToInitMenu(User* user)
 {
-    std::unique_ptr<UImanage> UI(new UImanage);
-
-    int temp = this->ReceiveData(user);
+    
+    int temp = Server::ReceiveData(user);
     if (temp == -1)
     {
         //delete user;
@@ -32,13 +31,13 @@ int Server::returnToInitMenu(User* user)
     {
         if (user->getReceivedata() == "3")
         {
-            if (!UI->showInitMenu(user))
+            if (!UImanage::showInitMenu(user))
                 return -1;
             return 1;
         }
         else
         {
-            if(!UI->show_Error_Message(WINDOW_ROW_COUNT / 2 + 6,user))
+            if(!UImanage::show_Error_Message(WINDOW_ROW_COUNT / 2 + 6,user))
                 return -1;
             user->setReceivedata("");
         }
@@ -95,11 +94,9 @@ int Server::ReceiveData(User* user)
 
 int Server::returnToLoadMenu(User* user, int i)
 {
-    std::unique_ptr<UImanage> UI(new UImanage);
-
     i++;
 
-    int temp = this->ReceiveData(user);
+    int temp = Server::ReceiveData(user);
 
     if (temp == -1)
     {
@@ -110,7 +107,7 @@ int Server::returnToLoadMenu(User* user, int i)
     {
         if (user->getReceivedata() == "3")
         {
-            if (!UI->showLoadMenu(user))
+            if (!UImanage::showLoadMenu(user))
                 return -1;
             return 1;
         }
@@ -118,7 +115,7 @@ int Server::returnToLoadMenu(User* user, int i)
         {
             user->setReceivedata(""); 
 
-            if (!UI->show_Error_Message(WINDOW_ROW_COUNT / 2 + i, user))
+            if (!UImanage::show_Error_Message(WINDOW_ROW_COUNT / 2 + i, user))
                 return -1;
         }
     }
@@ -128,11 +125,11 @@ int Server::returnToLoadMenu(User* user, int i)
 
 int Server::receive_username_register(User* user)
 {
-    std::unique_ptr<UImanage> UI(new UImanage);
+    //std::unique_ptr<UImanage> UI(new UImanage);
 
     string username = "";
 
-    int temp = this->ReceiveData(user);
+    int temp = Server::ReceiveData(user);
 
     if (temp == -1)
     {
@@ -148,7 +145,7 @@ int Server::receive_username_register(User* user)
         }
         else
         {
-            if (!UI->show_Username_Empty_Error(WINDOW_ROW_COUNT / 2 + 1,user))
+            if (!UImanage::show_Username_Empty_Error(WINDOW_ROW_COUNT / 2 + 1,user))
             {
                 return -1;
             }
@@ -159,7 +156,7 @@ int Server::receive_username_register(User* user)
     {
         if (isUserExists(username))
         {
-            if (!UI->show_Username_Taken_Error(WINDOW_ROW_COUNT / 2 + 1, user))
+            if (!UImanage::show_Username_Taken_Error(WINDOW_ROW_COUNT / 2 + 1, user))
             {
                 return -1;
             }
@@ -170,7 +167,7 @@ int Server::receive_username_register(User* user)
         {
             user->setUsername(username);
 
-            if (!UI->show_Receive_Password(user))
+            if (!UImanage::show_Receive_Password(user))
             {
                 return -1;
             }
@@ -184,20 +181,12 @@ int Server::receive_username_register(User* user)
 
 int Server::receive_password_register(User* user)
 {
-    //std::unique_ptr<Filedata> filedata(new Filedata);
-
-    //std::unique_ptr<UImanage> UI(new UImanage);
-
-    Filedata* filedata = new Filedata;
-
-    UImanage* UI = new UImanage;
-
-    if (!filedata->loadPlayerData())
+    if (!Filedata::loadPlayerData())
         return false;
 
     string password = "";
 
-    int temp = this->ReceiveData(user);
+    int temp = Server::ReceiveData(user);
 
     if (temp == -1)
     {
@@ -213,7 +202,7 @@ int Server::receive_password_register(User* user)
         }
         else
         {
-            if (!UI->show_Password_Empty_Error(WINDOW_ROW_COUNT / 2 + 3,user))
+            if (!UImanage::show_Password_Empty_Error(WINDOW_ROW_COUNT / 2 + 3,user))
             {
                 return -1;
             }
@@ -225,9 +214,9 @@ int Server::receive_password_register(User* user)
     {
         user->setPassword(password);
 
-        filedata->saveNewUserData(user);
+        Filedata::saveNewUserData(user);
 
-        if (!UI->show_Register_Success(user))
+        if (!UImanage::show_Register_Success(user))
             return -1;
 
         return 1;
@@ -237,11 +226,11 @@ int Server::receive_password_register(User* user)
 
 int Server::receive_username_load(User* user)
 {
-    std::unique_ptr<UImanage> UI(new UImanage);
+    //std::unique_ptr<UImanage> UI(new UImanage);
 
     string username = "";
 
-    int temp = this->ReceiveData(user);
+    int temp = Server::ReceiveData(user);
 
     if (temp == -1)
     {
@@ -257,7 +246,7 @@ int Server::receive_username_load(User* user)
         }
         else
         {
-            if (!UI->show_Username_Empty_Error(WINDOW_ROW_COUNT / 2 + 1, user))
+            if (!UImanage::show_Username_Empty_Error(WINDOW_ROW_COUNT / 2 + 1, user))
             {
                 return -1;
             }
@@ -268,7 +257,7 @@ int Server::receive_username_load(User* user)
     {
         user->setUsername(username);
 
-        if (!UI->show_Receive_Password(user))
+        if (!UImanage::show_Receive_Password(user))
         {
             return -1;
         }
@@ -281,18 +270,18 @@ int Server::receive_username_load(User* user)
 
 int Server::receive_password_load(User* user)
 {
-    std::unique_ptr<UImanage> UI(new UImanage);
+    //std::unique_ptr<UImanage> UI(new UImanage);
 
-    std::unique_ptr<Filedata> filedata(new Filedata);
+    //std::unique_ptr<Filedata> filedata(new Filedata);
 
-    if (!filedata->loadPlayerData())
+    if (!Filedata::loadPlayerData())
     {
         return -1;
     }
 
     string password = "";
 
-    int temp = this->ReceiveData(user);
+    int temp = Server::ReceiveData(user);
 
     if (temp == -1)
     {
@@ -308,7 +297,7 @@ int Server::receive_password_load(User* user)
         }
         else
         {
-            if (!UI->show_Password_Empty_Error(WINDOW_ROW_COUNT / 2 + 3,user))
+            if (!UImanage::show_Password_Empty_Error(WINDOW_ROW_COUNT / 2 + 3,user))
             {
                 return -1;
             }
@@ -327,7 +316,7 @@ int Server::receive_password_load(User* user)
             }
         }
 
-        if (!UI->show_Login_Failure(user))
+        if (!UImanage::show_Login_Failure(user))
         {
             return -1;
         }
@@ -340,9 +329,7 @@ int Server::receive_password_load(User* user)
 
 int Server::loginUser(User* user)
 {
-    std::unique_ptr<UImanage> UI(new UImanage);
-
-    int temp = this->ReceiveData(user);
+    int temp = Server::ReceiveData(user);
     if (temp == -1)
     {
         //delete user;
@@ -352,7 +339,7 @@ int Server::loginUser(User* user)
     {
         if (user->getReceivedata() == "1")
         {
-            if (!UI->showRecentScores(user))
+            if (!UImanage::showRecentScores(user))
             {
                 return -1;
             }
@@ -361,7 +348,7 @@ int Server::loginUser(User* user)
         }
         else if (user->getReceivedata() == "2")
         {
-            if (!UI->showTopScores(user))
+            if (!UImanage::showTopScores(user))
             {
                 return -1;
             }
@@ -370,7 +357,7 @@ int Server::loginUser(User* user)
         }
         else if (user->getReceivedata() == "3")
         {
-            if (!UI->showGameDifficulty(user))
+            if (!UImanage::showGameDifficulty(user))
             {
                 return -1;
             }
@@ -379,7 +366,7 @@ int Server::loginUser(User* user)
         }
         else if (user->getReceivedata() == "4")
         {
-            if (!UI->showInitMenu(user))
+            if (!UImanage::showInitMenu(user))
             {
                 return -1;
             }
@@ -389,7 +376,7 @@ int Server::loginUser(User* user)
         else
         {
            
-            if (!UI->show_Error_Message(WINDOW_ROW_COUNT / 2 + 14, user))
+            if (!UImanage::show_Error_Message(WINDOW_ROW_COUNT / 2 + 14, user))
                 return -1;
 
             user->setReceivedata("");
@@ -400,9 +387,9 @@ int Server::loginUser(User* user)
 
 bool Server::process_STATUS_NOTSTART(User* user)
 {
-    std::unique_ptr<UImanage> UI(new UImanage);
+    //std::unique_ptr<UImanage> UI(new UImanage);
 
-    int temp = this->ReceiveData(user);
+    int temp = Server::ReceiveData(user);
     if (temp == -1)
     {
         //delete user;
@@ -413,7 +400,7 @@ bool Server::process_STATUS_NOTSTART(User* user)
         if (user->getReceivedata() == "1")
         {
             //◊¢≤·
-            if (!UI->show_Receive_Username(user))
+            if (!UImanage::show_Receive_Username(user))
                 return false;
             user->setStatus(STATUS_RECEIVE_USERNAME_REGISTER);
             user->setReceivedata("");
@@ -421,7 +408,7 @@ bool Server::process_STATUS_NOTSTART(User* user)
         else if (user->getReceivedata() == "2")
         {
             //µ«¬º
-            if (!UI->show_Receive_Username(user))
+            if (!UImanage::show_Receive_Username(user))
                 return false;
             user->setStatus(STATUS_RECEIVE_USERNAME_LOAD);
             user->setReceivedata("");
@@ -429,7 +416,7 @@ bool Server::process_STATUS_NOTSTART(User* user)
         else
         {
             user->setReceivedata("");
-            std::string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+            string emptyLine(4 * WINDOW_COL_COUNT, ' ');
             if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 1, COLOR_WHITE, emptyLine))
                 return false;
             if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, " ‰»Î¥ÌŒÛ£¨«Î÷ÿ–¬ ‰»Î: "))
@@ -441,14 +428,14 @@ bool Server::process_STATUS_NOTSTART(User* user)
 
 bool Server::process_STATUS_RECEIVE_USERNAME_REGISTER(User* user)
 {
-    std::unique_ptr<Filedata> filedata(new Filedata);
+    //std::unique_ptr<Filedata> filedata(new Filedata);
 
-    if (!filedata->loadPlayerData())
+    if (!Filedata::loadPlayerData())
     {
         return false;
     }
 
-    int key = this->receive_username_register(user);
+    int key = Server::receive_username_register(user);
 
     if (key == -1) {
         return false;
@@ -462,7 +449,7 @@ bool Server::process_STATUS_RECEIVE_USERNAME_REGISTER(User* user)
 
 bool Server::process_STATUS_RECEIVE_PASSWORD_REGISTER(User* user)
 {
-    int key = this->receive_password_register(user);
+    int key = Server::receive_password_register(user);
 
     if (key == -1)
     {
@@ -478,7 +465,7 @@ bool Server::process_STATUS_RECEIVE_PASSWORD_REGISTER(User* user)
 
 bool Server::process_STATUS_RECEIVE_USERNAME_LOAD(User* user)
 {
-    int key = this->receive_username_load(user);
+    int key = Server::receive_username_load(user);
 
     if (key == -1)
     {
@@ -494,9 +481,9 @@ bool Server::process_STATUS_RECEIVE_USERNAME_LOAD(User* user)
 
 bool Server::process_STATUS_RECEIVE_PASSWORD_LOAD(User* user)
 {
-    std::unique_ptr<UImanage> UI(new UImanage);
+    //std::unique_ptr<UImanage> UI(new UImanage);
 
-    int key = this->receive_password_load(user);
+    int key = Server::receive_password_load(user);
 
     if (key == -1)
     {
@@ -504,7 +491,7 @@ bool Server::process_STATUS_RECEIVE_PASSWORD_LOAD(User* user)
     }
     else if (key == 1)
     {
-        if (!UI->showLoadMenu(user))
+        if (!UImanage::showLoadMenu(user))
             return false;
         user->setStatus(STATUS_LOGIN);
         user->setReceivedata("");
@@ -519,7 +506,7 @@ bool Server::process_STATUS_RECEIVE_PASSWORD_LOAD(User* user)
 
 bool Server::process_STATUS_LOGIN(User* user)
 {
-    int key = this->loginUser(user);
+    int key = Server::loginUser(user);
 
     if (key == -1)
     {
@@ -550,7 +537,7 @@ bool Server::process_STATUS_LOGIN(User* user)
 
 bool Server::process_STATUS_LOGIN_OVER(User* user)
 {
-    int key = this->returnToLoadMenu(user, WINDOW_ROW_COUNT / 3 + 20);
+    int key = Server::returnToLoadMenu(user, WINDOW_ROW_COUNT / 3 + 20);
 
     if (key == -1)
     {
@@ -566,7 +553,7 @@ bool Server::process_STATUS_LOGIN_OVER(User* user)
 
 bool Server::process_STATUS_REGISTER_OR_LOAD_OVER(User* user)
 {
-    int key = this->returnToInitMenu(user);
+    int key = Server::returnToInitMenu(user);
     if (key == -1)
     {
         return false;

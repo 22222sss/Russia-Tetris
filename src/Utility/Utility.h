@@ -37,6 +37,6 @@ bool outputText(User* user, int row, int col, int n, string s);
 
 bool outputgrade(User* user, int row, int col, int n, string s, int grade);
 
-
+bool isNumber(const std::string& s);// 检查字符串是否为数字
 
 #endif

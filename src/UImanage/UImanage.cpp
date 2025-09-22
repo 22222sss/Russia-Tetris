@@ -12,7 +12,7 @@ UImanage::UImanage(){}
 
 bool UImanage::showInitMenu(User* user)
 {
-    if (!this->clear(user))
+    if (!UImanage::clear(user))
         return false;
 
     if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请选择操作："))
@@ -29,7 +29,7 @@ bool UImanage::showInitMenu(User* user)
 
 bool UImanage::show_Receive_Username(User* user)
 {
-    if (!this->clear(user))
+    if (!UImanage::clear(user))
         return false;
 
     if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请输入用户名："))
@@ -109,7 +109,7 @@ bool UImanage::show_Login_Failure(User* user)
 
 bool UImanage::showLoadMenu(User* user)
 {
-    if (!this->clear(user))
+    if (!UImanage::clear(user))
         return false;
 
     if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请选择操作："))
@@ -129,16 +129,15 @@ bool UImanage::showLoadMenu(User* user)
 
 bool UImanage::showRecentScores(User* user)
 {
-    std::unique_ptr<Filedata> filedata(new Filedata);
 
     int i = 0;
 
-    if (!this->clear(user))
+    if (!UImanage::clear(user))
         return false;
 
-    vector<string> temp =filedata->Read_recent_grades(user);
+    vector<string> temp = Filedata::Read_recent_grades(user);
 
-    if (temp.front() == "-1")
+    if (temp.empty() || temp.front() == "-1")
     {
         return false;
     }
@@ -161,9 +160,8 @@ bool UImanage::showRecentScores(User* user)
 
 bool UImanage::showTopScores(User* user)
 {
-    std::unique_ptr<Filedata> filedata(new Filedata);
-
-    if (!filedata->loadPlayerData())
+    
+    if (!Filedata::loadPlayerData())
         return false;
 
     ifstream file("userdata.csv");//相对路径是相对于你的可执行文件所在的目录的
@@ -177,22 +175,22 @@ bool UImanage::showTopScores(User* user)
         return false;
     }
 
-    vector<PlayerInfo*> show = filedata->Read_AllpalyerInfo(file);
+    vector<PlayerInfo*> show = Filedata::Read_AllpalyerInfo(file);
 
-    if (!this->clear(user))
+    if (!UImanage::clear(user))
         return false;
 
     sort(show.begin(), show.end(), cmp_easy);
 
-    this->showTopScores_Easy(WINDOW_ROW_COUNT / 3, WINDOW_COL_COUNT / 3, show, user);
+    UImanage::showTopScores_Easy(WINDOW_ROW_COUNT / 3, WINDOW_COL_COUNT / 3, show, user);
 
     sort(show.begin(), show.end(), cmp_normal);
 
-    this->showTopScores_Normal(WINDOW_ROW_COUNT / 3, WINDOW_COL_COUNT + 20, show, user);   
+    UImanage::showTopScores_Normal(WINDOW_ROW_COUNT / 3, WINDOW_COL_COUNT + 20, show, user);
 
     sort(show.begin(), show.end(), cmp_diffcult);
 
-    this->showTopScores_Diffcult(WINDOW_ROW_COUNT / 3, WINDOW_COL_COUNT + 54, show, user);
+    UImanage::showTopScores_Diffcult(WINDOW_ROW_COUNT / 3, WINDOW_COL_COUNT + 54, show, user);
 
     if (!outputText(user, WINDOW_ROW_COUNT / 2 + 40, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请按3返回菜单："))
         return false;
@@ -378,7 +376,7 @@ bool UImanage::showTopScores_Diffcult(int row, int col, vector<PlayerInfo*> show
 
 bool UImanage::showGameDifficulty(User* user)
 {
-    if (!this->clear(user))
+    if (!UImanage::clear(user))
         return false;
 
     if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "1. 简单模式"))
@@ -441,14 +439,11 @@ bool UImanage::InitInterface(User* user)
 bool UImanage::InitGameFace(User* user)
 {
 
-    if (!this->clear(user))
+    if (!UImanage::clear(user))
         return false;
 
-    if (!this->InitInterface(user))//初始化界面
+    if (!UImanage::InitInterface(user))//初始化界面
     {
-        //printf("Client[%d] InitInterface Error In handleNewClientConnection\n", fd);
-        //logger->error("Client[{}] InitInterface Error In handleNewClientConnection\n", user->fd);
-        //logger->flush();
         return false;
     }
 
@@ -464,12 +459,12 @@ bool UImanage::InitGameFace(User* user)
     user->setRow(1);
     user->setCol(WINDOW_COL_COUNT / 2 - 1); //方块初始下落位置
 
-    if (!this->DrawBlock(user, user->getNextShape(), user->getNextForm(), 3, WINDOW_COL_COUNT + 3))//将下一个方块显示在右上角
+    if (!UImanage::DrawBlock(user, user->getNextShape(), user->getNextForm(), 3, WINDOW_COL_COUNT + 3))//将下一个方块显示在右上角
     {
         return false;
     }
 
-    if (!this->DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol())) //将该方块显示在初始下落位置
+    if (!UImanage::DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol())) //将该方块显示在初始下落位置
     {
         return false;
     }
