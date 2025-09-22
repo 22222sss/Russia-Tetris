@@ -328,3 +328,9 @@ string currenttime()//日志函数
 
     return timestamp;
 }
+
+// 检查字符串是否为数字
+bool isNumber(const std::string& s) 
+{
+    return !s.empty() && std::all_of(s.begin(), s.end(), ::isdigit);
+}

@@ -19,17 +19,12 @@ extern shared_ptr<spdlog::logger> logger;
 
 int TetrisGame::select_game_difficulty(User* user)
 {
-    std::unique_ptr<UImanage> UI(new UImanage);
-
-    std::unique_ptr<Server> server(new Server);
-
-    std::unique_ptr<Filedata> filedata(new Filedata);
-
-    if (!filedata->loadPlayerData())
+    
+    if (!Filedata::loadPlayerData())
         return false;
 
 
-    int temp = server->ReceiveData(user);
+    int temp = Server::ReceiveData(user);
     if (temp == -1)
     {
         //delete user;
@@ -39,7 +34,7 @@ int TetrisGame::select_game_difficulty(User* user)
     {
         if (user->getReceivedata() == "1")
         {
-            if (!UI->InitGameFace(user))
+            if (!UImanage::InitGameFace(user))
             {
                 return -1;
             }
@@ -55,7 +50,7 @@ int TetrisGame::select_game_difficulty(User* user)
         }
         else if (user->getReceivedata() == "2")
         {
-            if (!UI->InitGameFace(user))
+            if (!UImanage::InitGameFace(user))
             {
                 return -1;
             }
@@ -70,7 +65,7 @@ int TetrisGame::select_game_difficulty(User* user)
         }
         else if (user->getReceivedata() == "3")
         {
-            if (!UI->InitGameFace(user))
+            if (!UImanage::InitGameFace(user))
             {
                 return -1;
             }
@@ -85,7 +80,7 @@ int TetrisGame::select_game_difficulty(User* user)
         }
         else if (user->getReceivedata() == "4")
         {
-            if (!UI->showLoadMenu(user))
+            if (!UImanage::showLoadMenu(user))
                 return false;
 
             user->setStatus(STATUS_LOGIN);
@@ -95,7 +90,7 @@ int TetrisGame::select_game_difficulty(User* user)
         }
         else
         {
-            if (!UI->show_Error_Message(WINDOW_ROW_COUNT / 2 + 10, user))
+            if (!UImanage::show_Error_Message(WINDOW_ROW_COUNT / 2 + 10, user))
                 return false;
 
             user->setReceivedata("");
@@ -218,13 +213,13 @@ bool TetrisGame::process_STATUS_PLAYING(User* user)
     int bytesRead = recv(user->getFd(), buffer, sizeof(buffer), 0);
 
     if (bytesRead == -1 || bytesRead == 0) {
-        this->handleRecvError_STATUS_PLAYING(user);
+        TetrisGame::handleRecvError_STATUS_PLAYING(user);
         return false;
     }
 
     buffer[bytesRead] = '\0';
 
-    if (!this->handleReceivedData_STATUS_PLAYING(buffer, user))
+    if (!TetrisGame::handleReceivedData_STATUS_PLAYING(buffer, user))
         return false;
     return true;
 }
@@ -239,19 +234,18 @@ void TetrisGame::handleRecvError_STATUS_PLAYING(User* user)
 
 bool TetrisGame::handleMoveDown(User* user)
 {
-    std::unique_ptr<UImanage> UI(new UImanage);
 
-    if (this->IsLegal(user, user->getShape(), user->getForm(), user->getRow() + 1, user->getCol()) == 1) //判断方块向下移动一位后是否合法
+    if (TetrisGame::IsLegal(user, user->getShape(), user->getForm(), user->getRow() + 1, user->getCol()) == 1) //判断方块向下移动一位后是否合法
     {
         //方块下落后合法才进行以下操作
-        if (!UI->DrawSpace(user, user->getShape(), user->getForm(), user->getRow(), user->getCol())) //用空格覆盖当前方块所在位置
+        if (!UImanage::DrawSpace(user, user->getShape(), user->getForm(), user->getRow(), user->getCol())) //用空格覆盖当前方块所在位置
         {
             return false;
         }
 
         user->setRow(user->getRow() + 1);//纵坐标自增（下一次显示方块时就相当于下落了一格了）
 
-        if (!UI->DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol())) {
+        if (!UImanage::DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol())) {
             return false;
         }
     }
@@ -261,20 +255,18 @@ bool TetrisGame::handleMoveDown(User* user)
 
 bool TetrisGame::handleMoveLeft(User* user)
 {
-    std::unique_ptr<UImanage> UI(new UImanage);
 
-
-    if (this->IsLegal(user, user->getShape(), user->getForm(), user->getRow(), user->getCol() - 1) == 1) //判断方块向左移动一位后是否合法
+    if (TetrisGame::IsLegal(user, user->getShape(), user->getForm(), user->getRow(), user->getCol() - 1) == 1) //判断方块向左移动一位后是否合法
     {
         //方块左移后合法才进行以下操作
-        if (!UI->DrawSpace(user, user->getShape(), user->getForm(), user->getRow(), user->getCol())) //用空格覆盖当前方块所在位置
+        if (!UImanage::DrawSpace(user, user->getShape(), user->getForm(), user->getRow(), user->getCol())) //用空格覆盖当前方块所在位置
         {
             return false;
         }
 
         user->setCol(user->getCol() - 1); //横坐标自减（下一次显示方块时就相当于左移了一格了）
 
-        if (!UI->DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))
+        if (!UImanage::DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))
         {
             return false;
         }
@@ -285,18 +277,17 @@ bool TetrisGame::handleMoveLeft(User* user)
 
 bool TetrisGame::handleMoveRight(User* user)
 {
-    std::unique_ptr<UImanage> UI(new UImanage);
 
-    if (this->IsLegal(user, user->getShape(), user->getForm(), user->getRow(), user->getCol() + 1) == 1) //判断方块向右移动一位后是否合法
+    if (TetrisGame::IsLegal(user, user->getShape(), user->getForm(), user->getRow(), user->getCol() + 1) == 1) //判断方块向右移动一位后是否合法
     {
         //方块右移后合法才进行以下操作
-        if (!UI->DrawSpace(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))//用空格覆盖当前方块所在位置
+        if (!UImanage::DrawSpace(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))//用空格覆盖当前方块所在位置
         {
             return false;
         }
         user->setCol(user->getCol() + 1); //横坐标自增（下一次显示方块时就相当于右移了一格了）
 
-        if (!UI->DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))
+        if (!UImanage::DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))
         {
             return false;
         }
@@ -307,13 +298,12 @@ bool TetrisGame::handleMoveRight(User* user)
 
 bool TetrisGame::handleRotation(User* user)
 {
-    std::unique_ptr<UImanage> UI(new UImanage);
 
-    if (this->IsLegal(user, user->getShape(), (user->getForm() + 1) % 4, user->getRow() + 1, user->getCol()) == 1) //判断方块旋转后是否合法 
+    if (TetrisGame::IsLegal(user, user->getShape(), (user->getForm() + 1) % 4, user->getRow() + 1, user->getCol()) == 1) //判断方块旋转后是否合法 
     {
         //方块旋转后合法才进行以下操作
 
-        if (!UI->DrawSpace(user, user->getShape(), user->getForm(), user->getRow(), user->getCol())) //用空格覆盖当前方块所在位置 
+        if (!UImanage::DrawSpace(user, user->getShape(), user->getForm(), user->getRow(), user->getCol())) //用空格覆盖当前方块所在位置 
         {
             return false;
         }
@@ -321,7 +311,7 @@ bool TetrisGame::handleRotation(User* user)
         user->setRow(user->getRow() + 1);//纵坐标自增（总不能原地旋转吧）
         user->setForm((user->getForm() + 1) % 4); //方块的形态自增（下一次显示方块时就相当于旋转了）
 
-        if (!UI->DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol())) {
+        if (!UImanage::DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol())) {
             return false;
         }
     }
@@ -334,28 +324,28 @@ bool TetrisGame::handleReceivedData_STATUS_PLAYING(char* buffer, User* user)
     // 处理接收到的数据
     if (strcmp(buffer, KEY_DOWN) == 0)//下
     {
-        if (!this->handleMoveDown(user)) //判断方块向下移动一位后是否合法
+        if (!TetrisGame::handleMoveDown(user)) //判断方块向下移动一位后是否合法
         {
             return false;
         }
     }
     else if (strcmp(buffer, KEY_LEFT) == 0)//左
     {
-        if (!this->handleMoveLeft(user))
+        if (!TetrisGame::handleMoveLeft(user))
         {
             return false;
         }
     }
     else if (strcmp(buffer, KEY_RIGHT) == 0)//右
     {
-        if (!this->handleMoveRight(user))
+        if (!TetrisGame::handleMoveRight(user))
         {
             return false;
         }
     }
     else if (*buffer == ' ')
     {
-        if (!this->handleRotation(user))
+        if (!TetrisGame::handleRotation(user))
         {
             return false;
         }
@@ -376,7 +366,9 @@ void TetrisGame::handleRecvError_STATUS_OVER_CONFIRMING(User* user)
     logger->flush();
 }
 
-void TetrisGame::handleDisconnect_STATUS_OVER_CONFIRMING(User* user) {
+void TetrisGame::handleDisconnect_STATUS_OVER_CONFIRMING(User* user) 
+{
+
     user->setStatus(STATUS_OVER_QUIT);
     close(user->getFd());
     logger->error("Client[{}] disconnect!\n", user->getFd());
@@ -385,11 +377,10 @@ void TetrisGame::handleDisconnect_STATUS_OVER_CONFIRMING(User* user) {
 
 bool TetrisGame::handleBufferData_STATUS_OVER_CONFIRMING(char* buffer, User* user)
 {
-    std::unique_ptr<UImanage> UI(new UImanage);
 
     if (*buffer == 'Y' || *buffer == 'y')
     {
-        if (!UI->showGameDifficulty(user))
+        if (!UImanage::showGameDifficulty(user))
         {
             return false;
         }
@@ -404,7 +395,7 @@ bool TetrisGame::handleBufferData_STATUS_OVER_CONFIRMING(char* buffer, User* use
         user->resetUserInfo();
 
         user->setStatus(STATUS_NOTSTART);
-        if (!UI->showInitMenu(user))
+        if (!UImanage::showInitMenu(user))
             return false;
 
     }
@@ -422,15 +413,15 @@ bool TetrisGame::process_STATUS_OVER_CONFIRMING(User* user)
     int bytesRead = recv(user->getFd(), buffer, sizeof(buffer), 0);
 
     if (bytesRead == -1) {
-        this->handleRecvError_STATUS_OVER_CONFIRMING(user);
+        TetrisGame::handleRecvError_STATUS_OVER_CONFIRMING(user);
         return false;
     }
     else if (bytesRead == 0) {
-        this->handleDisconnect_STATUS_OVER_CONFIRMING(user);
+        TetrisGame::handleDisconnect_STATUS_OVER_CONFIRMING(user);
         return false;
     }
 
-    if (!this->handleBufferData_STATUS_OVER_CONFIRMING(buffer, user))
+    if (!TetrisGame::handleBufferData_STATUS_OVER_CONFIRMING(buffer, user))
         return false;
 
     return true;
@@ -442,7 +433,7 @@ bool TetrisGame::process_STATUS_OVER_CONFIRMING(User* user)
 
 bool TetrisGame::process_STATUS_SELECT_GAME_DIFFICULTY(User* user)
 {
-    int key = this->select_game_difficulty(user);
+    int key = TetrisGame::select_game_difficulty(user);
 
     if (key == -1)
     {

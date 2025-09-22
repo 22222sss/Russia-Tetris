@@ -105,7 +105,7 @@ vector<PlayerInfo*> Filedata::Read_AllpalyerInfo(ifstream &file)
 
         getline(ss, cell, ',');//跳过EASY模式最高分
 
-        if (cell != "")
+        if (!cell.empty() && isNumber(cell))
         {
             gamer->setMaximum_Score_Easy(stoi(cell));
         }
@@ -125,7 +125,7 @@ vector<PlayerInfo*> Filedata::Read_AllpalyerInfo(ifstream &file)
 
         getline(ss, cell, ',');//跳过NORMAL模式最高分
 
-        if (cell != "")
+        if (!cell.empty() && isNumber(cell))
         {
             gamer->setMaximum_Score_Normal(stoi(cell));
         }
@@ -143,7 +143,7 @@ vector<PlayerInfo*> Filedata::Read_AllpalyerInfo(ifstream &file)
         gamer->setTimestampNormal(TimestampNormal);
         getline(ss, cell, ',');//跳过DIFFCULT模式最高分
 
-        if (cell != "")
+        if (!cell.empty() && isNumber(cell))
         {
             gamer->setMaximum_Score_Difficult(stoi(cell));
         }
@@ -238,7 +238,7 @@ bool Filedata::loadPlayerData()
 
         getline(ss, cell, ',');
 
-        if (cell != "")
+        if (!cell.empty() && isNumber(cell))
         {
             player->setMaximum_Score_Easy(stoi(cell));
         }
@@ -262,7 +262,7 @@ bool Filedata::loadPlayerData()
 
         getline(ss, cell, ',');
 
-        if (cell != "")
+        if (!cell.empty() && isNumber(cell))
         {
             player->setMaximum_Score_Normal(stoi(cell));
         }
@@ -285,7 +285,7 @@ bool Filedata::loadPlayerData()
 
         getline(ss, cell, ',');
 
-        if (cell != "")
+        if (!cell.empty() && isNumber(cell))
         {
             player->setMaximum_Score_Difficult(stoi(cell));
         }
@@ -307,7 +307,7 @@ bool Filedata::loadPlayerData()
 
         while (getline(ss, cell, ','))
         {
-            if (cell != "")
+            if (!cell.empty() && isNumber(cell))
             {
                 if (i % 2 == 0)
                 {
@@ -337,6 +337,14 @@ bool Filedata::loadPlayerData()
 
 bool Filedata::Update_TopScore_RecentScore(User* user)
 {
+    // 添加空指针检查
+    if (user == nullptr) {
+        logger->error("User pointer is null in Update_TopScore_RecentScore");
+        logger->flush();
+        return false;
+    }
+
+    // 添加对用户分数队列的检查
     if (user->getScores().size() < 20)
     {
         user->setScores_Push(user->getScore());
@@ -351,14 +359,19 @@ bool Filedata::Update_TopScore_RecentScore(User* user)
         user->setGameDiffclutys_Pop();
     }
 
-    
-    const string filename = "userdata.csv";//相对路径是相对于你的可执行文件所在的目录的
+    const string filename = "userdata.csv";
+
+    // 添加文件存在性检查
+    if (access(filename.c_str(), F_OK) == -1) {
+        logger->error("File does not exist: {}", filename);
+        logger->flush();
+        return false;
+    }
 
     ifstream file(filename);
-    ofstream tempFile("temp_file.csv");//相对路径是相对于你的可执行文件所在的目录的
+    ofstream tempFile("temp_file.csv");
 
     if (!file.is_open() || !tempFile.is_open()) {
-        //cerr << "Error opening files." << endl;
         logger->error("Error opening files.");
         logger->flush();
         return false;
@@ -366,7 +379,14 @@ bool Filedata::Update_TopScore_RecentScore(User* user)
 
     string line;
 
-    getline(file, line);//跳过第一行
+    // 跳过第一行
+    if (!getline(file, line)) {
+        logger->error("Failed to read header from file.");
+        logger->flush();
+        file.close();
+        tempFile.close();
+        return false;
+    }
 
     tempFile << line << endl;
 
@@ -375,24 +395,24 @@ bool Filedata::Update_TopScore_RecentScore(User* user)
         istringstream iss(line);
         string username, password, Maximum_score_easy, timestamp_easy, Maximum_score_normal, timestamp_normal, Maximum_score_diffcult, timestamp_diffcult, cell;
 
+        // 添加解析检查
+        if (!getline(iss, username, ',') ||
+            !getline(iss, password, ',') ||
+            !getline(iss, Maximum_score_easy, ',') ||
+            !getline(iss, cell, ',') ||
+            !getline(iss, timestamp_easy, ',') ||
+            !getline(iss, Maximum_score_normal, ',') ||
+            !getline(iss, cell, ',') ||
+            !getline(iss, timestamp_normal, ',') ||
+            !getline(iss, Maximum_score_diffcult, ',') ||
+            !getline(iss, cell, ',') ||
+            !getline(iss, timestamp_diffcult, ',')) {
 
-        getline(iss, username, ',');
-        getline(iss, password, ',');
+            logger->warn("Skipping malformed line: {}", line);
+            continue;
+        }
 
-        getline(iss, Maximum_score_easy, ',');
-        getline(iss, cell, ',');
-        getline(iss, timestamp_easy, ',');
-
-        getline(iss, Maximum_score_normal, ',');
-        getline(iss, cell, ',');
-        getline(iss, timestamp_normal, ',');
-
-        getline(iss, Maximum_score_diffcult, ',');
-        getline(iss, cell, ',');
-        getline(iss, timestamp_diffcult, ',');
-
-
-        if (username == user->getUsername()) // 在找到匹配行时，添加新数据
+        if (username == user->getUsername())
         {
             if (user->getGameDiffculty() == "EASY")
             {
@@ -404,13 +424,18 @@ bool Filedata::Update_TopScore_RecentScore(User* user)
 
                     tempFile << user->getScore() << "," << "EASY" << "," << currenttime() << ",";
 
-                    tempFile << Maximum_score_normal << "," << "NORAML" << "," << timestamp_normal << ",";
+                    tempFile << Maximum_score_normal << "," << "NORMAL" << "," << timestamp_normal << ",";
 
-                    tempFile << Maximum_score_diffcult << "," << "DIFFCULT" << "," << timestamp_diffcult << ",";
+                    tempFile << Maximum_score_diffcult << "," << "DIFFICULT" << "," << timestamp_diffcult << ",";
 
+                    // 添加队列空检查
                     queue<int> tempQueue = user->getScores();
                     queue<string> tempQueue1 = user->getGameDiffclutys();
-                    while (!tempQueue.empty())
+                    if (tempQueue.size() != tempQueue1.size()) {
+                        logger->warn("Queue size mismatch for user: {}", username);
+                    }
+
+                    while (!tempQueue.empty() && !tempQueue1.empty())
                     {
                         tempFile << tempQueue.front() << "," << tempQueue1.front() << ",";
                         tempQueue.pop();
@@ -425,13 +450,18 @@ bool Filedata::Update_TopScore_RecentScore(User* user)
 
                     tempFile << Maximum_score_easy << "," << "EASY" << "," << timestamp_easy << ",";
 
-                    tempFile << Maximum_score_normal << "," << "NORAML" << "," << timestamp_normal << ",";
+                    tempFile << Maximum_score_normal << "," << "NORMAL" << "," << timestamp_normal << ",";
 
-                    tempFile << Maximum_score_diffcult << "," << "DIFFCULT" << "," << timestamp_diffcult << ",";
+                    tempFile << Maximum_score_diffcult << "," << "DIFFICULT" << "," << timestamp_diffcult << ",";
 
+                    // 添加队列空检查
                     queue<int> tempQueue = user->getScores();
                     queue<string> tempQueue1 = user->getGameDiffclutys();
-                    while (!tempQueue.empty())
+                    if (tempQueue.size() != tempQueue1.size()) {
+                        logger->warn("Queue size mismatch for user: {}", username);
+                    }
+
+                    while (!tempQueue.empty() && !tempQueue1.empty())
                     {
                         tempFile << tempQueue.front() << "," << tempQueue1.front() << ",";
                         tempQueue.pop();
@@ -451,13 +481,18 @@ bool Filedata::Update_TopScore_RecentScore(User* user)
 
                     tempFile << Maximum_score_easy << "," << "EASY" << "," << timestamp_easy << ",";
 
-                    tempFile << user->getScore() << "," << "NORAML" << "," << currenttime() << ",";
+                    tempFile << user->getScore() << "," << "NORMAL" << "," << currenttime() << ",";
 
-                    tempFile << Maximum_score_diffcult << "," << "DIFFCULT" << "," << timestamp_diffcult << ",";
+                    tempFile << Maximum_score_diffcult << "," << "DIFFICULT" << "," << timestamp_diffcult << ",";
 
+                    // 添加队列空检查
                     queue<int> tempQueue = user->getScores();
                     queue<string> tempQueue1 = user->getGameDiffclutys();
-                    while (!tempQueue.empty())
+                    if (tempQueue.size() != tempQueue1.size()) {
+                        logger->warn("Queue size mismatch for user: {}", username);
+                    }
+
+                    while (!tempQueue.empty() && !tempQueue1.empty())
                     {
                         tempFile << tempQueue.front() << "," << tempQueue1.front() << ",";
                         tempQueue.pop();
@@ -472,13 +507,18 @@ bool Filedata::Update_TopScore_RecentScore(User* user)
 
                     tempFile << Maximum_score_easy << "," << "EASY" << "," << timestamp_easy << ",";
 
-                    tempFile << Maximum_score_normal << "," << "NORAML" << "," << timestamp_normal << ",";
+                    tempFile << Maximum_score_normal << "," << "NORMAL" << "," << timestamp_normal << ",";
 
-                    tempFile << Maximum_score_diffcult << "," << "DIFFCULT" << "," << timestamp_diffcult << ",";
+                    tempFile << Maximum_score_diffcult << "," << "DIFFICULT" << "," << timestamp_diffcult << ",";
 
+                    // 添加队列空检查
                     queue<int> tempQueue = user->getScores();
                     queue<string> tempQueue1 = user->getGameDiffclutys();
-                    while (!tempQueue.empty())
+                    if (tempQueue.size() != tempQueue1.size()) {
+                        logger->warn("Queue size mismatch for user: {}", username);
+                    }
+
+                    while (!tempQueue.empty() && !tempQueue1.empty())
                     {
                         tempFile << tempQueue.front() << "," << tempQueue1.front() << ",";
                         tempQueue.pop();
@@ -488,7 +528,7 @@ bool Filedata::Update_TopScore_RecentScore(User* user)
                     tempFile << endl;
                 }
             }
-            else if (user->getGameDiffculty() == "DIFFCULT")
+            else if (user->getGameDiffculty() == "DIFFICULT")
             {
                 if (user->getScore() > user->getMaximum_Score_Diffcult())
                 {
@@ -498,13 +538,18 @@ bool Filedata::Update_TopScore_RecentScore(User* user)
 
                     tempFile << Maximum_score_easy << "," << "EASY" << "," << timestamp_easy << ",";
 
-                    tempFile << Maximum_score_normal << "," << "NORAML" << "," << timestamp_normal << ",";
+                    tempFile << Maximum_score_normal << "," << "NORMAL" << "," << timestamp_normal << ",";
 
-                    tempFile << user->getScore() << "," << "DIFFCULT" << "," << currenttime() << ",";
+                    tempFile << user->getScore() << "," << "DIFFICULT" << "," << currenttime() << ",";
 
+                    // 添加队列空检查
                     queue<int> tempQueue = user->getScores();
                     queue<string> tempQueue1 = user->getGameDiffclutys();
-                    while (!tempQueue.empty())
+                    if (tempQueue.size() != tempQueue1.size()) {
+                        logger->warn("Queue size mismatch for user: {}", username);
+                    }
+
+                    while (!tempQueue.empty() && !tempQueue1.empty())
                     {
                         tempFile << tempQueue.front() << "," << tempQueue1.front() << ",";
                         tempQueue.pop();
@@ -519,13 +564,18 @@ bool Filedata::Update_TopScore_RecentScore(User* user)
 
                     tempFile << Maximum_score_easy << "," << "EASY" << "," << timestamp_easy << ",";
 
-                    tempFile << Maximum_score_normal << "," << "NORAML" << "," << timestamp_normal << ",";
+                    tempFile << Maximum_score_normal << "," << "NORMAL" << "," << timestamp_normal << ",";
 
-                    tempFile << Maximum_score_diffcult << "," << "DIFFCULT" << "," << timestamp_diffcult << ",";
+                    tempFile << Maximum_score_diffcult << "," << "DIFFICULT" << "," << timestamp_diffcult << ",";
 
+                    // 添加队列空检查
                     queue<int> tempQueue = user->getScores();
                     queue<string> tempQueue1 = user->getGameDiffclutys();
-                    while (!tempQueue.empty())
+                    if (tempQueue.size() != tempQueue1.size()) {
+                        logger->warn("Queue size mismatch for user: {}", username);
+                    }
+
+                    while (!tempQueue.empty() && !tempQueue1.empty())
                     {
                         tempFile << tempQueue.front() << "," << tempQueue1.front() << ",";
                         tempQueue.pop();
@@ -545,11 +595,28 @@ bool Filedata::Update_TopScore_RecentScore(User* user)
     file.close();
     tempFile.close();
 
+    // 删除原文件前检查临时文件是否成功创建
+    ifstream tempCheck("temp_file.csv");
+    if (!tempCheck.is_open()) {
+        logger->error("Temporary file was not created successfully.");
+        logger->flush();
+        return false;
+    }
+    tempCheck.close();
+
     // 删除原文件
-    remove(filename.c_str());
+    if (remove(filename.c_str()) != 0) {
+        logger->error("Failed to delete original file: {}", filename);
+        logger->flush();
+        return false;
+    }
 
     // 重命名临时文件为原文件
-    rename("temp_file.csv", filename.c_str());//相对路径是相对于你的可执行文件所在的目录的
+    if (rename("temp_file.csv", filename.c_str()) != 0) {
+        logger->error("Failed to rename temporary file.");
+        logger->flush();
+        return false;
+    }
 
     return true;
 }

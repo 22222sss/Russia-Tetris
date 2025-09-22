@@ -18,6 +18,7 @@ extern shared_ptr<spdlog::logger> logger;
 
 extern map<evutil_socket_t, struct event*> event;
 
+//在EventLoop类中设置这些回调函数，并在事件发生时调用它们
 
 void handleNewClientConnection(int serverSocket, short events, void* arg)
 {
@@ -67,9 +68,9 @@ void handleNewClientConnection(int serverSocket, short events, void* arg)
 
    
 
-    std::unique_ptr<UImanage> UI(new UImanage);
+    //std::unique_ptr<UImanage> UI(new UImanage);
 
-    if (!UI->showInitMenu(newUser))
+    if (!UImanage::showInitMenu(newUser))
         return;
 }
 
@@ -77,56 +78,56 @@ void handleClientData(int clientSocket, short events, void* arg)
 {
     User* user = (User*)arg;
 
-    std::unique_ptr<Server> server(new Server);
+    //std::unique_ptr<Server> server(new Server);
 
-    std::unique_ptr<TetrisGame> game(new TetrisGame);
+    //std::unique_ptr<TetrisGame> game(new TetrisGame);
 
     // 处理已连接客户端的数据接收事件
     if (user->getStatus() == STATUS_PLAYING)
     {
-        if (!game->process_STATUS_PLAYING(user))
+        if (!TetrisGame::process_STATUS_PLAYING(user))
         {
             return;
         }
     }
     else if (user->getStatus() == STATUS_OVER_CONFIRMING)
     {
-        if (!game->process_STATUS_OVER_CONFIRMING(user))
+        if (!TetrisGame::process_STATUS_OVER_CONFIRMING(user))
         {
             return;
         }
     }
     else if (user->getStatus() == STATUS_NOTSTART)
     {
-        if (!server->process_STATUS_NOTSTART(user))
+        if (!Server::process_STATUS_NOTSTART(user))
         {
             return;
         }
     }
     else if (user->getStatus() == STATUS_RECEIVE_USERNAME_REGISTER)
     {
-        if (!server->process_STATUS_RECEIVE_USERNAME_REGISTER(user))
+        if (!Server::process_STATUS_RECEIVE_USERNAME_REGISTER(user))
         {
             return;
         }
     }
     else if (user->getStatus() == STATUS_RECEIVE_PASSWORD_REGISTER)
     {
-        if (!server->process_STATUS_RECEIVE_PASSWORD_REGISTER(user))
+        if (!Server::process_STATUS_RECEIVE_PASSWORD_REGISTER(user))
         {
             return;
         }
     }
     else if (user->getStatus() == STATUS_RECEIVE_USERNAME_LOAD)
     {
-        if (!server->process_STATUS_RECEIVE_USERNAME_LOAD(user))
+        if (!Server::process_STATUS_RECEIVE_USERNAME_LOAD(user))
         {
             return;
         }
     }
     else if (user->getStatus() == STATUS_RECEIVE_PASSWORD_LOAD)
     {
-        if (!server->process_STATUS_RECEIVE_PASSWORD_LOAD(user))
+        if (!Server::process_STATUS_RECEIVE_PASSWORD_LOAD(user))
         {
             return;
         }
@@ -134,14 +135,14 @@ void handleClientData(int clientSocket, short events, void* arg)
     }
     else if (user->getStatus() == STATUS_LOGIN)
     {
-        if (!server->process_STATUS_LOGIN(user))
+        if (!Server::process_STATUS_LOGIN(user))
         {
             return;
         }
     }
     else if (user->getStatus() == STATUS_SELECT_GAME_DIFFICULTY)
     {
-        if (!game->process_STATUS_SELECT_GAME_DIFFICULTY(user))
+        if (!TetrisGame::process_STATUS_SELECT_GAME_DIFFICULTY(user))
         {
             return;
         }
@@ -149,14 +150,14 @@ void handleClientData(int clientSocket, short events, void* arg)
     }
     else if (user->getStatus() == STATUS_LOGIN_OVER)
     {
-        if (!server->process_STATUS_LOGIN_OVER(user))
+        if (!Server::process_STATUS_LOGIN_OVER(user))
         {
             return;
         }
     }
     else if (user->getStatus() == STATUS_REGISTER_OR_LOAD_OVER)
     {
-        if (!server->process_STATUS_REGISTER_OR_LOAD_OVER(user))
+        if (!Server::process_STATUS_REGISTER_OR_LOAD_OVER(user))
         {
             return;
         }
@@ -165,13 +166,8 @@ void handleClientData(int clientSocket, short events, void* arg)
 
 void processBlockDown(User* user)
 {
-    std::unique_ptr<TetrisGame> game(new TetrisGame);
 
-    std::unique_ptr<UImanage> UI(new UImanage);
-
-    std::unique_ptr<Filedata> filedata(new Filedata);
-
-    if (game->IsLegal(user, user->getShape(), user->getForm(), user->getRow() + 1, user->getCol()) == 0)
+    if (TetrisGame::IsLegal(user, user->getShape(), user->getForm(), user->getRow() + 1, user->getCol()) == 0)
     {
         for (int i = 0; i < 4; i++)
         {
@@ -186,37 +182,37 @@ void processBlockDown(User* user)
             }
         }
 
-        //user->line = 0;
+        
 
         user->setLine(0);
 
         while (1)
         {
-            if (game->Is_Increase_Score(user) == 1)
+            if (TetrisGame::Is_Increase_Score(user) == 1)
             {
                 continue;
             }
-            else if (game->Is_Increase_Score(user) == 0)
+            else if (TetrisGame::Is_Increase_Score(user) == 0)
             {
                 break;
             }
-            else if (game->Is_Increase_Score(user) == -1)
+            else if (TetrisGame::Is_Increase_Score(user) == -1)
             {
                 return;
             }
         }
 
-        if (!game->UpdateCurrentScore(user))
+        if (!TetrisGame::UpdateCurrentScore(user))
         {
             return;
         }
 
-        if (!game->IsOver(user))//判断是否结束
+        if (!TetrisGame::IsOver(user))//判断是否结束
         {
             user->setShape(user->getNextShape());
             user->setForm(user->getNextForm());
 
-            if (!UI->DrawSpace(user, user->getNextShape(), user->getNextForm(), 3, WINDOW_COL_COUNT + 3))
+            if (!UImanage::DrawSpace(user, user->getNextShape(), user->getNextForm(), 3, WINDOW_COL_COUNT + 3))
             {
                 return;
             }
@@ -227,36 +223,36 @@ void processBlockDown(User* user)
             user->setRow(1);
             user->setCol(WINDOW_COL_COUNT / 2 - 1);
 
-            if (!UI->DrawBlock(user, user->getNextShape(), user->getNextForm(), 3, WINDOW_COL_COUNT + 3))//将下一个方块显示在右上角
+            if (!UImanage::DrawBlock(user, user->getNextShape(), user->getNextForm(), 3, WINDOW_COL_COUNT + 3))//将下一个方块显示在右上角
             {
                 return;
             }
 
-            if (!UI->DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))//将该方块显示在初始下落位置
+            if (!UImanage::DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))//将该方块显示在初始下落位置
             {
                 return;
             }
         }
         else
         {
-            if (!filedata->Update_TopScore_RecentScore(user))
+            if (!Filedata::Update_TopScore_RecentScore(user))
                 return;
 
-            if (!UI->showover(user))
+            if (!UImanage::showover(user))
                 return;
         }
     }
     else
     {
 
-        if (!UI->DrawSpace(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))
+        if (!UImanage::DrawSpace(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))
         {
             return;
         }
 
         user->setRow(user->getRow() + 1);
 
-        if (!UI->DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))
+        if (!UImanage::DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))
         {
             return;
         }
