@@ -151,9 +151,15 @@ bool UImanage::showRecentScores(User* user)
             i++;
         }
     }
+    else if (temp.front() == "1")
+    {
+        if (!outputText(user, WINDOW_ROW_COUNT / 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "No recent scores found")) {
+            return false;
+        }
+    }
 
 
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 20, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请按3返回菜单："))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 21, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请按3返回菜单："))
         return false;
     return true;
 }

@@ -8,192 +8,233 @@
 #include"../UImanage/UImanage.h"
 #include"../Filedata_manage/Filedata.h"
 
+#include <sys/stat.h>
+#include <algorithm>
+
 extern vector<PlayerInfo*> players;
 
-Filedata::Filedata(){}
+Filedata::Filedata() {}
 
 vector<string> Filedata::Read_recent_grades(User* user)
 {
     vector<string> temp = {};
-    ifstream file("userdata.csv");//相对路径是相对于你的可执行文件所在的目录的
+    ifstream file("userdata.csv");
 
     if (!file.is_open())
     {
-        //std::cerr << "Unable to open file or file opening failed! Error message: " << std::strerror(errno) << std::endl;
         logger->error("Unable to open file or file opening failed! Error message: {}\n", strerror(errno));
         logger->flush();
-
         temp.push_back("-1");
         return temp;
     }
 
     string line;
-    getline(file, line); // 跳过第一行
+    getline(file, line); // 读取标题行
 
     while (getline(file, line))
     {
-        istringstream ss(line);
+        // 移除Windows换行符\r
+        if (!line.empty() && line[line.length() - 1] == '\r') {
+            line.erase(line.length() - 1);
+        }
 
+        istringstream ss(line);
         string cell;
 
-        getline(ss, cell, ',');//跳过用户名
+        getline(ss, cell, ',');//读取用户名
 
         if (cell == user->getUsername())
         {
-            getline(ss, cell, ',');//跳过密码
+            getline(ss, cell, ',');//读取密码
 
-            getline(ss, cell, ',');//跳过EASY模式最高分
-            getline(ss, cell, ',');//跳过难度
-            getline(ss, cell, ',');//跳过最高分对应时间
+            // 跳过EASY难度数据
+            getline(ss, cell, ',');
+            getline(ss, cell, ',');
+            getline(ss, cell, ',');
 
-            getline(ss, cell, ',');//跳过NORMAL模式最高分
-            getline(ss, cell, ',');//跳过难度
-            getline(ss, cell, ',');//跳过最高分对应时间
+            // 跳过NORMAL难度数据
+            getline(ss, cell, ',');
+            getline(ss, cell, ',');
+            getline(ss, cell, ',');
 
-            getline(ss, cell, ',');//跳过DIFFCULT模式最高分
-            getline(ss, cell, ',');//跳过难度
-            getline(ss, cell, ',');//跳过最高分对应时间
+            // 跳过DIFFICULT难度数据
+            getline(ss, cell, ',');
+            getline(ss, cell, ',');
+            getline(ss, cell, ',');
 
+            // 读取最近的成绩
+            int count = 0;
             while (getline(ss, cell, ','))
             {
-                string outcome = cell;
+                if (cell.empty()) continue;
 
-                getline(ss, cell, ',');
+                string score = cell;
+                string difficulty;
 
-                outcome += "  " + cell;
-
-                if (cell != "")
+                if (getline(ss, difficulty, ','))
                 {
-                    temp.push_back(outcome);
+                    if (!difficulty.empty())
+                    {
+                        string outcome = score + "  " + difficulty;
+                        temp.push_back(outcome);
+                        count++;
+
+                        // 只保留最近的20条记录
+                        if (count >= 20) break;
+                    }
                 }
             }
             file.close();
+
+            if (temp.empty())
+            {
+                temp.push_back("1"); // 表示用户存在但没有成绩记录
+            }
+
             return temp;
-            break;
-        }
-        else
-        {
-            continue;
         }
     }
 
-    temp.push_back("1");
-
+    file.close();
     return temp;
 }
 
-vector<PlayerInfo*> Filedata::Read_AllpalyerInfo(ifstream &file)
+vector<PlayerInfo*> Filedata::Read_AllpalyerInfo(ifstream& file)
 {
     vector<PlayerInfo*> show = {};
 
     string line;
-    getline(file, line); // 跳过第一行
+    getline(file, line); // 读取标题行
 
     while (getline(file, line))
     {
+        // 移除Windows换行符\r
+        if (!line.empty() && line[line.length() - 1] == '\r') {
+            line.erase(line.length() - 1);
+        }
+
         istringstream ss(line);
         string cell;
         PlayerInfo* gamer = new PlayerInfo;
 
         string playerName, Password;
 
-        getline(ss, playerName, ',');//跳过用户名
+        getline(ss, playerName, ',');//读取用户名
         gamer->setPlayerName(playerName);
 
-        getline(ss, Password, ',');//跳过密码
+        getline(ss, Password, ',');//读取密码
         gamer->setPassword(Password);
 
-        getline(ss, cell, ',');//跳过EASY模式最高分
-
+        // 读取EASY难度最高分
+        getline(ss, cell, ',');
         if (!cell.empty() && isNumber(cell))
         {
             gamer->setMaximum_Score_Easy(stoi(cell));
         }
         else
         {
-            //continue;
             gamer->setMaximum_Score_Easy(0);
         }
 
-        getline(ss, cell, ',');//跳过EASY模式
+        // 跳过EASY难度字符串
+        getline(ss, cell, ',');
 
+        // 读取EASY难度时间戳
         string TimestampEasy;
         getline(ss, TimestampEasy, ',');
-
         gamer->setTimestampEasy(TimestampEasy);
 
-
-        getline(ss, cell, ',');//跳过NORMAL模式最高分
-
+        // 读取NORMAL难度最高分
+        getline(ss, cell, ',');
         if (!cell.empty() && isNumber(cell))
         {
             gamer->setMaximum_Score_Normal(stoi(cell));
         }
         else
         {
-            //continue;
             gamer->setMaximum_Score_Normal(0);
         }
 
-        getline(ss, cell, ',');//跳过NORMAL模式
+        // 跳过NORMAL难度字符串
+        getline(ss, cell, ',');
 
+        // 读取NORMAL难度时间戳
         string TimestampNormal;
         getline(ss, TimestampNormal, ',');
-
         gamer->setTimestampNormal(TimestampNormal);
-        getline(ss, cell, ',');//跳过DIFFCULT模式最高分
 
+        // 读取DIFFICULT难度最高分
+        getline(ss, cell, ',');
         if (!cell.empty() && isNumber(cell))
         {
             gamer->setMaximum_Score_Difficult(stoi(cell));
         }
         else
         {
-            //continue;
             gamer->setMaximum_Score_Difficult(0);
         }
 
-        getline(ss, cell, ',');//跳过DIFFCULT模式
+        // 跳过DIFFICULT难度字符串
+        getline(ss, cell, ',');
 
+        // 读取DIFFICULT难度时间戳
         string TimestampDifficult;
         getline(ss, TimestampDifficult, ',');
-
         gamer->setTimestampDifficult(TimestampDifficult);
+
+        // 读取最近的成绩记录
+        while (getline(ss, cell, ','))
+        {
+            if (!cell.empty() && isNumber(cell))
+            {
+                int score = stoi(cell);
+                string difficulty;
+
+                if (getline(ss, difficulty, ','))
+                {
+                    if (!difficulty.empty())
+                    {
+                        gamer->setScores_Push(score);
+                        gamer->setGameDiffclutys_Push(difficulty);
+                    }
+                }
+            }
+        }
 
         show.push_back(gamer);
     }
 
     file.close();
-
     return show;
 }
 
 bool Filedata::saveNewUserData(User* user)
 {
-    //相对路径是相对于你的可执行文件所在的目录的
-    ofstream file("userdata.csv", std::ios::app);// 打开文件进行追加写入
+    ofstream file("userdata.csv", std::ios::app);
 
-    if (file.is_open() && file.good())
-    { // 检查文件是否成功打开
-        file << user->getUsername() << "," << user->getPassword() << ",";
-
-        file << "" << "," << "EASY" << "," << "" << ",";
-
-        file << "" << "," << "NORMAL" << "," << "" << ",";
-
-        file << "" << "," << "DIFFCULT" << "," << "" << ",";
-
-        file << endl;
-
-        file.close(); // 关闭文件
-    }
-    else
+    if (!file.is_open())
     {
-        //std::cerr << "Unable to open file or file opening failed! Error message: " << std::strerror(errno) << std::endl;
         logger->error("Unable to open file or file opening failed! Error message: {}\n", std::strerror(errno));
         logger->flush();
         return false;
     }
+
+    // 检查文件是否为空，如果是则添加标题行
+    struct stat stat_buf;
+    if (stat("userdata.csv", &stat_buf) == 0 && stat_buf.st_size == 0)
+    {
+        file << "Username,Password,Easy_Score,Easy_Difficulty,Easy_Timestamp,"
+            << "Normal_Score,Normal_Difficulty,Normal_Timestamp,"
+            << "Difficult_Score,Difficult_Difficulty,Difficult_Timestamp,Recent_Scores\n";
+    }
+
+    // 写入用户数据
+    file << user->getUsername() << "," << user->getPassword() << ","
+        << "0" << "," << "EASY" << "," << "" << ","
+        << "0" << "," << "NORMAL" << "," << "" << ","
+        << "0" << "," << "DIFFICULT" << "," << "" << ",\n";
+
+    file.close();
     return true;
 }
 
@@ -201,43 +242,40 @@ bool Filedata::loadPlayerData()
 {
     players.clear();
 
-    ifstream file("userdata.csv"); //相对路径是相对于你的可执行文件所在的目录的
-
+    ifstream file("userdata.csv");
     if (!file.is_open())
     {
-        //std::cerr << "Unable to open file or file opening failed! Error message: " << std::strerror(errno) << std::endl;
         logger->error("Unable to open file or file opening failed! Error message: {}\n", strerror(errno));
         logger->flush();
         return false;
     }
 
     string line;
-    string column_name;
-    getline(file, line); // 跳过第一行
-
+    getline(file, line); // 读取标题行
 
     while (getline(file, line))
     {
-        istringstream ss(line);
+        // 移除Windows换行符\r
+        if (!line.empty() && line[line.length() - 1] == '\r') {
+            line.erase(line.length() - 1);
+        }
 
+        if (line.empty()) continue;
+
+        istringstream ss(line);
         string cell;
 
         PlayerInfo* player = new PlayerInfo;
-
         string playerName, password;
+
         getline(ss, playerName, ',');
         getline(ss, password, ',');
 
         player->setPlayerName(playerName);
         player->setPassword(password);
 
-        if (player->getPlayerName() == "" && player->getPassword() == "")
-        {
-            return true;
-        }
-
+        // 读取EASY难度最高分
         getline(ss, cell, ',');
-
         if (!cell.empty() && isNumber(cell))
         {
             player->setMaximum_Score_Easy(stoi(cell));
@@ -247,21 +285,16 @@ bool Filedata::loadPlayerData()
             player->setMaximum_Score_Easy(0);
         }
 
+        // 跳过EASY难度字符串
         getline(ss, cell, ',');
 
-
+        // 读取EASY难度时间戳
         string timestampEasy;
         getline(ss, timestampEasy, ',');
-
         player->setTimestampEasy(timestampEasy);
 
-
-
-
-
-
+        // 读取NORMAL难度最高分
         getline(ss, cell, ',');
-
         if (!cell.empty() && isNumber(cell))
         {
             player->setMaximum_Score_Normal(stoi(cell));
@@ -271,20 +304,16 @@ bool Filedata::loadPlayerData()
             player->setMaximum_Score_Normal(0);
         }
 
+        // 跳过NORMAL难度字符串
         getline(ss, cell, ',');
 
+        // 读取NORMAL难度时间戳
         string timestampNormal;
         getline(ss, timestampNormal, ',');
-
         player->setTimestampNormal(timestampNormal);
 
-
-
-
-
-
+        // 读取DIFFICULT难度最高分
         getline(ss, cell, ',');
-
         if (!cell.empty() && isNumber(cell))
         {
             player->setMaximum_Score_Difficult(stoi(cell));
@@ -294,37 +323,30 @@ bool Filedata::loadPlayerData()
             player->setMaximum_Score_Difficult(0);
         }
 
+        // 跳过DIFFICULT难度字符串
         getline(ss, cell, ',');
 
+        // 读取DIFFICULT难度时间戳
         string timestampDifficult;
         getline(ss, timestampDifficult, ',');
-
         player->setTimestampDifficult(timestampDifficult);
 
-
-
-        int i = 0;
-
+        // 读取最近的成绩记录
         while (getline(ss, cell, ','))
         {
             if (!cell.empty() && isNumber(cell))
             {
-                if (i % 2 == 0)
-                {
-                    player->setScores_Push(stoi(cell));
+                int score = stoi(cell);
+                string difficulty;
 
-                    i++;
-                }
-                else if (i % 2 == 1)
+                if (getline(ss, difficulty, ','))
                 {
-                    player->setGameDiffclutys_Push(cell);
-
-                    i++;
+                    if (!difficulty.empty())
+                    {
+                        player->setScores_Push(score);
+                        player->setGameDiffclutys_Push(difficulty);
+                    }
                 }
-            }
-            else
-            {
-                break;
             }
         }
 
