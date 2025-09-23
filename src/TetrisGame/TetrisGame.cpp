@@ -70,7 +70,7 @@ int TetrisGame::select_game_difficulty(User* user)
                 return -1;
             }
 
-            user->setGameDiffculty("DIFFCULT");
+            user->setGameDiffculty("DIFFICULT");
 
             user->setSpeed(0.2);
 

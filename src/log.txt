@@ -778,3 +778,73 @@
 
 [2025-09-21 14:04:23.406] [logger] [info] Client[8] disconnected!
 
+[2025-09-22 03:32:49.528] [logger] [info] Client[8], welcome!
+
+[2025-09-22 03:48:28.643] [logger] [info] Client[8], welcome!
+
+[2025-09-22 06:07:30.787] [logger] [info] Client[8], welcome!
+
+[2025-09-22 06:21:14.671] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 06:21:40.460] [logger] [info] Client[8], welcome!
+
+[2025-09-22 06:39:01.070] [logger] [info] Client[8], welcome!
+
+[2025-09-22 07:22:18.516] [logger] [info] Client[8], welcome!
+
+[2025-09-22 08:31:17.034] [logger] [info] Client[8], welcome!
+
+[2025-09-22 09:27:38.944] [logger] [info] Client[8], welcome!
+
+[2025-09-22 09:38:30.901] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 09:38:42.188] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 09:41:08.261] [logger] [info] Client[8], welcome!
+
+[2025-09-22 10:02:17.211] [logger] [info] Client[8], welcome!
+
+[2025-09-22 10:25:00.709] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:02.247] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:03.022] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:03.769] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:04.509] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:05.177] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:05.898] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:07.068] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:07.827] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:08.499] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:09.088] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:09.665] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:10.400] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:11.049] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:24.865] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:25.654] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:26.362] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:26.959] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:27.498] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:28.182] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-22 10:25:32.823] [logger] [info] Client[8], welcome!
+
+[2025-09-22 15:58:35.832] [logger] [info] Client[8], welcome!
+
