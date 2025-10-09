@@ -8,8 +8,6 @@
 #include"../UImanage/UImanage.h"
 #include"../Filedata_manage/Filedata.h"
 
-UImanage::UImanage(){}
-
 bool UImanage::showInitMenu(User* user)
 {
     if (!UImanage::clear(user))

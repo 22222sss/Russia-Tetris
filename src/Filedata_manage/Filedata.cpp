@@ -11,10 +11,6 @@
 #include <sys/stat.h>
 #include <algorithm>
 
-extern vector<PlayerInfo*> players;
-
-Filedata::Filedata() {}
-
 vector<string> Filedata::Read_recent_grades(User* user)
 {
     vector<string> temp = {};
@@ -240,7 +236,7 @@ bool Filedata::saveNewUserData(User* user)
 
 bool Filedata::loadPlayerData()
 {
-    players.clear();
+    PlayerInfo::setPlayers({});
 
     ifstream file("userdata.csv");
     if (!file.is_open())
@@ -350,7 +346,7 @@ bool Filedata::loadPlayerData()
             }
         }
 
-        players.push_back(player);
+        PlayerInfo::getPlayers().push_back(player);
     }
 
     file.close();

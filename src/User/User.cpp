@@ -35,9 +35,21 @@ void User::resetUserInfo()
     memset(this->color, -1, sizeof(this->color));
 }
 
+map<int, User*>& User::getUsers()
+{
+    static map<int, User*> users;  // 定义私有局部静态变量,存储所有已连接用户的信息
+
+    return users;
+}
+
+void User::setUsers(const map<int, User*>& newUsers) 
+{
+    User::getUsers() = newUsers;
+}
+
 void User::initUserInfo()
 {
-    for (const auto& player : players)
+    for (const auto& player : PlayerInfo::getPlayers())
     {
         if (player->getPlayerName() == this->getUsername() && player->getPassword() == this->getPassword())
         {

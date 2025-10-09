@@ -1,5 +1,7 @@
 #include"PlayerInfo.h"
 
+// 定义私有静态成员变量
+
 PlayerInfo::PlayerInfo()
 {
     this->playername = "";
@@ -7,6 +9,20 @@ PlayerInfo::PlayerInfo()
     this->scores = {};
     this->game_diffclutys = {};
 }
+
+vector<PlayerInfo*>& PlayerInfo::getPlayers()
+{
+    static vector<PlayerInfo*> players;//定义局部静态成员变量,存储所有已注册用户的信息
+
+    return players;
+}
+
+void PlayerInfo::setPlayers(const vector<PlayerInfo*>& newPlayers) 
+{
+    PlayerInfo::getPlayers() = newPlayers;
+}
+
+
 
 string PlayerInfo::getPlayerName() const
 {

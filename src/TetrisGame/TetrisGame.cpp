@@ -8,11 +8,7 @@
 #include"../UImanage/UImanage.h"
 #include"../Filedata_manage/Filedata.h"
 
-extern vector<PlayerInfo*> players;
-
 extern Block blockDefines[7][4];//用于存储7种基本形状方块的各自的4种形态的信息，共28种
-
-extern map<int, User*> users;
 
 extern shared_ptr<spdlog::logger> logger;
 
@@ -460,4 +456,133 @@ bool TetrisGame::process_STATUS_SELECT_GAME_DIFFICULTY(User* user)
         user->setStatus(STATUS_LOGIN);
     }
     return true;
+}
+
+//处理时间事件机制--键盘不输入时方块自动下降
+void TetrisGame::processBlockDown(User* user)
+{
+
+    if (TetrisGame::IsLegal(user, user->getShape(), user->getForm(), user->getRow() + 1, user->getCol()) == 0)
+    {
+        for (int i = 0; i < 4; i++)
+        {
+            for (int j = 0; j < 4; j++)
+            {
+                if (blockDefines[user->getShape()][user->getForm()].space[i][j] == 1)
+                {
+                    user->setData(user->getRow() + i - 1, user->getCol() + j - 1, 1);
+
+                    user->setColor(user->getRow() + i - 1, user->getCol() + j - 1, user->getShape());
+                }
+            }
+        }
+
+
+
+        user->setLine(0);
+
+        while (1)
+        {
+            if (TetrisGame::Is_Increase_Score(user) == 1)
+            {
+                continue;
+            }
+            else if (TetrisGame::Is_Increase_Score(user) == 0)
+            {
+                break;
+            }
+            else if (TetrisGame::Is_Increase_Score(user) == -1)
+            {
+                return;
+            }
+        }
+
+        if (!TetrisGame::UpdateCurrentScore(user))
+        {
+            return;
+        }
+
+        if (!TetrisGame::IsOver(user))//判断是否结束
+        {
+            user->setShape(user->getNextShape());
+            user->setForm(user->getNextForm());
+
+            if (!UImanage::DrawSpace(user, user->getNextShape(), user->getNextForm(), 3, WINDOW_COL_COUNT + 3))
+            {
+                return;
+            }
+
+            user->setNextShape(rand() % 7);
+            user->setNextForm(rand() % 4);
+
+            user->setRow(1);
+            user->setCol(WINDOW_COL_COUNT / 2 - 1);
+
+            if (!UImanage::DrawBlock(user, user->getNextShape(), user->getNextForm(), 3, WINDOW_COL_COUNT + 3))//将下一个方块显示在右上角
+            {
+                return;
+            }
+
+            if (!UImanage::DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))//将该方块显示在初始下落位置
+            {
+                return;
+            }
+        }
+        else
+        {
+            if (!Filedata::Update_TopScore_RecentScore(user))
+                return;
+
+            if (!UImanage::showover(user))
+                return;
+        }
+    }
+    else
+    {
+
+        if (!UImanage::DrawSpace(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))
+        {
+            return;
+        }
+
+        user->setRow(user->getRow() + 1);
+
+        if (!UImanage::DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))
+        {
+            return;
+        }
+    }
+}
+
+void TetrisGame::handleTimedUserLogic(User* user)
+{
+    // 获取当前时间
+    user->setCurrentTime(std::chrono::steady_clock::now());
+
+    // 计算距离上次触发经过的时间
+    std::chrono::duration<double> elapsed_time = user->getCurrentTime() - user->getLastTriggerTime();
+
+    // 计算时间差
+    if (elapsed_time >= std::chrono::duration<double>(user->getSpeed()))
+    {
+        // 执行相应的逻辑处理
+        processBlockDown(user);
+
+        // 将上次触发时间更新为当前时间
+        user->setLastTriggerTime(user->getCurrentTime());
+    }
+}
+
+void TetrisGame::processTimerEvent(int timerfd, short events, void* arg)
+{
+    if (!User::getUsers().empty())
+    {
+        for (auto i = User::getUsers().begin(); i != User::getUsers().end(); i++)
+        {
+            if (i->second->getStatus() == STATUS_PLAYING)
+            {
+                handleTimedUserLogic(i->second);
+            }
+        }
+    }
 }

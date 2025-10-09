@@ -7,7 +7,6 @@
 class Server
 {
 public:
-	Server();
 
     //接收用户信息
     static int ReceiveData(User* user);
@@ -57,6 +56,12 @@ public:
     //STATUS_REGISTER_OR_LOAD_OVER
     static bool process_STATUS_REGISTER_OR_LOAD_OVER(User* user);
     
+    //处理新用户的连接
+    static void handleNewClientConnection(int serverSocket, short events, void* arg);
+
+    //处理已连接用户的键盘输入
+    static void handleClientData(int clientSocket, short events, void* arg);
+
 };
 
 #endif

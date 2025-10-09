@@ -6,7 +6,13 @@
 class PlayerInfo
 {
 public:
+
     PlayerInfo();
+
+    // Getter and Setter functions for players
+    static vector<PlayerInfo*>& getPlayers();
+
+    static void setPlayers(const vector<PlayerInfo*>& newPlayers);
 
     // Getter and Setter functions for playername
     string getPlayerName() const;
@@ -68,9 +74,6 @@ private:
     string timestamp_diffcult;
 
 };
-
-// 全局变量，存储所有用户数据
-extern vector<PlayerInfo*> players;
 
 bool cmp_easy(const PlayerInfo* a, const PlayerInfo* b);
 

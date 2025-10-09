@@ -10,6 +10,12 @@ class User
 public:
     User(int fd);
 
+    // Getter and setter functions for users
+    static map<int, User*>& getUsers();
+
+    // 基础 Setter
+    static void setUsers(const map<int, User*>& newUsers);
+
     //重置用户信息
     void resetUserInfo();
 
@@ -164,8 +170,6 @@ private:
     string game_diffculty;
 
 };
-
-extern map<int, User*> users;
 
 
 

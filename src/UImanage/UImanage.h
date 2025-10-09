@@ -15,7 +15,6 @@
 class UImanage
 {
 public:
-	UImanage();
 
 	//展示初始界面
 	static bool showInitMenu(User* user);

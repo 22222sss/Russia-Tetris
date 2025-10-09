@@ -8,15 +8,9 @@
 #include"../UImanage/UImanage.h"
 #include"../Filedata_manage/Filedata.h"
 
-extern vector<PlayerInfo*> players;
-
 extern Block blockDefines[7][4];//用于存储7种基本形状方块的各自的4种形态的信息，共28种
 
-extern map<int, User*> users;
-
 extern shared_ptr<spdlog::logger> logger;
-
-Server::Server() {}
 
 int Server::returnToInitMenu(User* user)
 {
@@ -308,7 +302,7 @@ int Server::receive_password_load(User* user)
     {
         user->setPassword(password);
 
-        for (const auto& player : players)
+        for (const auto& player : PlayerInfo::getPlayers())
         {
             if (player->getPlayerName() == user->getUsername() && player->getPassword() == user->getPassword())
             {
@@ -564,4 +558,137 @@ bool Server::process_STATUS_REGISTER_OR_LOAD_OVER(User* user)
         user->setReceivedata("");
     }
     return true;
+}
+
+
+void Server::handleNewClientConnection(int serverSocket, short events, void* arg)
+{
+    int clientSocket = accept(serverSocket, NULL, NULL);
+    if (clientSocket == -1)
+    {
+        //printf("accept Error: %s (errno: %d) In handleNewClientConnection\n", strerror(errno), errno);
+        logger->error("accept Error: {} (errno: {}) In handleNewClientConnection\n", strerror(errno), errno);
+        logger->flush();
+        return;
+    }
+    else
+    {
+        //printf("Client[%d], welcome!\n", clientSocket);
+        //Client.push_back(client);
+        logger->info("Client[{}], welcome!\n", clientSocket);
+        logger->flush();
+    }
+
+    // 创建新的用户信息结构体
+    User* newUser = new User(clientSocket);
+
+    if (newUser == nullptr)
+    {
+        close(clientSocket);
+        //printf("allocate memory for newUser Error In handleNewClientConnection");
+        logger->error("allocate memory for newUser Error In handleNewClientConnection\n");
+        logger->flush();
+        return;
+    }
+
+    User::getUsers().insert(make_pair(clientSocket, newUser));
+
+    // 创建并添加客户端数据事件
+
+    EventLoop* eventloop = static_cast<EventLoop*>(arg);
+
+    eventloop->registerFdEvent(clientSocket, EV_READ | EV_PERSIST, Server::handleClientData, (void*)newUser);
+
+    // 设置客户端连接为非阻塞模式
+    if (!IsSetSocketBlocking(clientSocket, false))
+        return;
+
+    if (!UImanage::showInitMenu(newUser))
+        return;
+}
+
+void Server::handleClientData(int clientSocket, short events, void* arg)
+{
+    User* user = (User*)arg;
+
+    // 处理已连接客户端的数据接收事件
+    if (user->getStatus() == STATUS_PLAYING)
+    {
+        if (!TetrisGame::process_STATUS_PLAYING(user))
+        {
+            return;
+        }
+    }
+    else if (user->getStatus() == STATUS_OVER_CONFIRMING)
+    {
+        if (!TetrisGame::process_STATUS_OVER_CONFIRMING(user))
+        {
+            return;
+        }
+    }
+    else if (user->getStatus() == STATUS_NOTSTART)
+    {
+        if (!Server::process_STATUS_NOTSTART(user))
+        {
+            return;
+        }
+    }
+    else if (user->getStatus() == STATUS_RECEIVE_USERNAME_REGISTER)
+    {
+        if (!Server::process_STATUS_RECEIVE_USERNAME_REGISTER(user))
+        {
+            return;
+        }
+    }
+    else if (user->getStatus() == STATUS_RECEIVE_PASSWORD_REGISTER)
+    {
+        if (!Server::process_STATUS_RECEIVE_PASSWORD_REGISTER(user))
+        {
+            return;
+        }
+    }
+    else if (user->getStatus() == STATUS_RECEIVE_USERNAME_LOAD)
+    {
+        if (!Server::process_STATUS_RECEIVE_USERNAME_LOAD(user))
+        {
+            return;
+        }
+    }
+    else if (user->getStatus() == STATUS_RECEIVE_PASSWORD_LOAD)
+    {
+        if (!Server::process_STATUS_RECEIVE_PASSWORD_LOAD(user))
+        {
+            return;
+        }
+
+    }
+    else if (user->getStatus() == STATUS_LOGIN)
+    {
+        if (!Server::process_STATUS_LOGIN(user))
+        {
+            return;
+        }
+    }
+    else if (user->getStatus() == STATUS_SELECT_GAME_DIFFICULTY)
+    {
+        if (!TetrisGame::process_STATUS_SELECT_GAME_DIFFICULTY(user))
+        {
+            return;
+        }
+
+    }
+    else if (user->getStatus() == STATUS_LOGIN_OVER)
+    {
+        if (!Server::process_STATUS_LOGIN_OVER(user))
+        {
+            return;
+        }
+    }
+    else if (user->getStatus() == STATUS_REGISTER_OR_LOAD_OVER)
+    {
+        if (!Server::process_STATUS_REGISTER_OR_LOAD_OVER(user))
+        {
+            return;
+        }
+    }
 }

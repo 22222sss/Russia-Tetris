@@ -81,7 +81,16 @@ public:
 
     static bool process_STATUS_SELECT_GAME_DIFFICULTY(User* user);
 
+    //时间事件
 
+    // 定义处理方块下降逻辑的函数
+    static void processBlockDown(User* user);
+
+    //处理定时触发逻辑
+    static void handleTimedUserLogic(User* user);
+
+    //没有键盘输入时，方块自动下降
+    static void processTimerEvent(int timerfd, short events, void* arg);
 };
 
 #endif 

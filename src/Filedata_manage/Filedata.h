@@ -15,8 +15,7 @@
 class Filedata
 {
 public:
-	Filedata();
-
+	
 	static vector<string> Read_recent_grades(User *user);
 
 	static vector<PlayerInfo*> Read_AllpalyerInfo(ifstream &file);

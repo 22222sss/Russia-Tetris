@@ -848,3 +848,59 @@
 
 [2025-09-22 15:58:35.832] [logger] [info] Client[8], welcome!
 
+[2025-09-23 07:05:13.194] [logger] [info] Client[9], welcome!
+
+[2025-09-23 07:05:49.966] [logger] [info] Client[8] disconnect!
+
+[2025-09-23 07:05:50.052] [logger] [info] Client[8] disconnected!
+
+[2025-09-23 07:05:50.518] [logger] [info] Client[9] disconnect!
+
+[2025-09-23 07:05:50.554] [logger] [info] Client[9] disconnected!
+
+[2025-09-28 12:06:01.479] [logger] [info] Client[8], welcome!
+
+[2025-09-28 12:11:24.380] [logger] [info] Client[8], welcome!
+
+[2025-09-28 12:27:00.781] [logger] [info] Client[8], welcome!
+
+[2025-09-28 12:34:49.421] [logger] [info] Client[9], welcome!
+
+[2025-09-28 12:37:20.186] [logger] [info] Client[10], welcome!
+
+[2025-09-28 12:50:32.470] [logger] [error] Client[9] disconnect!
+
+[2025-09-28 12:50:32.477] [logger] [info] Client[9] disconnected!
+
+[2025-09-28 12:50:43.892] [logger] [info] Client[8] disconnect!
+
+[2025-09-28 12:50:43.978] [logger] [info] Client[8] disconnected!
+
+[2025-09-28 12:50:44.995] [logger] [error] Client[10] disconnect!
+
+[2025-09-28 12:50:45.076] [logger] [info] Client[10] disconnected!
+
+[2025-09-30 07:11:56.162] [logger] [info] Client[8], welcome!
+
+[2025-09-30 07:24:15.618] [logger] [info] Client[8], welcome!
+
+[2025-09-30 07:25:20.543] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-30 07:25:30.334] [logger] [error] bind Error: Address already in use (errno: 98)
+
+[2025-09-30 07:31:26.183] [logger] [info] Client[8], welcome!
+
+[2025-09-30 08:06:17.300] [logger] [info] Client[8], welcome!
+
+[2025-09-30 08:10:29.048] [logger] [info] Client[9], welcome!
+
+[2025-09-30 08:14:19.813] [logger] [info] Client[10], welcome!
+
+[2025-09-30 08:33:11.469] [logger] [info] Client[8], welcome!
+
+[2025-10-09 11:48:00.148] [logger] [info] Client[8], welcome!
+
+[2025-10-09 11:59:08.809] [logger] [error] Client[8] disconnect!
+
+[2025-10-09 11:59:08.873] [logger] [info] Client[8] disconnected!
+

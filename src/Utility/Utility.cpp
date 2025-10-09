@@ -8,11 +8,7 @@
 #include"../UImanage/UImanage.h"
 #include"../Filedata_manage/Filedata.h"
 
-extern vector<PlayerInfo*> players;
-
 extern Block blockDefines[7][4];//用于存储7种基本形状方块的各自的4种形态的信息，共28种
-
-extern map<int, User*> users;
 
 extern shared_ptr<spdlog::logger> logger;
 
@@ -307,7 +303,7 @@ void InitBlockInfo()
 bool isUserExists(const string& playername)
 {
 
-    for (auto& player : players)
+    for (auto& player : PlayerInfo::getPlayers())
     {
         if (player->getPlayerName() == playername)
         {
