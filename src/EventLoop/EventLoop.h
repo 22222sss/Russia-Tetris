@@ -2,33 +2,43 @@
 #ifndef EventLoop_H
 #define EventLoop_H
 
-
-#include"../Server/Server.h"
 #include"../Common/Common.h"
+#include"../TetrisGame/User.h"
+#include"../TetrisGame/Game.h"
 #include"../Utility/Utility.h"
-#include"../PlayerInfo/PlayerInfo.h"
-#include"../TetrisGame/TetrisGame.h"
-#include"../EventLoop/EventLoop.h"
-#include"../User/User.h"
 #include"../UImanage/UImanage.h"
-#include"../Filedata_manage/Filedata.h"
+#include"../TetrisGame/Filedata.h"
+#include"../TetrisGame/PlayerInfo.h"
+#include"../ConnectionPool/ConnectionPool.h"
 
+class EventLoop {
+private:
+    struct event_base* base;
 
+    using EventCallback = void (*)(evutil_socket_t, short, void*);
 
-void handleNewClientConnection(int serverSocket, short events, void* arg);
+    // ä½¿ç”¨unordered_mapæé«˜æŸ¥æ‰¾æ€§èƒ½ - O(1) vs O(log n)
+    static std::unordered_map<evutil_socket_t, struct event*> events;
+    static std::mutex events_mutex;  // ä¿æŠ¤å¹¶å‘è®¿é—®
 
-void handleClientData(int clientSocket, short events, void* arg);
+public:
+    EventLoop();
+    ~EventLoop();
 
-// ¶¨Òå´¦Àí·½¿éÏÂ½µÂß¼­µÄº¯Êı
-void processBlockDown(User* user);
+    void run();
 
-//´¦Àí¶¨Ê±´¥·¢Âß¼­
-void handleTimedUserLogic(User* user);
+    // æ·»åŠ æ‰¹é‡äº‹ä»¶æ³¨å†ŒåŠŸèƒ½ - æé«˜åˆå§‹åŒ–æ€§èƒ½
+    bool registerFdEvent(evutil_socket_t fd, short events, EventCallback callback, void* arg, const struct timeval* timeout = nullptr);
+    bool batchRegisterEvents(const std::vector<evutil_socket_t>& fds, short events, EventCallback callback, void* arg);
 
-//Ã»ÓĞ¼üÅÌÊäÈëÊ±£¬·½¿é×Ô¶¯ÏÂ½µ
-void processTimerEvent(int timerfd, short events, void* arg);
+    static void unregister_Event_User(int timerfd, short events, void* arg);
 
+    // æ·»åŠ äº‹ä»¶ç»Ÿè®¡åŠŸèƒ½ - ä¾¿äºç›‘æ§å’Œè°ƒè¯•
+    static size_t getActiveEventsCount();
+    static void printEventStatistics();
 
+    static std::unordered_map<evutil_socket_t, struct event*> getEvents();
+    static void setEvents(const std::unordered_map<evutil_socket_t, struct event*>& newEvents);
+};
 
 #endif // EventLoop_H
-

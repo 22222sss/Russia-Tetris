@@ -2,41 +2,37 @@
 #ifndef Utility_H
 #define Utility_H
 
-#include"../Server/Server.h"
 #include"../Common/Common.h"
-#include"../Utility/Utility.h"
-#include"../PlayerInfo/PlayerInfo.h"
-#include"../TetrisGame/TetrisGame.h"
-#include"../EventLoop/EventLoop.h"
-#include"../User/User.h"
+#include"../TetrisGame/User.h"
+#include"../TetrisGame/Game.h"
 #include"../UImanage/UImanage.h"
-#include"../Filedata_manage/Filedata.h"
+#include"../TetrisGame/Filedata.h"
+#include"../EventLoop/EventLoop.h"
+#include"../TetrisGame/PlayerInfo.h"
 
-//ÉèÖÃ·Ç×èÈû/×èÈûÌ×½Ó×Ö
+// UTF-8 è½¬ GBK å‡½æ•°
+string utf8_to_gbk(const std::string& utf8_str);
+
+//è®¾ç½®éé˜»å¡/é˜»å¡å¥—æ¥å­—
 bool IsSetSocketBlocking(int socket, bool blocking);
 
-//ÑÕÉ«ÉèÖÃ
+//é¢œè‰²è®¾ç½®
 int Color(int c);
 
-//³õÊ¼»¯·½¿éĞÅÏ¢
-void InitBlockInfo();
-
-// ¼ì²éÓÃ»§ÊÇ·ñ´æÔÚ
+// æ£€æŸ¥ç”¨æˆ·æ˜¯å¦å­˜åœ¨
 bool isUserExists(const std::string& username);
 
-//»ñÈ¡Ä¿Ç°Ê±¼ä
+//è·å–ç›®å‰æ—¶é—´
 string currenttime();
 
-bool output(User* user, string s);
+bool output(const shared_ptr<User>& user, string s);
 
-bool moveTo(User* user, int row, int col);
+bool moveTo(const shared_ptr<User>& user, int row, int col);
 
-bool ChangeCurrentColor(User* user, int n);
+bool ChangeCurrentColor(const shared_ptr<User>& user, int n);
 
-bool outputText(User* user, int row, int col, int n, string s);
+bool outputText(const shared_ptr<User>& user, int row, int col, int color, const string& text, int grade = 0);
 
-bool outputgrade(User* user, int row, int col, int n, string s, int grade);
-
-bool isNumber(const std::string& s);// ¼ì²é×Ö·û´®ÊÇ·ñÎªÊı×Ö
+bool isNumber(const std::string& s);// æ£€æŸ¥å­—ç¬¦ä¸²æ˜¯å¦ä¸ºæ•°å­—
 
 #endif

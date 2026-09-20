@@ -1,0 +1,28 @@
+# 编译产物
+*.o
+*.obj
+*.exe
+*.out
+*.a
+*.so
+*.dylib
+
+# 可执行文件
+src/tetris_game
+
+# 目标文件目录
+src/obj/
+
+# 日志文件
+*.log
+src/log.txt
+
+# 运行时的用户数据
+src/userdata.csv
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

@@ -38,57 +38,39 @@
 #include <event.h>
 #include <time.h>
 
+#include <sys/stat.h>
+#include <algorithm>
+
+#include <unordered_map>  // æ›¿æ¢mapä¸ºunordered_map
+#include <memory>
+#include <mutex>          // æ·»åŠ çº¿ç¨‹å®‰å…¨
+#include <vector>         // ç”¨äºæ‰¹é‡æ“ä½œ
+#include <atomic>  // ç”¨äºçº¿ç¨‹å®‰å…¨çš„è®¡æ•°å™¨
+#include <condition_variable>
+
+#include <iconv.h>
+#include <errno.h>
+
 
 using namespace std;
 
 #define MAXSIZE 2048
-#define DEFAULT_PORT 9999// Ö¸¶¨¶Ë¿ÚÎª9999
+#define DEFAULT_PORT 9999// æŒ‡å®šç«¯å£ä¸º9999
 #define BUFFSIZE 2048
 #define MAXLINK 2048
 
-#define WINDOW_ROW_COUNT 24 //ÓÎÏ·ÇøĞĞÊı
-#define WINDOW_COL_COUNT 20 //ÓÎÏ·ÇøÁĞÊı
+#define WINDOW_ROW_COUNT 24 //æ¸¸æˆåŒºè¡Œæ•°
+#define WINDOW_COL_COUNT 20 //æ¸¸æˆåŒºåˆ—æ•°
 
-#define KEY_DOWN "\x1b[B" //·½Ïò¼ü£ºÏÂ
-#define KEY_LEFT "\x1b[D" //·½Ïò¼ü£º×ó
-#define KEY_RIGHT "\x1b[C" //·½Ïò¼ü£ºÓÒ
-
-struct Block
-{
-    int space[4][4];
-};
-
-extern Block blockDefines[7][4];//ÓÃÓÚ´æ´¢7ÖÖ»ù±¾ĞÎ×´·½¿éµÄ¸÷×ÔµÄ4ÖÖĞÎÌ¬µÄĞÅÏ¢£¬¹²28ÖÖ
-
-extern shared_ptr<spdlog::logger> logger;
-
-
-enum Shape
-{
-    SHAPE_T = 0,
-    SHAPE_L = 1,
-    SHAPE_J = 2,
-    SHAPE_Z = 3,
-    SHAPE_S = 4,
-    SHAPE_O = 5,
-    SHAPE_I = 6
-};
-
-enum Color
-{
-    COLOR_PURPLE = 35,
-    COLOR_RED = 31,
-    COLOR_LOWBLUE = 36,
-    COLOR_YELLO = 33,
-    COLOR_DEEPBLUE = 34,
-    COLOR_WHITE = 37
-};
+#define KEY_DOWN "\x1b[B" //æ–¹å‘é”®ï¼šä¸‹
+#define KEY_LEFT "\x1b[D" //æ–¹å‘é”®ï¼šå·¦
+#define KEY_RIGHT "\x1b[C" //æ–¹å‘é”®ï¼šå³
 
 enum GameStatus
 {
-    STATUS_NOTSTART ,
-    STATUS_PLAYING ,
-    STATUS_OVER_CONFIRMING ,
+    STATUS_NOTSTART,
+    STATUS_PLAYING,
+    STATUS_OVER_CONFIRMING,
     STATUS_OVER_QUIT,
 
     STATUS_LOGIN,

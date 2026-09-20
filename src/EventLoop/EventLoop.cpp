@@ -1,328 +1,136 @@
-#include"../Server/Server.h"
-#include"../Common/Common.h"
-#include"../Utility/Utility.h"
-#include"../PlayerInfo/PlayerInfo.h"
-#include"../TetrisGame/TetrisGame.h"
-#include"../EventLoop/EventLoop.h"
-#include"../User/User.h"
-#include"../UImanage/UImanage.h"
-#include"../Filedata_manage/Filedata.h"
-
-extern vector<PlayerInfo*> players;
-
-extern Block blockDefines[7][4];//ÓÃÓÚ´æ´¢7ÖÖ»ù±¾ĞÎ×´·½¿éµÄ¸÷×ÔµÄ4ÖÖĞÎÌ¬µÄĞÅÏ¢£¬¹²28ÖÖ
-
-extern map<int, User*> users;
+#include"EventLoop.h"
 
 extern shared_ptr<spdlog::logger> logger;
 
-extern map<evutil_socket_t, struct event*> event;
+// åˆå§‹åŒ–é™æ€æˆå‘˜
+std::unordered_map<evutil_socket_t, struct event*> EventLoop::events;
+std::mutex EventLoop::events_mutex;
+std::atomic<long> total_events_processed(0);    // åŸå­è®¡æ•°å™¨
+std::atomic<long> active_connections(0);        // åŸå­è®¡æ•°å™¨
 
-//ÔÚEventLoopÀàÖĞÉèÖÃÕâĞ©»Øµ÷º¯Êı£¬²¢ÔÚÊÂ¼ş·¢ÉúÊ±µ÷ÓÃËüÃÇ
+EventLoop::EventLoop() {
+    // ä½¿ç”¨epollä½œä¸ºåç«¯ï¼ˆå¦‚æœå¯ç”¨ï¼‰- æ€§èƒ½å…³é”®ï¼
+    struct event_config* cfg = event_config_new();
+    if (cfg) {
+        // ä¼˜å…ˆä½¿ç”¨epollï¼Œé¿å…select/poll
+        // epollåœ¨å¤§é‡è¿æ¥æ—¶æ€§èƒ½è¿œä¼˜äºselect/poll
+        event_config_avoid_method(cfg, "select");  // selectæœ‰1024è¿æ¥é™åˆ¶
+        event_config_avoid_method(cfg, "poll");    // pollåœ¨å¤§è¿æ¥æ•°æ—¶æ€§èƒ½å·®
+        base = event_base_new_with_config(cfg);
+        event_config_free(cfg);
+    }
 
-void handleNewClientConnection(int serverSocket, short events, void* arg)
-{
-    int clientSocket = accept(serverSocket, NULL, NULL);
-    if (clientSocket == -1)
-    {
-        //printf("accept Error: %s (errno: %d) In handleNewClientConnection\n", strerror(errno), errno);
-        logger->error("accept Error: {} (errno: {}) In handleNewClientConnection\n", strerror(errno), errno);
+    if (!base) {
+        // å›é€€åˆ°é»˜è®¤é…ç½®
+        base = event_base_new();
+    }
+
+    if (!base) {
+        logger->error("Error initializing libevent: {} (errno: {})", strerror(errno), errno);
         logger->flush();
-        return;
-    }
-    else
-    {
-        //printf("Client[%d], welcome!\n", clientSocket);
-        //Client.push_back(client);
-        logger->info("Client[{}], welcome!\n", clientSocket);
-        logger->flush();
+        throw std::runtime_error("Failed to create event base");
     }
 
-    // ´´½¨ĞÂµÄÓÃ»§ĞÅÏ¢½á¹¹Ìå
-    User* newUser = new User(clientSocket);
-
-    if (newUser == nullptr)
-    {
-        close(clientSocket);
-        //printf("allocate memory for newUser Error In handleNewClientConnection");
-        logger->error("allocate memory for newUser Error In handleNewClientConnection\n");
-        logger->flush();
-        return;
-    }
-
-    users.insert(make_pair(clientSocket, newUser));
-
-    // ´´½¨²¢Ìí¼Ó¿Í»§¶ËÊı¾İÊÂ¼ş
-    struct event_base* base = (event_base*)arg;
-
-    // ´´½¨²¢Ìí¼Ó¿Í»§¶ËÌ×½Ó×ÖÊÂ¼ş
-    struct event* clientEvent = event_new(base, clientSocket, EV_READ | EV_PERSIST, handleClientData, (void*)newUser);
-
-    event.insert(make_pair(clientSocket, clientEvent));
-
-    event_add(clientEvent, NULL);
-
-    // ÉèÖÃ¿Í»§¶ËÁ¬½ÓÎª·Ç×èÈûÄ£Ê½
-    if (!IsSetSocketBlocking(clientSocket, false))
-        return;
-
-   
-
-    //std::unique_ptr<UImanage> UI(new UImanage);
-
-    if (!UImanage::showInitMenu(newUser))
-        return;
+    // è®°å½•ä½¿ç”¨çš„äº‹ä»¶æœºåˆ¶ - ä¾¿äºè°ƒè¯•
+    logger->info("EventLoop using backend: {}", event_base_get_method(base));
 }
 
-void handleClientData(int clientSocket, short events, void* arg)
-{
-    User* user = (User*)arg;
+EventLoop::~EventLoop() {
+    {
+        std::lock_guard<std::mutex> lock(events_mutex);  // è‡ªåŠ¨åŠ é”ï¼Œç¦»å¼€ä½œç”¨åŸŸè‡ªåŠ¨è§£é”
+        for (auto& pair : events) {
+            event_del(pair.second);     // ä»äº‹ä»¶å¾ªç¯ä¸­åˆ é™¤
+            event_free(pair.second);    // é‡Šæ”¾äº‹ä»¶å†…å­˜
+        }
+        events.clear();  // æ¸…ç©ºmap
+    }
 
-    //std::unique_ptr<Server> server(new Server);
+    if (base) {
+        event_base_free(base);  // é‡Šæ”¾äº‹ä»¶åŸºç¡€
+    }
+}
 
-    //std::unique_ptr<TetrisGame> game(new TetrisGame);
+void EventLoop::run() {
+    if (base) {
+        logger->info("EventLoop starting with {} initial events", events.size());
+        event_base_dispatch(base);  // å¼€å§‹äº‹ä»¶å¾ªç¯ï¼ˆé˜»å¡ï¼‰
+    }
+}
 
-    // ´¦ÀíÒÑÁ¬½Ó¿Í»§¶ËµÄÊı¾İ½ÓÊÕÊÂ¼ş
-    if (user->getStatus() == STATUS_PLAYING)
-    {
-        if (!TetrisGame::process_STATUS_PLAYING(user))
-        {
-            return;
-        }
-    }
-    else if (user->getStatus() == STATUS_OVER_CONFIRMING)
-    {
-        if (!TetrisGame::process_STATUS_OVER_CONFIRMING(user))
-        {
-            return;
-        }
-    }
-    else if (user->getStatus() == STATUS_NOTSTART)
-    {
-        if (!Server::process_STATUS_NOTSTART(user))
-        {
-            return;
-        }
-    }
-    else if (user->getStatus() == STATUS_RECEIVE_USERNAME_REGISTER)
-    {
-        if (!Server::process_STATUS_RECEIVE_USERNAME_REGISTER(user))
-        {
-            return;
-        }
-    }
-    else if (user->getStatus() == STATUS_RECEIVE_PASSWORD_REGISTER)
-    {
-        if (!Server::process_STATUS_RECEIVE_PASSWORD_REGISTER(user))
-        {
-            return;
-        }
-    }
-    else if (user->getStatus() == STATUS_RECEIVE_USERNAME_LOAD)
-    {
-        if (!Server::process_STATUS_RECEIVE_USERNAME_LOAD(user))
-        {
-            return;
-        }
-    }
-    else if (user->getStatus() == STATUS_RECEIVE_PASSWORD_LOAD)
-    {
-        if (!Server::process_STATUS_RECEIVE_PASSWORD_LOAD(user))
-        {
-            return;
-        }
+bool EventLoop::registerFdEvent(evutil_socket_t fd, short event_flags, EventCallback callback, void* arg, const struct timeval* timeout) {
+    struct event* ev = event_new(base, fd, event_flags, callback, arg);
 
+    if (!ev) {
+        logger->error("Error creating event for fd: {}", fd);
+        return false;
     }
-    else if (user->getStatus() == STATUS_LOGIN)
-    {
-        if (!Server::process_STATUS_LOGIN(user))
-        {
-            return;
-        }
-    }
-    else if (user->getStatus() == STATUS_SELECT_GAME_DIFFICULTY)
-    {
-        if (!TetrisGame::process_STATUS_SELECT_GAME_DIFFICULTY(user))
-        {
-            return;
-        }
 
-    }
-    else if (user->getStatus() == STATUS_LOGIN_OVER)
+    // è¿›å…¥ä½œç”¨åŸŸæ—¶ï¼š
     {
-        if (!Server::process_STATUS_LOGIN_OVER(user))
-        {
-            return;
+        std::lock_guard<std::mutex> lock(events_mutex); // æ„é€ å‡½æ•°è‡ªåŠ¨åŠ é”
+        // ä¸´ç•ŒåŒºä»£ç  - è¿™é‡Œå¯ä»¥å®‰å…¨è®¿é—®å…±äº«èµ„æº
+        events[fd] = ev;  // çº¿ç¨‹å®‰å…¨æ“ä½œ
+    } // ç¦»å¼€ä½œç”¨åŸŸæ—¶ï¼Œlockææ„å‡½æ•°è‡ªåŠ¨è§£é”
+
+    if (event_add(ev, timeout) != 0) {  // æ·»åŠ åˆ°äº‹ä»¶å¾ªç¯
+        logger->error("Error adding event for fd: {}", fd);
+        event_free(ev);
+        return false;
+    }
+
+    active_connections++;  // åŸå­æ“ä½œï¼Œçº¿ç¨‹å®‰å…¨
+    logger->debug("Registered event for fd: {}, total events: {}", fd, events.size());
+    return true;
+}
+
+bool EventLoop::batchRegisterEvents(const std::vector<evutil_socket_t>& fds, short event_flags, EventCallback callback, void* arg) {
+    bool all_success = true;
+
+    // æ‰¹é‡æ³¨å†Œï¼Œå‡å°‘é”ç«äº‰
+    for (auto fd : fds) {
+        if (!registerFdEvent(fd, event_flags, callback, arg)) {
+            all_success = false;
+            logger->warn("Failed to register event for fd: {}", fd);
         }
     }
-    else if (user->getStatus() == STATUS_REGISTER_OR_LOAD_OVER)
-    {
-        if (!Server::process_STATUS_REGISTER_OR_LOAD_OVER(user))
-        {
-            return;
+
+    logger->info("Batch registered {} out of {} events", events.size(), fds.size());
+    return all_success;
+}
+
+// âœ… ä½¿ç”¨è¿æ¥æ± é‡Šæ”¾
+void EventLoop::unregister_Event_User(int timerfd, short events, void* arg) {
+    std::lock_guard<std::mutex> lock(events_mutex);
+
+    auto allUsers = User::getAllUsers(); // è·å–å‰¯æœ¬
+    for (auto& pair : allUsers) {
+        if (pair.second->getStatus() == STATUS_OVER_QUIT) {
+            auto fd = pair.first;
+            auto user_ptr = pair.second;
+
+            ConnectionPool::release(user_ptr);
+            User::removeUser(fd); // ä½¿ç”¨çº¿ç¨‹å®‰å…¨çš„ç§»é™¤æ–¹æ³•
         }
     }
 }
 
-void processBlockDown(User* user)
-{
-
-    if (TetrisGame::IsLegal(user, user->getShape(), user->getForm(), user->getRow() + 1, user->getCol()) == 0)
-    {
-        for (int i = 0; i < 4; i++)
-        {
-            for (int j = 0; j < 4; j++)
-            {
-                if (blockDefines[user->getShape()][user->getForm()].space[i][j] == 1)
-                {
-                    user->setData(user->getRow() + i - 1, user->getCol() + j - 1, 1);
-
-                    user->setColor(user->getRow() + i - 1, user->getCol() + j - 1, user->getShape());
-                }
-            }
-        }
-
-        
-
-        user->setLine(0);
-
-        while (1)
-        {
-            if (TetrisGame::Is_Increase_Score(user) == 1)
-            {
-                continue;
-            }
-            else if (TetrisGame::Is_Increase_Score(user) == 0)
-            {
-                break;
-            }
-            else if (TetrisGame::Is_Increase_Score(user) == -1)
-            {
-                return;
-            }
-        }
-
-        if (!TetrisGame::UpdateCurrentScore(user))
-        {
-            return;
-        }
-
-        if (!TetrisGame::IsOver(user))//ÅĞ¶ÏÊÇ·ñ½áÊø
-        {
-            user->setShape(user->getNextShape());
-            user->setForm(user->getNextForm());
-
-            if (!UImanage::DrawSpace(user, user->getNextShape(), user->getNextForm(), 3, WINDOW_COL_COUNT + 3))
-            {
-                return;
-            }
-
-            user->setNextShape(rand() % 7);
-            user->setNextForm(rand() % 4);
-
-            user->setRow(1);
-            user->setCol(WINDOW_COL_COUNT / 2 - 1);
-
-            if (!UImanage::DrawBlock(user, user->getNextShape(), user->getNextForm(), 3, WINDOW_COL_COUNT + 3))//½«ÏÂÒ»¸ö·½¿éÏÔÊ¾ÔÚÓÒÉÏ½Ç
-            {
-                return;
-            }
-
-            if (!UImanage::DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))//½«¸Ã·½¿éÏÔÊ¾ÔÚ³õÊ¼ÏÂÂäÎ»ÖÃ
-            {
-                return;
-            }
-        }
-        else
-        {
-            if (!Filedata::Update_TopScore_RecentScore(user))
-                return;
-
-            if (!UImanage::showover(user))
-                return;
-        }
-    }
-    else
-    {
-
-        if (!UImanage::DrawSpace(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))
-        {
-            return;
-        }
-
-        user->setRow(user->getRow() + 1);
-
-        if (!UImanage::DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))
-        {
-            return;
-        }
-    }
+size_t EventLoop::getActiveEventsCount() {
+    std::lock_guard<std::mutex> lock(events_mutex);
+    return events.size();  // è¿”å›å½“å‰æ´»è·ƒäº‹ä»¶æ•°
 }
 
-void handleTimedUserLogic(User* user)
-{
-    // »ñÈ¡µ±Ç°Ê±¼ä
-    user->setCurrentTime(std::chrono::steady_clock::now());
-
-    // ¼ÆËã¾àÀëÉÏ´Î´¥·¢¾­¹ıµÄÊ±¼ä
-    std::chrono::duration<double> elapsed_time = user->getCurrentTime() - user->getLastTriggerTime();
-
-    // ¼ÆËãÊ±¼ä²î
-    if (elapsed_time >= std::chrono::duration<double>(user->getSpeed()))
-    {
-        // Ö´ĞĞÏàÓ¦µÄÂß¼­´¦Àí
-        processBlockDown(user);
-
-        // ½«ÉÏ´Î´¥·¢Ê±¼ä¸üĞÂÎªµ±Ç°Ê±¼ä
-        user->setLastTriggerTime(user->getCurrentTime());
-    }
+void EventLoop::printEventStatistics() {
+    std::lock_guard<std::mutex> lock(events_mutex);
+    logger->info("Event Statistics - Active: {}, Processed: {}, Connections: {}",
+        events.size(), total_events_processed.load(), active_connections.load());
 }
 
-void processTimerEvent(int timerfd, short events, void* arg)
-{
-    if (!users.empty())
-    {
-        for (auto i = users.begin(); i != users.end(); )
-        {
-            // Ö´ĞĞÒ»Ğ©Ìõ¼ş¼ì²é
-            if (i->second->getStatus() == STATUS_OVER_QUIT)
-            {
-                auto eraseIter = i++;
-                //printf("Client[%d] disconnected!\n", eraseIter->second->fd);
-                logger->info("Client[{}] disconnected!\n", eraseIter->second->getFd());
-                logger->flush();
-
-                // É¾³ıÌØ¶¨ÎÄ¼şÃèÊö·û¶ÔÓ¦µÄÊÂ¼ş
-                auto it1 = event.find(eraseIter->second->getFd());
-
-                if (it1 != event.end())
-                {
-                    struct event* ev_to_delete = it1->second;
-                    event_del(ev_to_delete);
-                    event_free(ev_to_delete);
-                    event.erase(it1); // ´Ó¹şÏ£±íÖĞÉ¾³ı¶ÔÓ¦µÄÓ³Éä
-                }
-
-                close(eraseIter->second->getFd());
-
-                auto it = users.find(eraseIter->second->getFd());
-                if (it != users.end())
-                {
-                    users.erase(eraseIter); // ´Ó map ÖĞÉ¾³ıÔªËØ
-                }
-                delete eraseIter->second;
-            }
-            else if (i->second->getStatus() == STATUS_PLAYING)
-            {
-                handleTimedUserLogic(i->second);
-
-                i++; // ÒÆ¶¯µ½ÏÂÒ»¸öÔªËØ
-            }
-            else
-            {
-                i++;
-            }
-        }
-    }
+std::unordered_map<evutil_socket_t, struct event*> EventLoop::getEvents() {
+    std::lock_guard<std::mutex> lock(events_mutex);
+    return events;  // è¿”å›å‰¯æœ¬ï¼Œé¿å…ç›´æ¥æš´éœ²å†…éƒ¨æ•°æ®
 }
 
+void EventLoop::setEvents(const std::unordered_map<evutil_socket_t, struct event*>& newEvents) {
+    std::lock_guard<std::mutex> lock(events_mutex);
+    events = newEvents;  // è®¾ç½®æ–°çš„äº‹ä»¶æ˜ å°„
+}

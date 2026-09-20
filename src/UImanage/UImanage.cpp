@@ -1,136 +1,127 @@
-#include"../Server/Server.h"
-#include"../Common/Common.h"
-#include"../Utility/Utility.h"
-#include"../PlayerInfo/PlayerInfo.h"
-#include"../TetrisGame/TetrisGame.h"
-#include"../EventLoop/EventLoop.h"
-#include"../User/User.h"
-#include"../UImanage/UImanage.h"
-#include"../Filedata_manage/Filedata.h"
+#include"UImanage.h"
 
-UImanage::UImanage(){}
+extern shared_ptr<spdlog::logger> logger;
 
-bool UImanage::showInitMenu(User* user)
+bool UImanage::showInitMenu(const shared_ptr<User>& user)
 {
     if (!UImanage::clear(user))
         return false;
 
-    if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÇëÑ¡Ôñ²Ù×÷£º"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "è¯·é€‰æ‹©æ“ä½œï¼š"))
         return false;
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 1, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "1. ×¢²áÕÊºÅ"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 1, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "1. æ³¨å†Œå¸å·"))
         return false;
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "2. µÇÂ¼"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "2. ç™»å½•"))
         return false;
 
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÇëÑ¡Ôñ²Ù×÷£º"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "è¯·é€‰æ‹©æ“ä½œï¼š"))
         return false;
     return true;
 }
 
-bool UImanage::show_Receive_Username(User* user)
+bool UImanage::show_Receive_Username(const shared_ptr<User>& user)
 {
     if (!UImanage::clear(user))
         return false;
 
-    if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÇëÊäÈëÓÃ»§Ãû£º"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "è¯·è¾“å…¥ç”¨æˆ·åï¼š"))
         return false;
     return true;
 }
 
-bool UImanage::show_Error_Message(int i,User* user)
+bool UImanage::show_Error_Message(int i, const shared_ptr<User>& user)
 {
     string emptyLine(4 * WINDOW_COL_COUNT, ' ');
     if (!outputText(user, i, 1, COLOR_WHITE, emptyLine))
         return false;
-    if (!outputText(user, i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÊäÈë´íÎó£¬ÇëÖØĞÂÊäÈë: "))
+    if (!outputText(user, i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "è¾“å…¥é”™è¯¯ï¼Œè¯·é‡æ–°è¾“å…¥: "))
         return false;
     return true;
 }
 
-bool UImanage::show_Username_Empty_Error(int i, User* user)
-{
-    string emptyLine(4 * WINDOW_COL_COUNT, ' ');
-    if (!outputText(user, i, 1, COLOR_WHITE, emptyLine))
-        return false;
-
-    if (!outputText(user, i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÓÃ»§Ãû²»¿ÉÎª¿Õ£¬ÇëÖØĞÂÊäÈëÓÃ»§Ãû£º"))
-        return false;
-    return true;
-}
-
-bool UImanage::show_Username_Taken_Error(int i, User* user)
+bool UImanage::show_Username_Empty_Error(int i, const shared_ptr<User>& user)
 {
     string emptyLine(4 * WINDOW_COL_COUNT, ' ');
     if (!outputText(user, i, 1, COLOR_WHITE, emptyLine))
         return false;
 
-    if (!outputText(user, i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "¸ÃÓÃ»§ÃûÒÑ±»×¢²á£¬ÇëÑ¡ÔñÆäËûÓÃ»§Ãû:"))
+    if (!outputText(user, i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ç”¨æˆ·åä¸å¯ä¸ºç©ºï¼Œè¯·é‡æ–°è¾“å…¥ç”¨æˆ·åï¼š"))
         return false;
     return true;
 }
 
-bool UImanage::show_Receive_Password(User* user)
-{
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÇëÊäÈëÃÜÂë£º"))
-        return false;
-    return true;
-}
-
-bool UImanage::show_Password_Empty_Error(int i, User* user)
+bool UImanage::show_Username_Taken_Error(int i, const shared_ptr<User>& user)
 {
     string emptyLine(4 * WINDOW_COL_COUNT, ' ');
     if (!outputText(user, i, 1, COLOR_WHITE, emptyLine))
         return false;
 
-    if (!outputText(user, i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÃÜÂë²»¿ÉÎª¿Õ£¬ÇëÖØĞÂÊäÈëÃÜÂë£º"))
+    if (!outputText(user, i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "è¯¥ç”¨æˆ·åå·²è¢«æ³¨å†Œï¼Œè¯·é€‰æ‹©å…¶ä»–ç”¨æˆ·å:"))
         return false;
     return true;
 }
 
-bool UImanage::show_Register_Success(User* user)
+bool UImanage::show_Receive_Password(const shared_ptr<User>& user)
 {
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "×¢²á³É¹¦£¡"))
-        return false;
-
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 5, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "Çë°´3·µ»ØÉÏ¼¶²Ëµ¥£º"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "è¯·è¾“å…¥å¯†ç ï¼š"))
         return false;
     return true;
 }
 
-bool UImanage::show_Login_Failure(User* user)
+bool UImanage::show_Password_Empty_Error(int i, const shared_ptr<User>& user)
 {
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "µÇÂ¼Ê§°Ü£¬ÓÃ»§Ãû»òÃÜÂë´íÎó¡£"))
+    string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+    if (!outputText(user, i, 1, COLOR_WHITE, emptyLine))
         return false;
 
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 5, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "°´3·µ»ØÉÏ¼¶²Ëµ¥:"))
+    if (!outputText(user, i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "å¯†ç ä¸å¯ä¸ºç©ºï¼Œè¯·é‡æ–°è¾“å…¥å¯†ç ï¼š"))
         return false;
     return true;
 }
 
-bool UImanage::showLoadMenu(User* user)
+bool UImanage::show_Register_Success(const shared_ptr<User>& user)
+{
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "æ³¨å†ŒæˆåŠŸï¼"))
+        return false;
+
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 5, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "è¯·æŒ‰3è¿”å›ä¸Šçº§èœå•ï¼š"))
+        return false;
+    return true;
+}
+
+bool UImanage::show_Login_Failure(const shared_ptr<User>& user)
+{
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ç™»å½•å¤±è´¥ï¼Œç”¨æˆ·åæˆ–å¯†ç é”™è¯¯ã€‚"))
+        return false;
+
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 5, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "æŒ‰3è¿”å›ä¸Šçº§èœå•:"))
+        return false;
+    return true;
+}
+
+bool UImanage::showLoadMenu(const shared_ptr<User>& user)
 {
     if (!UImanage::clear(user))
         return false;
 
-    if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÇëÑ¡Ôñ²Ù×÷£º"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "è¯·é€‰æ‹©æ“ä½œï¼š"))
         return false;
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "1. ÎÒ×î½üµÄ³É¼¨"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "1. æˆ‘æœ€è¿‘çš„æˆç»©"))
         return false;
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "2. È«·ştop³É¼¨"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "2. å…¨æœtopæˆç»©"))
         return false;
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 6, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "3. ¿ªÊ¼ÓÎÏ·"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 6, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "3. å¼€å§‹æ¸¸æˆ"))
         return false;
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 8, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "4. ·µ»Ø·şÎñ"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 8, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "4. è¿”å›æœåŠ¡"))
         return false;
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 12, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÄãµÄÑ¡ÔñÊÇ£º"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 12, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ä½ çš„é€‰æ‹©æ˜¯ï¼š"))
         return false;
     return true;
 }
 
-bool UImanage::showRecentScores(User* user)
+bool UImanage::showRecentScores(const shared_ptr<User>& user)
 {
-
-    int i = 0;
+   /* int i = 0;
 
     if (!UImanage::clear(user))
         return false;
@@ -159,60 +150,112 @@ bool UImanage::showRecentScores(User* user)
     }
 
 
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 21, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "Çë°´3·µ»Ø²Ëµ¥£º"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 21, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "è¯·æŒ‰3è¿”å›èœå•ï¼š"))
         return false;
-    return true;
-}
-
-bool UImanage::showTopScores(User* user)
-{
-    
-    if (!Filedata::loadPlayerData())
-        return false;
-
-    ifstream file("userdata.csv");//Ïà¶ÔÂ·¾¶ÊÇÏà¶ÔÓÚÄãµÄ¿ÉÖ´ĞĞÎÄ¼şËùÔÚµÄÄ¿Â¼µÄ
-
-    if (!file.is_open())
-    {
-        //std::cerr << "Unable to open file or file opening failed! Error message: " << std::strerror(errno) << std::endl;
-        logger->error("Unable to open file or file opening failed! Error message: {}\n", std::strerror(errno));
-        logger->flush();
-
-        return false;
-    }
-
-    vector<PlayerInfo*> show = Filedata::Read_AllpalyerInfo(file);
+    return true;*/
 
     if (!UImanage::clear(user))
         return false;
 
-    sort(show.begin(), show.end(), cmp_easy);
-
-    UImanage::showTopScores_Easy(WINDOW_ROW_COUNT / 3, WINDOW_COL_COUNT / 3, show, user);
-
-    sort(show.begin(), show.end(), cmp_normal);
-
-    UImanage::showTopScores_Normal(WINDOW_ROW_COUNT / 3, WINDOW_COL_COUNT + 20, show, user);
-
-    sort(show.begin(), show.end(), cmp_diffcult);
-
-    UImanage::showTopScores_Diffcult(WINDOW_ROW_COUNT / 3, WINDOW_COL_COUNT + 54, show, user);
-
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 40, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "Çë°´3·µ»Ø²Ëµ¥£º"))
+    // æ˜¾ç¤º"åŠ è½½ä¸­..."æç¤º
+    if (!outputText(user, WINDOW_ROW_COUNT / 3, 2 * (WINDOW_COL_COUNT / 3),COLOR_WHITE, "åŠ è½½ä¸­..."))
         return false;
+
+    // ğŸ”¥ ä½¿ç”¨å¼‚æ­¥è¯»å–ï¼Œä¼ å…¥callbackå¤„ç†ç»“æœ
+    Filedata::readRecentGradesAsync(user,
+        [user](bool success, vector<string> result) {
+            // è¿™ä¸ªcallbackä¼šåœ¨åå°çº¿ç¨‹å®Œæˆæ—¶è‡ªåŠ¨è°ƒç”¨
+
+            if (!success) {
+                logger->error("è¯»å–æœ€è¿‘æˆç»©å¤±è´¥");
+                // æ˜¾ç¤ºé”™è¯¯ä¿¡æ¯
+                outputText(user, WINDOW_ROW_COUNT / 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "è¯»å–å¤±è´¥ï¼Œè¯·é‡è¯•");
+                return;
+            }
+
+            if (result.empty()) {
+                outputText(user, WINDOW_ROW_COUNT / 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "æš‚æ— æˆç»©è®°å½•");
+                return;
+            }
+
+            // æ¸…ç©º"åŠ è½½ä¸­..."æç¤º
+            string emptyLine(50, ' ');
+            outputText(user, WINDOW_ROW_COUNT / 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, emptyLine);
+
+            // æ˜¾ç¤ºå®é™…æˆç»©
+            int i = 0;
+            for (const auto& outcome : result) {
+                outputText(user, WINDOW_ROW_COUNT / 3 + i,2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, outcome);
+                i++;
+            }
+
+            // æ˜¾ç¤ºè¿”å›æç¤º
+            outputText(user, WINDOW_ROW_COUNT / 2 + 21, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "è¯·æŒ‰3è¿”å›èœå•ï¼š");
+        }
+    );
+
+    return true;
+
+}
+
+bool UImanage::showTopScores(const shared_ptr<User>& user)
+{
+    if (!UImanage::clear(user))
+        return false;
+
+    // æ˜¾ç¤º"åŠ è½½ä¸­..."æç¤º
+    if (!outputText(user, WINDOW_ROW_COUNT / 3, 2 * (WINDOW_COL_COUNT / 3),
+        COLOR_WHITE, "åŠ è½½æ’è¡Œæ¦œä¸­..."))
+        return false;
+
+    // ğŸ”¥ ä½¿ç”¨å¼‚æ­¥è¯»å–ï¼Œä¼ å…¥callbackå¤„ç†ç»“æœ
+    Filedata::readAllPlayerInfoAsync(
+        [user](bool success, vector<shared_ptr<PlayerInfo>> allPlayers) {
+            if (!success) {
+                logger->error("è¯»å–æ’è¡Œæ¦œå¤±è´¥");
+                outputText(user, WINDOW_ROW_COUNT / 3, 2 * (WINDOW_COL_COUNT / 3),
+                    COLOR_WHITE, "åŠ è½½å¤±è´¥ï¼Œè¯·é‡è¯•");
+                return;
+            }
+
+            // æ¸…ç©º"åŠ è½½ä¸­..."æç¤º
+            string emptyLine(50, ' ');
+            outputText(user, WINDOW_ROW_COUNT / 3, 2 * (WINDOW_COL_COUNT / 3),
+                COLOR_WHITE, emptyLine);
+
+            // å¤„ç†å¹¶æ˜¾ç¤ºæ’è¡Œæ¦œæ•°æ®
+            vector<shared_ptr<PlayerInfo>> show = allPlayers;
+
+            if (!UImanage::clear(user))
+                return;
+
+            sort(show.begin(), show.end(), cmp_easy);
+            UImanage::showTopScores_Easy(WINDOW_ROW_COUNT / 3, WINDOW_COL_COUNT / 3, show, user);
+
+            sort(show.begin(), show.end(), cmp_normal);
+            UImanage::showTopScores_Normal(WINDOW_ROW_COUNT / 3, WINDOW_COL_COUNT + 20, show, user);
+
+            sort(show.begin(), show.end(), cmp_diffcult);
+            UImanage::showTopScores_Diffcult(WINDOW_ROW_COUNT / 3, WINDOW_COL_COUNT + 54, show, user);
+
+            outputText(user, WINDOW_ROW_COUNT / 2 + 30, 2 * (WINDOW_COL_COUNT / 3),
+                COLOR_WHITE, "è¯·æŒ‰3è¿”å›èœå•ï¼š");
+        }
+    );
+
     return true;
 }
 
-bool UImanage::showTopScores_Easy(int row, int col, vector<PlayerInfo*> show, User* user)
+bool UImanage::showTopScores_Easy(int row, int col, vector<shared_ptr<PlayerInfo>>& show, const shared_ptr<User>& user)
 {
     int i = 0, j = 0;
 
-    if (!outputText(user, row + i, col, COLOR_WHITE, "¼òµ¥Ä£Ê½£º"))
+    if (!outputText(user, row + i, col, COLOR_WHITE, "ç®€å•æ¨¡å¼ï¼š"))
         return false;
 
     i += 2;
 
-    if (!outputText(user, row + i, col, COLOR_WHITE, "ÓÃ»§Ãû ·ÖÊı ÓÃ»§»ñÈ¡×î¸ß·ÖµÄÊ±¼ä"))
+    if (!outputText(user, row + i, col, COLOR_WHITE, "ç”¨æˆ·å åˆ†æ•° ç”¨æˆ·è·å–æœ€é«˜åˆ†çš„æ—¶é—´"))
         return false;
 
     i++;
@@ -262,16 +305,16 @@ bool UImanage::showTopScores_Easy(int row, int col, vector<PlayerInfo*> show, Us
     return true;
 }
 
-bool UImanage::showTopScores_Normal(int row, int col, vector<PlayerInfo*> show, User* user)
+bool UImanage::showTopScores_Normal(int row, int col, vector<shared_ptr<PlayerInfo>>& show, const shared_ptr<User>& user)
 {
     int i = 0, j = 0;
 
-    if (!outputText(user, row + i, col, COLOR_WHITE, "ÆÕÍ¨Ä£Ê½£º"))
+    if (!outputText(user, row + i, col, COLOR_WHITE, "æ™®é€šæ¨¡å¼ï¼š"))
         return false;
 
     i += 2; //i=16
 
-    if (!outputText(user, row + i, col, COLOR_WHITE, "ÓÃ»§Ãû ·ÖÊı ÓÃ»§»ñÈ¡×î¸ß·ÖµÄÊ±¼ä"))
+    if (!outputText(user, row + i, col, COLOR_WHITE, "ç”¨æˆ·å åˆ†æ•° ç”¨æˆ·è·å–æœ€é«˜åˆ†çš„æ—¶é—´"))
         return false;
 
     i += 2;
@@ -321,16 +364,16 @@ bool UImanage::showTopScores_Normal(int row, int col, vector<PlayerInfo*> show, 
     return true;
 }
 
-bool UImanage::showTopScores_Diffcult(int row, int col, vector<PlayerInfo*> show, User* user)
+bool UImanage::showTopScores_Diffcult(int row, int col, vector<shared_ptr<PlayerInfo>>& show, const shared_ptr<User>& user)
 {
     int i = 0, j = 0;
 
-    if (!outputText(user, row + i, col, COLOR_WHITE, "À§ÄÑÄ£Ê½£º"))
+    if (!outputText(user, row + i, col, COLOR_WHITE, "å›°éš¾æ¨¡å¼ï¼š"))
         return false;
 
     i += 2; //i=28
 
-    if (!outputText(user, row + i, col, COLOR_WHITE, "ÓÃ»§Ãû ·ÖÊı ÓÃ»§»ñÈ¡×î¸ß·ÖµÄÊ±¼ä"))
+    if (!outputText(user, row + i, col, COLOR_WHITE, "ç”¨æˆ·å åˆ†æ•° ç”¨æˆ·è·å–æœ€é«˜åˆ†çš„æ—¶é—´"))
         return false;
 
     i += 2;
@@ -380,137 +423,27 @@ bool UImanage::showTopScores_Diffcult(int row, int col, vector<PlayerInfo*> show
     return true;
 }
 
-bool UImanage::showGameDifficulty(User* user)
+bool UImanage::showGameDifficulty(const shared_ptr<User>& user)
 {
     if (!UImanage::clear(user))
         return false;
 
-    if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "1. ¼òµ¥Ä£Ê½"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "1. ç®€å•æ¨¡å¼"))
         return false;
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "2. ÆÕÍ¨Ä£Ê½"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "2. æ™®é€šæ¨¡å¼"))
         return false;
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "3. À§ÄÑÄ£Ê½"))
-        return false;
-
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 6, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "4. ·µ»ØÉÏ¼¶²Ëµ¥"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "3. å›°éš¾æ¨¡å¼"))
         return false;
 
-    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 8, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "ÇëÑ¡Ôñ²Ù×÷£º"))
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 6, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "4. è¿”å›ä¸Šçº§èœå•"))
+        return false;
+
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 8, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "è¯·é€‰æ‹©æ“ä½œï¼š"))
         return false;
     return true;
 }
 
-bool UImanage::InitInterface(User* user)
-{
-    for (int i = 0; i < WINDOW_ROW_COUNT; i++)
-    {
-        for (int j = 0; j < WINDOW_COL_COUNT + 10; j++)
-        {
-            if (j == 0 || j == WINDOW_COL_COUNT - 1 || j == WINDOW_COL_COUNT + 9)
-            {
-                user->setData(i, j, 1); //±ê¼Ç¸ÃÎ»ÖÃÓĞ·½¿é
-
-                if (!outputText(user, i + 1, 2 * (j + 1) - 1, COLOR_WHITE, "¡ö"))
-                    return false;
-            }
-            else if (i == WINDOW_ROW_COUNT - 1)
-            {
-                user->setData(i, j, 1); //±ê¼Ç¸ÃÎ»ÖÃÓĞ·½¿é
-
-                if (!outputText(user, i + 1, 2 * (j + 1) - 1, COLOR_WHITE, "¡ö"))
-                    return false;
-            }
-            else
-                user->setData(i, j, 0); //±ê¼Ç¸ÃÎ»ÖÃÎŞ·½¿é
-        }
-    }
-
-    for (int i = WINDOW_COL_COUNT; i < WINDOW_COL_COUNT + 10; i++)
-    {
-        user->setData(11, i, 1);//±ê¼Ç¸ÃÎ»ÖÃÓĞ·½¿é
-        if (!outputText(user, 11 + 1, 2 * i + 1, COLOR_WHITE, "¡ö"))
-            return false;
-    }
-
-    if (!outputText(user, 2, 2 * WINDOW_COL_COUNT + 1 + 1, COLOR_WHITE, "Next:"))
-        return false;
-
-
-    if (!outputText(user, 14, 2 * WINDOW_COL_COUNT + 2, COLOR_WHITE, "Score: "))
-        return false;
-
-    return true;
-}
-
-bool UImanage::InitGameFace(User* user)
-{
-
-    if (!UImanage::clear(user))
-        return false;
-
-    if (!UImanage::InitInterface(user))//³õÊ¼»¯½çÃæ
-    {
-        return false;
-    }
-
-    InitBlockInfo(); //³õÊ¼»¯·½¿éĞÅÏ¢
-    srand((unsigned int)time(NULL)); //ÉèÖÃËæ»úÊıÉú³ÉµÄÆğµã
-
-    user->setShape(rand() % 7);
-    user->setForm(rand() % 4); //Ëæ»ú»ñÈ¡·½¿éµÄĞÎ×´ºÍĞÎÌ¬
-    user->setNextShape(rand() % 7);
-
-    user->setNextForm(rand() % 4);
-    //Ëæ»ú»ñÈ¡ÏÂÒ»¸ö·½¿éµÄĞÎ×´ºÍĞÎÌ¬
-    user->setRow(1);
-    user->setCol(WINDOW_COL_COUNT / 2 - 1); //·½¿é³õÊ¼ÏÂÂäÎ»ÖÃ
-
-    if (!UImanage::DrawBlock(user, user->getNextShape(), user->getNextForm(), 3, WINDOW_COL_COUNT + 3))//½«ÏÂÒ»¸ö·½¿éÏÔÊ¾ÔÚÓÒÉÏ½Ç
-    {
-        return false;
-    }
-
-    if (!UImanage::DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol())) //½«¸Ã·½¿éÏÔÊ¾ÔÚ³õÊ¼ÏÂÂäÎ»ÖÃ
-    {
-        return false;
-    }
-    return true;
-}
-
-bool UImanage::DrawBlock(User* user, int shape, int form, int row, int col)//rowºÍcol£¬Ö¸µÄÊÇ·½¿éĞÅÏ¢µ±ÖĞµÚÒ»ĞĞµÚÒ»ÁĞµÄ·½¿éµÄ´òÓ¡Î»ÖÃÎªµÚrowĞĞµÚcolÁĞ
-{
-    for (int i = 0; i < 4; i++)
-    {
-        for (int j = 0; j < 4; j++)
-        {
-            if (blockDefines[shape][form].space[i][j] == 1)//Èç¹û¸ÃÎ»ÖÃÓĞ·½¿é
-            {
-                if (!outputText(user, row + i, 2 * (col + j) - 1, Color(shape), "¡ö"))
-                    return false;
-            }
-        }
-    }
-    return true;
-}
-
-bool UImanage::DrawSpace(User* user, int shape, int form, int row, int col)
-{
-    int i, j;
-    for (i = 0; i < 4; i++)
-    {
-        for (j = 0; j < 4; j++)
-        {
-            if (blockDefines[shape][form].space[i][j] == 1)//Èç¹û¸ÃÎ»ÖÃÓĞ·½¿é
-            {
-                if (!outputText(user, row + i, 2 * (col + j) - 1, COLOR_WHITE, "  "))
-                    return false;
-            }
-        }
-    }
-    return true;
-}
-
-bool UImanage::showover(User* user)
+bool UImanage::showover(const shared_ptr<User>& user)
 {
     if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "GAME OVER"))
         return false;
@@ -521,7 +454,7 @@ bool UImanage::showover(User* user)
     return true;
 }
 
-bool UImanage::clear(User* user)
+bool UImanage::clear(const shared_ptr<User>& user)
 {
     int i;
     string emptyLine(6 * WINDOW_COL_COUNT, ' ');

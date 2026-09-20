@@ -2,90 +2,73 @@
 #ifndef UImanage_H
 #define UImanage_H
 
-#include"../Server/Server.h"
+
 #include"../Common/Common.h"
+#include"../TetrisGame/User.h"
+#include"../TetrisGame/Game.h"
 #include"../Utility/Utility.h"
-#include"../PlayerInfo/PlayerInfo.h"
-#include"../TetrisGame/TetrisGame.h"
-#include"../EventLoop/EventLoop.h"
-#include"../User/User.h"
 #include"../UImanage/UImanage.h"
-#include"../Filedata_manage/Filedata.h"
+#include"../TetrisGame/Filedata.h"
+#include"../EventLoop/EventLoop.h"
+#include"../TetrisGame/PlayerInfo.h"
 
 class UImanage
 {
 public:
-	UImanage();
 
-	//Õ¹Ê¾³õÊ¼½çÃæ
-	static bool showInitMenu(User* user);
+	//å±•ç¤ºåˆå§‹ç•Œé¢
+	static bool showInitMenu(const shared_ptr<User>& user);
 
-	// »ñÈ¡ÓÃ»§Ãû
-	static bool show_Receive_Username(User* user);
+	// è·å–ç”¨æˆ·å
+	static bool show_Receive_Username(const shared_ptr<User>& user);
 
-	//Õ¹Ê¾ÓÃ»§Ãû»òÃÜÂëÊäÈë´íÎóµÄ½çÃæ
-	static bool show_Error_Message(int i,User* user);
+	//å±•ç¤ºç”¨æˆ·åæˆ–å¯†ç è¾“å…¥é”™è¯¯çš„ç•Œé¢
+	static bool show_Error_Message(int i, const shared_ptr<User>& user);
 
-	//Õ¹Ê¾ÓÃ»§ÃûÊäÈëÎª¿ÕµÄ½çÃæ
-	static bool show_Username_Empty_Error(int i, User* user);
+	//å±•ç¤ºç”¨æˆ·åè¾“å…¥ä¸ºç©ºçš„ç•Œé¢
+	static bool show_Username_Empty_Error(int i, const shared_ptr<User>& user);
 
-	//Õ¹Ê¾×¢²áÊ±ÓÃ»§ÒÑ±»×¢²áµÄ½çÃæ
-	static bool show_Username_Taken_Error(int i, User* user);
+	//å±•ç¤ºæ³¨å†Œæ—¶ç”¨æˆ·å·²è¢«æ³¨å†Œçš„ç•Œé¢
+	static bool show_Username_Taken_Error(int i, const shared_ptr<User>& user);
 
-	// »ñÈ¡ÃÜÂë
-	static bool show_Receive_Password(User* user);
+	// è·å–å¯†ç 
+	static bool show_Receive_Password(const shared_ptr<User>& user);
 
-	//Õ¹Ê¾ÃÜÂëÊäÈëÎª¿ÕµÄ½çÃæ
-	static bool show_Password_Empty_Error(int i, User* user);
+	//å±•ç¤ºå¯†ç è¾“å…¥ä¸ºç©ºçš„ç•Œé¢
+	static bool show_Password_Empty_Error(int i, const shared_ptr<User>& user);
 
-	//Õ¹Ê¾ÓÃ»§µÇÂ¼³É¹¦µÄ½çÃæ
-	static bool show_Register_Success(User* user);
+	//å±•ç¤ºç”¨æˆ·ç™»å½•æˆåŠŸçš„ç•Œé¢
+	static bool show_Register_Success(const shared_ptr<User>& user);
 
-	//Õ¹Ê¾ÓÃ»§µÇÂ¼Ê§°ÜµÄ½çÃæ
-	static bool show_Login_Failure(User* user);
+	//å±•ç¤ºç”¨æˆ·ç™»å½•å¤±è´¥çš„ç•Œé¢
+	static bool show_Login_Failure(const shared_ptr<User>& user);
 
-	//Õ¹Ê¾µÇÂ¼½çÃæ
-	static bool showLoadMenu(User* user);
+	//å±•ç¤ºç™»å½•ç•Œé¢
+	static bool showLoadMenu(const shared_ptr<User>& user);
 
-	// ²é¿´±¾ÈË×î½ü20´Î±ÈÈüµÄ·ÖÊı
-	static bool showRecentScores(User* user);
+	// æŸ¥çœ‹æœ¬äººæœ€è¿‘20æ¬¡æ¯”èµ›çš„åˆ†æ•°
+	static bool showRecentScores(const shared_ptr<User>& user);
 
-	// ²é¿´È«·ştop³É¼¨
-	static bool showTopScores(User* user);
+	// æŸ¥çœ‹å…¨æœtopæˆç»©
+	static bool showTopScores(const shared_ptr<User>& user);
 
-	// ²é¿´È«·ş¼òµ¥Ä£Ê½top³É¼¨
-	static bool showTopScores_Easy(int row, int col,vector<PlayerInfo*> show,User* user);
+	// æŸ¥çœ‹å…¨æœç®€å•æ¨¡å¼topæˆç»©
+	static bool showTopScores_Easy(int row, int col, vector<shared_ptr<PlayerInfo>>& show, const shared_ptr<User>& user);
 	
-	// ²é¿´È«·şÆÕÍ¨Ä£Ê½top³É¼¨
-	static bool showTopScores_Normal(int row, int col,vector<PlayerInfo*> show,User* user);
+	// æŸ¥çœ‹å…¨æœæ™®é€šæ¨¡å¼topæˆç»©
+	static bool showTopScores_Normal(int row, int col, vector<shared_ptr<PlayerInfo>>& show, const shared_ptr<User>& user);
 
-	// ²é¿´È«·şÀ§ÄÑÄ£Ê½top³É¼¨
-	static bool showTopScores_Diffcult(int row, int col,vector<PlayerInfo*> show, User* user);
+	// æŸ¥çœ‹å…¨æœå›°éš¾æ¨¡å¼topæˆç»©
+	static bool showTopScores_Diffcult(int row, int col, vector<shared_ptr<PlayerInfo>>& show, const shared_ptr<User>& user);
 
-	//Õ¹Ê¾ÓÎÏ·ÄÑ¶È
-	static bool showGameDifficulty(User* user);
+	//å±•ç¤ºæ¸¸æˆéš¾åº¦
+	static bool showGameDifficulty(const shared_ptr<User>& user);
 
-	static bool InitInterface(User* user);
+	//å±•ç¤ºæ¸¸æˆç»“æŸç•Œé¢
+	static bool showover(const shared_ptr<User>& user);
 
-	static bool InitGameFace(User* user);
-
-	//»­³ö·½¿é
-	static bool DrawBlock(User* user, int shape, int form, int row, int col);//rowºÍcol£¬Ö¸µÄÊÇ·½¿éĞÅÏ¢µ±ÖĞµÚÒ»ĞĞµÚÒ»ÁĞµÄ·½¿éµÄ´òÓ¡Î»ÖÃÎªµÚrowĞĞµÚcolÁĞ
-
-	//¿Õ¸ñ¸²¸Ç
-	//ÎŞÂÛÊÇÓÎÏ·Çø·½¿éµÄÒÆ¶¯£¬»¹ÊÇÌáÊ¾ÇøÓÒÉÏ½ÇÏÂÒ»¸ö·½¿éµÄÏÔÊ¾£¬¶¼ĞèÒª·½¿éÎ»ÖÃµÄ±ä»».
-	//¶øÔÚ±ä»¯Ö®Ç°¿Ï¶¨ÊÇÒªÏÈ½«Ö®Ç°´òÓ¡µÄ·½¿éÓÃ¿Õ¸ñ½øĞĞ¸²¸Ç£¬È»ºóÔÙ´òÓ¡±ä»¯ºóµÄ·½¿é
-	//ÔÚ¸²¸Ç·½¿éÊ±ÌØ±ğĞèÒª×¢ÒâµÄÊÇ£¬Òª¸²¸ÇÒ»¸öĞ¡·½¿éĞèÒªÓÃÁ½¸ö¿Õ¸ñ¡£
-
-	static bool DrawSpace(User* user, int shape, int form, int row, int col);
-
-	//Õ¹Ê¾ÓÎÏ·½áÊø½çÃæ
-	static bool showover(User* user);
-
-	//ÇåÆÁº¯Êı
-	static bool clear(User* user);
-
-private:
+	//æ¸…å±å‡½æ•°
+	static bool clear(const shared_ptr<User>& user);
 
 };
 

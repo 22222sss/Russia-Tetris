@@ -1,32 +1,58 @@
-#include"../Server/Server.h"
-#include"../Common/Common.h"
-#include"../Utility/Utility.h"
-#include"../PlayerInfo/PlayerInfo.h"
-#include"../TetrisGame/TetrisGame.h"
-#include"../EventLoop/EventLoop.h"
-#include"../User/User.h"
-#include"../UImanage/UImanage.h"
-#include"../Filedata_manage/Filedata.h"
-
-extern vector<PlayerInfo*> players;
-
-extern Block blockDefines[7][4];//ÓÃÓÚ´æ´¢7ÖÖ»ù±¾ĞÎ×´·½¿éµÄ¸÷×ÔµÄ4ÖÖĞÎÌ¬µÄĞÅÏ¢£¬¹²28ÖÖ
-
-extern map<int, User*> users;
+#include"Utility.h"
 
 extern shared_ptr<spdlog::logger> logger;
 
-bool output(User* user, string s)
+string utf8_to_gbk(const std::string& utf8_str) {
+    if (utf8_str.empty()) return "";
+
+    iconv_t cd = iconv_open("GBK", "UTF-8");
+    if (cd == (iconv_t)-1) {
+        return utf8_str; // è½¬æ¢å¤±è´¥ï¼Œè¿”å›åŸå­—ç¬¦ä¸²
+    }
+
+    size_t in_len = utf8_str.length();
+    size_t out_len = in_len * 2; // GBK å¯èƒ½å ç”¨æ›´å¤šå­—èŠ‚
+    char* in_buf = const_cast<char*>(utf8_str.c_str());
+    char* out_buf = new char[out_len + 1];
+    char* out_ptr = out_buf;
+
+    memset(out_buf, 0, out_len + 1);
+
+    if (iconv(cd, &in_buf, &in_len, &out_ptr, &out_len) == (size_t)-1) {
+        delete[] out_buf;
+        iconv_close(cd);
+        return utf8_str; // è½¬æ¢å¤±è´¥
+    }
+
+    std::string result(out_buf);
+    delete[] out_buf;
+    iconv_close(cd);
+    return result;
+}
+
+bool output(const shared_ptr<User>& user, string s)
 {
+    // ğŸ”¥ æ–°å¢ï¼šæ£€æµ‹å¦‚æœæ˜¯ Windows telnet å®¢æˆ·ç«¯ï¼Œè½¬æ¢ä¸º GBK
+    static std::unordered_map<int, bool> encoding_detected;
+    static std::unordered_map<int, bool> is_windows_client;
+
+    // ç¬¬ä¸€æ¬¡è¾“å‡ºæ—¶æ£€æµ‹å®¢æˆ·ç«¯ç±»å‹
+    if (!encoding_detected[user->getFd()]) {
+        // ç®€å•æ£€æµ‹ï¼šWindows telnet é€šå¸¸ä¸ä¼šå‘é€ UTF-8 è®¾ç½®
+        // æˆ‘ä»¬å¯ä»¥å‡è®¾æ‰€æœ‰å®¢æˆ·ç«¯éƒ½æ˜¯ Windows telnetï¼Œæˆ–è€…æ·»åŠ æ›´å¤æ‚çš„æ£€æµ‹
+        is_windows_client[user->getFd()] = true; // å‡è®¾æ˜¯ Windows
+        encoding_detected[user->getFd()] = true;
+    }
+
+    // å¦‚æœæ˜¯ Windows å®¢æˆ·ç«¯ï¼Œè½¬æ¢ä¸º GBK
+    if (is_windows_client[user->getFd()]) {
+        s = utf8_to_gbk(s);
+    }
+     
+
     int bytesSent = send(user->getFd(), s.c_str(), s.length(), 0);
     if (bytesSent == -1)
     {
-        /*
-        if (user->status == STATUS_PLAYING)
-        {
-            Update_TopScore_RecentScore(user);
-        }
-        */
         user->setStatus(STATUS_OVER_QUIT);
 
         close(user->getFd());
@@ -37,13 +63,7 @@ bool output(User* user, string s)
     }
     else if (bytesSent == 0)
     {
-        /*
-        if (user->status == STATUS_PLAYING)
-        {
-            Update_TopScore_RecentScore(user);
-        }
-        */
-        // ¿Í»§¶ËÁ¬½ÓÒÑ¹Ø±Õ
+        // å®¢æˆ·ç«¯è¿æ¥å·²å…³é—­
         user->setStatus(STATUS_OVER_QUIT);
 
         close(user->getFd());
@@ -52,12 +72,12 @@ bool output(User* user, string s)
     return true;
 }
 
-bool moveTo(User* user, int row, int col) {
-    // ¼ì²éÊäÈëÊÇ·ñºÏ·¨
+bool moveTo(const shared_ptr<User>& user, int row, int col) {
+    // æ£€æŸ¥è¾“å…¥æ˜¯å¦åˆæ³•
     if (row < 0 || col < 0) {
         //cerr << "Invalid row or col number" << endl;
 
-        // ¿ÉÒÔ¸ù¾İ¾ßÌåÇé¿ö½øĞĞÏàÓ¦µÄ´íÎó´¦Àí²Ù×÷
+        // å¯ä»¥æ ¹æ®å…·ä½“æƒ…å†µè¿›è¡Œç›¸åº”çš„é”™è¯¯å¤„ç†æ“ä½œ
         logger->error("Invalid row or col number\n");
         logger->flush();
         return false;
@@ -70,12 +90,12 @@ bool moveTo(User* user, int row, int col) {
     return true;
 }
 
-bool ChangeCurrentColor(User* user, int n)
+bool ChangeCurrentColor(const shared_ptr<User>& user, int n)
 {
-    // ¼ì²éÊäÈëÊÇ·ñºÏ·¨
+    // æ£€æŸ¥è¾“å…¥æ˜¯å¦åˆæ³•
     if (n < 0 || n > 255) {
         //cerr << "Invalid color number" << endl;
-        // ¿ÉÒÔ¸ù¾İ¾ßÌåÇé¿ö½øĞĞÏàÓ¦µÄ´íÎó´¦Àí²Ù×÷
+        // å¯ä»¥æ ¹æ®å…·ä½“æƒ…å†µè¿›è¡Œç›¸åº”çš„é”™è¯¯å¤„ç†æ“ä½œ
         logger->error("Invalid row or col number\n");
         logger->flush();
         return false;
@@ -87,7 +107,7 @@ bool ChangeCurrentColor(User* user, int n)
     return true;
 }
 
-bool outputText(User* user, int row, int col, int n, string s)
+bool outputText(const shared_ptr<User>& user, int row, int col, int color, const string& text, int grade) //æœ‰åˆ†æ•°åˆ™è¾“å‡ºåˆ†æ•°
 {
     if (user->getStatus() == STATUS_PLAYING)
     {
@@ -111,26 +131,46 @@ bool outputText(User* user, int row, int col, int n, string s)
             return false;
         }
 
-        if (!output(user, string("¡ö")))
+        if (!output(user, string("â– ")))
         {
             return false;
         }
     }
 
 
+    // æ£€æŸ¥è¾“å…¥æ˜¯å¦åˆæ³•
+    // å‚æ•°éªŒè¯ - åªæœ‰å½“æ˜ç¡®ä¼ å…¥äº†gradeæ—¶æ‰éªŒè¯
+    if (grade < 0) 
+    {
+        logger->error("Invalid grades: {}", grade);
+        logger->flush();
+        return false;
+    }
+
+
+
+    // æ„å»ºè¾“å‡ºå†…å®¹
+    string outputContent = text;
+
+    if (grade > 0)
+    {
+        outputContent += to_string(grade);
+    }
+
     if (!moveTo(user, row, col))
     {
         return false;
     }
-    if (!ChangeCurrentColor(user, n))
-    {
-        return false;
-    }
-    if (!output(user, s))
+   
+    if (!ChangeCurrentColor(user, color))
     {
         return false;
     }
 
+    if (!output(user, outputContent))
+    {
+        return false;
+    }
 
     if (user->getStatus() == STATUS_PLAYING)
     {
@@ -148,37 +188,8 @@ bool outputText(User* user, int row, int col, int n, string s)
     return true;
 }
 
-bool outputgrade(User* user, int row, int col, int n, string s, int grade)
-{
-    // ¼ì²éÊäÈëÊÇ·ñºÏ·¨
-    if (grade < 0) {
-        //cerr << "Invalid grades: " << grade << endl;
-        // ¿ÉÒÔ¸ù¾İ¾ßÌåÇé¿ö½øĞĞÏàÓ¦µÄ´íÎó´¦Àí²Ù×÷
-        logger->error("Invalid grades: {}", grade);
-        logger->flush();
-        return false;
-    }
-
-    if (!moveTo(user, row, col))
-    {
-        return false;
-    }
-    if (!ChangeCurrentColor(user, n))
-    {
-        return false;
-    }
-
-    string command = s + to_string(grade);
-
-    if (!output(user, command))
-    {
-        return false;
-    }
-    return true;
-}
-
 bool IsSetSocketBlocking(int socket, bool blocking) {
-    // »ñÈ¡Ì×½Ó×Ö±êÖ¾
+    // è·å–å¥—æ¥å­—æ ‡å¿—
     int flags = fcntl(socket, F_GETFL, 0);
     if (flags < 0) {
         close(socket);
@@ -188,15 +199,15 @@ bool IsSetSocketBlocking(int socket, bool blocking) {
         return false;
     }
 
-    // ¸ù¾İ blocking ²ÎÊıÇĞ»»»Ø×èÈû»ò·Ç×èÈûÄ£Ê½
+    // æ ¹æ® blocking å‚æ•°åˆ‡æ¢å›é˜»å¡æˆ–éé˜»å¡æ¨¡å¼
     if (blocking) {
-        flags &= ~O_NONBLOCK;  // Çå³ı·Ç×èÈû±êÖ¾
+        flags &= ~O_NONBLOCK;  // æ¸…é™¤éé˜»å¡æ ‡å¿—
     }
     else {
-        flags |= O_NONBLOCK;  // ÉèÖÃ·Ç×èÈû±êÖ¾
+        flags |= O_NONBLOCK;  // è®¾ç½®éé˜»å¡æ ‡å¿—
     }
 
-    // ÉèÖÃÌ×½Ó×ÖµÄĞÂ±êÖ¾
+    // è®¾ç½®å¥—æ¥å­—çš„æ–°æ ‡å¿—
     if (fcntl(socket, F_SETFL, flags) < 0) {
         close(socket);
         //std::cerr << "Failed to set socket mode" << std::endl;
@@ -212,102 +223,26 @@ int Color(int c)
     switch (c)
     {
     case SHAPE_T:
-        return COLOR_PURPLE;//¡°T¡±ĞÎ·½¿éÉèÖÃÎª×ÏÉ«
+        return COLOR_PURPLE;//â€œTâ€å½¢æ–¹å—è®¾ç½®ä¸ºç´«è‰²
     case SHAPE_L:
     case SHAPE_J:
-        return COLOR_RED;//¡°L¡±ĞÎºÍ¡°J¡±ĞÎ·½¿éÉèÖÃÎªºìÉ«
+        return COLOR_RED;//â€œLâ€å½¢å’Œâ€œJâ€å½¢æ–¹å—è®¾ç½®ä¸ºçº¢è‰²
     case SHAPE_Z:
     case SHAPE_S:
-        return COLOR_LOWBLUE;//¡°Z¡±ĞÎºÍ¡°S¡±ĞÎ·½¿éÉèÖÃÎªÇ³À¶É«
+        return COLOR_LOWBLUE;//â€œZâ€å½¢å’Œâ€œSâ€å½¢æ–¹å—è®¾ç½®ä¸ºæµ…è“è‰²
     case SHAPE_O:
-        return COLOR_YELLO;//¡°O¡±ĞÎ·½¿éÉèÖÃÎª»ÆÉ«
+        return COLOR_YELLO;//â€œOâ€å½¢æ–¹å—è®¾ç½®ä¸ºé»„è‰²
     case SHAPE_I:
-        return COLOR_DEEPBLUE;//¡°I¡±ĞÎ·½¿éÉèÖÃÎªÉîÀ¶É«
+        return COLOR_DEEPBLUE;//â€œIâ€å½¢æ–¹å—è®¾ç½®ä¸ºæ·±è“è‰²
     default:
         return COLOR_WHITE;
-    }
-}
-
-void InitBlockInfo()
-{
-    int i;
-    //¡°T¡±ĞÎ
-    auto& spaceT = blockDefines[SHAPE_T][0].space;
-    for (i = 0; i <= 2; i++)
-    {
-        spaceT[1][i] = 1;
-    }
-    spaceT[2][1] = 1;
-
-    //¡°L¡±ĞÎ
-    auto& spaceL = blockDefines[SHAPE_L][0].space;
-    for (i = 1; i <= 3; i++)
-    {
-        spaceL[i][1] = 1;
-    }
-    spaceL[3][2] = 1;
-
-    //¡°J¡±ĞÎ
-    auto& spaceJ = blockDefines[SHAPE_J][0].space;
-    for (i = 1; i <= 3; i++)
-    {
-        spaceJ[i][2] = 1;
-    }
-    spaceJ[3][1] = 1;
-
-    for (int i = 0; i <= 1; i++)
-    {
-        //¡°Z¡±ĞÎ
-        auto& spaceZ = blockDefines[SHAPE_Z][0].space;
-        spaceZ[1][i] = 1;
-        spaceZ[2][i + 1] = 1;
-        //¡°S¡±ĞÎ
-        auto& spaceS = blockDefines[SHAPE_S][0].space;
-        spaceS[1][i + 1] = 1;
-        spaceS[2][i] = 1;
-        //¡°O¡±ĞÎ
-        auto& spaceO = blockDefines[SHAPE_O][0].space;
-        spaceO[1][i + 1] = 1;
-        spaceO[2][i + 1] = 1;
-    }
-
-    //¡°I¡±ĞÎ
-    auto& spaceI = blockDefines[SHAPE_I][0].space;
-    for (i = 0; i <= 3; i++)
-    {
-        spaceI[i][1] = 1;
-    }
-
-    for (int shape = 0; shape < 7; shape++)//7ÖÖĞÎ×´
-    {
-        for (int form = 0; form < 3; form++)//4ÖÖĞÎÌ¬£¨ÒÑ¾­ÓĞÁËÒ»ÖÖ£¬ÕâÀïÃ¿¸ö»¹ĞèÒªÔö¼Ó3ÖÖ£©
-        {
-            int temp[4][4] = { 0 };
-
-            //»ñÈ¡µÚformÖÖ×´Ì¬
-            for (int i = 0; i < 4; i++)
-            {
-                for (int j = 0; j < 4; j++)
-                {
-                    temp[i][j] = blockDefines[shape][form].space[i][j];
-                }
-            }
-            //½«µÚformÖÖĞÎÌ¬Ë³Ê±ÕëĞı×ª£¬µÃµ½µÚform+1ÖÖĞÎÌ¬
-            for (i = 0; i < 4; i++)
-            {
-                for (int j = 0; j < 4; j++)
-                {
-                    blockDefines[shape][form + 1].space[i][j] = temp[3 - j][i];
-                }
-            }
-        }
     }
 }
 
 bool isUserExists(const string& playername)
 {
 
-    for (auto& player : players)
+    for (auto& player : PlayerInfo::getPlayers())
     {
         if (player->getPlayerName() == playername)
         {
@@ -317,7 +252,7 @@ bool isUserExists(const string& playername)
     return false;
 }
 
-string currenttime()//ÈÕÖ¾º¯Êı
+string currenttime()//æ—¥å¿—å‡½æ•°
 {
     char timestamp[20];
     time_t now = time(nullptr);
@@ -329,7 +264,7 @@ string currenttime()//ÈÕÖ¾º¯Êı
     return timestamp;
 }
 
-// ¼ì²é×Ö·û´®ÊÇ·ñÎªÊı×Ö
+// æ£€æŸ¥å­—ç¬¦ä¸²æ˜¯å¦ä¸ºæ•°å­—
 bool isNumber(const std::string& s) 
 {
     return !s.empty() && std::all_of(s.begin(), s.end(), ::isdigit);
