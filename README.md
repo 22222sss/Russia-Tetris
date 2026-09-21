@@ -43,9 +43,9 @@ Russia-Tetris/
 │   ├── Utility/              # 工具函数与系统优化
 │   ├── main.cpp              # 程序入口
 │   ├── makefile              # 构建脚本
-│   └── userdata.csv          # 用户数据文件
+│   └── optimize_system.sh    # 系统调优脚本
 ├── images-and-gif/           # 演示截图与 GIF
-├── tests/                    # 测试数据与并发压测脚本
+├── tests/                    # 并发压测脚本
 └── README.md                 # 项目说明
 ```
 

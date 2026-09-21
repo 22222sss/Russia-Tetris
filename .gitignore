@@ -1,0 +1,12 @@
+# 编译产物
+obj/
+*.o
+
+# 可执行文件
+tetris_game
+
+# 日志文件
+log.txt
+
+# 用户数据（含明文密码，不入库）
+userdata.csv
