@@ -3,6 +3,7 @@
 #define User_H
 
 #include"../Common/Common.h"
+#include <functional>
 
 class User
 {
@@ -19,6 +20,10 @@ public:
     static std::shared_ptr<User> getUser(int fd);
 
     static std::map<int, std::shared_ptr<User>> getAllUsers();
+
+    // 在锁内遍历所有用户，避免复制整个 map（高并发性能优化）
+    // 注意：回调内不要调用 removeUser（会死锁），需要删除的 fd 应在回调外处理
+    static void forEachUser(const std::function<void(int, std::shared_ptr<User>&)>& func);
 
     //重置用户信息
     void resetUserInfo();

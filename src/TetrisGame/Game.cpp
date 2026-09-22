@@ -750,12 +750,12 @@ void Game::handleTimedUserLogic(shared_ptr<User>& user)
 
 void Game::processTimerEvent(int timerfd, short events, void* arg)
 {
-    auto allUsers = User::getAllUsers(); // 获取副本
-    for (auto& pair : allUsers) {
-        if (pair.second->getStatus() == STATUS_PLAYING) {
-            handleTimedUserLogic(pair.second);
+    // 锁内遍历，避免复制整个 users map（原 getAllUsers 按值返回，10 万连接时开销巨大）
+    User::forEachUser([](int fd, std::shared_ptr<User>& user) {
+        if (user->getStatus() == STATUS_PLAYING) {
+            handleTimedUserLogic(user);
         }
-    }
+    });
 }
 
 

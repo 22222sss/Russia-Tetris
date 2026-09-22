@@ -8,9 +8,17 @@
 #include"../TetrisGame/Filedata.h"
 #include"../TetrisGame/PlayerInfo.h"
 #include"../Utility/SystemOptimizer.h"
+#include <spdlog/async.h>
 
-// 创建 spdlog::logger 对象
-std::shared_ptr<spdlog::logger> logger = spdlog::basic_logger_mt("logger", "log.txt");
+// 创建 spdlog::logger 对象（异步日志，避免高并发下同步写盘阻塞主线程）
+// 通过初始化函数配置：大队列 + 2 个写线程，避免队列溢出阻塞；生产环境只记录 warn 及以上
+static std::shared_ptr<spdlog::logger> create_logger() {
+    spdlog::init_thread_pool(65536, 2);
+    auto l = spdlog::basic_logger_mt<spdlog::async_factory>("logger", "log.txt");
+    l->set_level(spdlog::level::warn);
+    return l;
+}
+std::shared_ptr<spdlog::logger> logger = create_logger();
 
 int main()
 {

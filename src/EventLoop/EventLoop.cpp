@@ -102,15 +102,18 @@ bool EventLoop::batchRegisterEvents(const std::vector<evutil_socket_t>& fds, sho
 void EventLoop::unregister_Event_User(int timerfd, short events, void* arg) {
     std::lock_guard<std::mutex> lock(events_mutex);
 
-    auto allUsers = User::getAllUsers(); // 获取副本
-    for (auto& pair : allUsers) {
-        if (pair.second->getStatus() == STATUS_OVER_QUIT) {
-            auto fd = pair.first;
-            auto user_ptr = pair.second;
-
+    // 锁内遍历收集需清理的连接（forEachUser 内部持有 users_mutex，不能在回调里调用 removeUser）
+    std::vector<int> toRemove;
+    User::forEachUser([&](int fd, std::shared_ptr<User>& user_ptr) {
+        if (user_ptr->getStatus() == STATUS_OVER_QUIT) {
+            toRemove.push_back(fd);
             ConnectionPool::release(user_ptr);
-            User::removeUser(fd); // 使用线程安全的移除方法
         }
+    });
+
+    // 锁外移除
+    for (int fd : toRemove) {
+        User::removeUser(fd);
     }
 }
 

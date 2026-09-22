@@ -1,12 +1,19 @@
 # 编译产物
-obj/
+src/obj/
+src/tetris_game
 *.o
+*.out
 
-# 可执行文件
-tetris_game
-
-# 日志文件
-log.txt
+# 运行时日志
+src/log.txt
 
 # 用户数据（含明文密码，不入库）
 userdata.csv
+
+# 系统优化脚本生成的检查脚本
+src/check_system.sh
+
+# 编辑器/系统文件
+.vscode/
+.idea/
+.DS_Store

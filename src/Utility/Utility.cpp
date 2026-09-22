@@ -53,6 +53,13 @@ bool output(const shared_ptr<User>& user, string s)
     int bytesSent = send(user->getFd(), s.c_str(), s.length(), 0);
     if (bytesSent == -1)
     {
+        // 非阻塞 socket 发送缓冲区满时返回 EAGAIN/EWOULDBLOCK，
+        // 这是正常情况，不应关闭连接，稍后由事件循环继续处理
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            return true;
+        }
+
         user->setStatus(STATUS_OVER_QUIT);
 
         close(user->getFd());
@@ -157,17 +164,10 @@ bool outputText(const shared_ptr<User>& user, int row, int col, int color, const
         outputContent += to_string(grade);
     }
 
-    if (!moveTo(user, row, col))
-    {
-        return false;
-    }
-   
-    if (!ChangeCurrentColor(user, color))
-    {
-        return false;
-    }
-
-    if (!output(user, outputContent))
+    // 合并定位、颜色、内容为一次 send，减少系统调用次数
+    string cmd = "\x1b[" + to_string(row) + ";" + to_string(col) + "H"
+               + "\33[" + to_string(color) + "m" + outputContent;
+    if (!output(user, cmd))
     {
         return false;
     }

@@ -456,12 +456,13 @@ bool UImanage::showover(const shared_ptr<User>& user)
 
 bool UImanage::clear(const shared_ptr<User>& user)
 {
-    int i;
+    // 合并所有清屏输出为一次 send，避免 240 次循环 × 多次 send 的系统调用开销
+    string buf;
+    buf.reserve(WINDOW_ROW_COUNT * 10 * (6 * WINDOW_COL_COUNT + 32));
     string emptyLine(6 * WINDOW_COL_COUNT, ' ');
-    for (i = 1; i <= WINDOW_ROW_COUNT * 10; i++)
+    for (int i = 1; i <= WINDOW_ROW_COUNT * 10; i++)
     {
-        if (!outputText(user, i, 1, COLOR_WHITE, emptyLine))
-            return false;
+        buf += "\x1b[" + to_string(i) + ";1H\33[" + to_string(COLOR_WHITE) + "m" + emptyLine;
     }
-    return true;
+    return output(user, buf);
 }

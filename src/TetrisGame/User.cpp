@@ -63,6 +63,14 @@ std::map<int, std::shared_ptr<User>> User::getAllUsers()
     return users; // 返回副本
 }
 
+void User::forEachUser(const std::function<void(int, std::shared_ptr<User>&)>& func)
+{
+    std::lock_guard<std::mutex> lock(users_mutex);
+    for (auto& pair : users) {
+        func(pair.first, pair.second);
+    }
+}
+
 void User::initUserInfo()
 {
     for (const auto& player : PlayerInfo::getPlayers())
