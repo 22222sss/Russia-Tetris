@@ -1,0 +1,30 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ubuntu-latest / g++
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install libevent / spdlog / fmt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libevent-dev libspdlog-dev libfmt-dev
+
+      - name: Build
+        working-directory: src
+        run: |
+          make -j"$(nproc)"
+          file tetris_game
