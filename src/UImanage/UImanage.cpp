@@ -456,13 +456,7 @@ bool UImanage::showover(const shared_ptr<User>& user)
 
 bool UImanage::clear(const shared_ptr<User>& user)
 {
-    // 合并所有清屏输出为一次 send，避免 240 次循环 × 多次 send 的系统调用开销
-    string buf;
-    buf.reserve(WINDOW_ROW_COUNT * 10 * (6 * WINDOW_COL_COUNT + 32));
-    string emptyLine(6 * WINDOW_COL_COUNT, ' ');
-    for (int i = 1; i <= WINDOW_ROW_COUNT * 10; i++)
-    {
-        buf += "\x1b[" + to_string(i) + ";1H\33[" + to_string(COLOR_WHITE) + "m" + emptyLine;
-    }
-    return output(user, buf);
+    // 用 ANSI 清屏码一次性清屏，替代 240 行空格（约 33KB → 8 字节）
+    // \x1b[2J 清除整个屏幕，\x1b[H 光标回到左上角
+    return output(user, "\x1b[2J\x1b[H");
 }

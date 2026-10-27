@@ -21,6 +21,11 @@ bool Filedata::initializeAsyncSystem() {
 
     // 预加载玩家数据到缓存
     if (!loadPlayerData()) {
+        // 加载失败时先停止异步写线程，避免 joinable 线程析构触发 terminate/core dump
+        stopAsyncThread = true;
+        if (asyncWriteThread.joinable()) {
+            asyncWriteThread.join();
+        }
         return false;
     }
 
@@ -168,8 +173,19 @@ bool Filedata::loadPlayerData() {
     // 缓存为空，从文件加载
     ifstream file("userdata.csv");
     if (!file.is_open()) {
-        logger->error("无法打开用户数据文件");
-        return false;
+        // 首次运行：数据文件不存在时自动创建带表头的空文件（不含任何用户数据），
+        // 保证 clone 仓库后无需手工准备数据文件即可启动
+        ofstream create("userdata.csv");
+        if (!create.is_open()) {
+            logger->error("无法创建用户数据文件");
+            return false;
+        }
+        create << "Username,Password,Easy_Score,Easy_Difficulty,Easy_Timestamp,"
+               << "Normal_Score,Normal_Difficulty,Normal_Timestamp,"
+               << "Difficult_Score,Difficult_Difficulty,Difficult_Timestamp,Recent_Scores\n";
+        create.close();
+        logger->info("用户数据文件不存在，已自动创建空数据文件");
+        return true;
     }
 
     string line;

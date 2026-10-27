@@ -32,23 +32,7 @@ string utf8_to_gbk(const std::string& utf8_str) {
 
 bool output(const shared_ptr<User>& user, string s)
 {
-    // 🔥 新增：检测如果是 Windows telnet 客户端，转换为 GBK
-    static std::unordered_map<int, bool> encoding_detected;
-    static std::unordered_map<int, bool> is_windows_client;
-
-    // 第一次输出时检测客户端类型
-    if (!encoding_detected[user->getFd()]) {
-        // 简单检测：Windows telnet 通常不会发送 UTF-8 设置
-        // 我们可以假设所有客户端都是 Windows telnet，或者添加更复杂的检测
-        is_windows_client[user->getFd()] = true; // 假设是 Windows
-        encoding_detected[user->getFd()] = true;
-    }
-
-    // 如果是 Windows 客户端，转换为 GBK
-    if (is_windows_client[user->getFd()]) {
-        s = utf8_to_gbk(s);
-    }
-     
+    // 直接发送 UTF-8 文本（现代终端均支持 UTF-8，无需每次 output 做 GBK 转换）
 
     int bytesSent = send(user->getFd(), s.c_str(), s.length(), 0);
     if (bytesSent == -1)
