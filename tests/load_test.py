@@ -244,7 +244,7 @@ def summarize(stats, target, concurrency, read_check, hold, elapsed,
         ticks = [(s['t'], s['cpu_ticks']) for s in sampler.samples if s['cpu_ticks'] is not None]
         cpu_pct = None
         if len(ticks) >= 2 and ticks[-1][0] > ticks[0][0]:
-            hz = os.sysconf('SC_CLK_TCK')
+            hz = os.sysconf('SC_CLK_TCK') if hasattr(os, 'sysconf') else 100
             cpu_pct = round(((ticks[-1][1] - ticks[0][1]) / hz) /
                             (ticks[-1][0] - ticks[0][0]) * 100.0, 1)
         summary['server'] = {
