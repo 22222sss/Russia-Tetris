@@ -143,8 +143,10 @@ telnet <服务器IP> 9999
 git clone git@github.com:22222sss/Russia-Tetris.git
 cd Russia-Tetris
 sudo apt install -y g++ make libevent-dev libspdlog-dev libfmt-dev python3
-bash tests/bench.sh 100000 5000 30
+bash tests/bench.sh 100000 5000 30 1 2
 ```
+
+第 5 个参数是压测客户端进程数：目标连接数会按进程拆分，各进程分别绑定 `127.0.0.1`、`127.0.0.2` …，最后合并结果。压测端 CPU 不够时（例如 4 核机器）把它设为 2 及以上可以显著提高成功率。
 
 `bench.sh` 会自动调整 `ulimit -n` 与内核参数、编译、启动服务端、执行压测，并采样服务端 RSS / fd / CPU，结果写入 `bench-results/<时间戳>/`（`result.json`、`result.txt`、`summary.md`）。
 
@@ -170,6 +172,26 @@ python3 tests/load_test.py 100000 5000 1 30 --pid "$(pgrep -f tetris_game)" --js
 | 服务端内存占用 | 约 400 MB（RSS 实测） |
 
 > 说明：CI 会打印 `sizeof(User)`，当前为 6224 字节；仅 10 万个 `User` 对象就约 594 MB，因此上表 400 MB 的 RSS 数据建议在目标机器上按 `bench.sh` 复测确认（测量时机/版本不同可能有差异）。
+
+**独立复测（GitHub Actions，4 核 / 16 GB）**
+
+用本仓库的 `bench` workflow 在免费 runner 上复测（`bash tests/bench.sh 100000 5000 30 1 2`，即 2 个压测客户端进程各 5 万）：
+
+| 指标 | 单客户端进程 | 双客户端进程 |
+|------|------|------|
+| 成功建立 | 70,674（70.7%） | **100,000（100%）** |
+| 失败 | 29,326（全部 timeout） | **0** |
+| 总耗时 | 457 秒 | **124 秒** |
+| 建立速率 | 155 连接/秒 | **804 连接/秒** |
+| 服务端 CPU | 19.9% | **18.5%** |
+| 服务端 RSS | 681.6 MB | **771.1 MB** |
+| 服务端 fd 峰值 | 83,292 | **99,737** |
+
+结论：
+
+- 免费 4 核机器上，**单进程压测客户端会先于服务端成为瓶颈**（单进程只到约 7 万，且失败全是 10 秒连接超时）；拆成 2 个客户端进程后 10 万连接 100% 建立。
+- 服务端全程 CPU 不到 20%，RSS 771 MB，fd 峰值 99,737——已接近代码中 `setrlimit(100000)` 设置的上限，继续加压需要先提高该限制。
+- 这也说明上表 334 连接/秒、400 MB 等数字受单进程客户端和测量口径影响，服务端本身仍有明显余量。
 
 **结论**
 
