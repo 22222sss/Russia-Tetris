@@ -30,23 +30,6 @@ jobs:
           make -j"$(nproc)"
           file tetris_game
 
-      - name: Memory sanity check (sizeof User)
-        working-directory: src
-        run: |
-          cat > /tmp/sizeof_user.cpp <<'EOF'
-          #include "TetrisGame/User.h"
-          #include <cstdio>
-          int main() {
-              const double n = 100000.0;
-              std::printf("sizeof(User) = %zu bytes; 100k users ~= %.1f MB\n",
-                          sizeof(User), sizeof(User) * n / 1024.0 / 1024.0);
-              return 0;
-          }
-          EOF
-          g++ -std=c++17 -ICommon -IUtility -IEventLoop -ITetrisGame -IUImanage -IConnectionPool \
-              /tmp/sizeof_user.cpp -o /tmp/sizeof_user
-          /tmp/sizeof_user
-
       - name: Smoke test (200 connections)
         working-directory: src
         run: |
@@ -75,3 +58,20 @@ jobs:
             tail -40 /tmp/server.log
           fi
           exit "$RC"
+
+      - name: Memory sanity check (sizeof User)
+        working-directory: src
+        run: |
+          cat > /tmp/sizeof_user.cpp <<'EOF'
+          #include "TetrisGame/User.h"
+          #include <cstdio>
+          int main() {
+              const double n = 100000.0;
+              std::printf("sizeof(User) = %zu bytes; 100k users ~= %.1f MB\n",
+                          sizeof(User), sizeof(User) * n / 1024.0 / 1024.0);
+              return 0;
+          }
+          EOF
+          g++ -std=c++17 -I. -ICommon -IUtility -IEventLoop -ITetrisGame -IUImanage -IConnectionPool \
+              /tmp/sizeof_user.cpp -o /tmp/sizeof_user
+          /tmp/sizeof_user
