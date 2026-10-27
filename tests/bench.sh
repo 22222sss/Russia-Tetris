@@ -2,19 +2,21 @@
 # 一键并发压测：环境检查 -> 构建 -> 启动服务端 -> 采样 -> 压测 -> 生成报告
 #
 # 用法:
-#   bash tests/bench.sh [目标连接数] [并发度] [保持秒数] [是否读取欢迎数据0/1]
-#   bash tests/bench.sh 100000 5000 30 1
+#   bash tests/bench.sh [目标连接数] [并发度] [保持秒数] [是否读取欢迎数据0/1] [客户端进程数]
+#   bash tests/bench.sh 100000 5000 30 1 2
 #
 # 说明:
 #   * 会尝试把 ulimit -n 提到 20 万，并在有 root/sudo 时调整内核参数
 #   * 服务端在 src/ 下启动，userdata.csv / log.txt 自动生成（已 gitignore）
 #   * 结果写入 bench-results/<时间戳>/，包含 result.json、result.txt、server.log、summary.md
+#   * 客户端进程数 > 1 时按目标数拆分，各进程绑定 127.0.0.1、127.0.0.2 ... 并合并结果
 set -euo pipefail
 
 TARGET=${1:-100000}
 CONCURRENCY=${2:-5000}
 HOLD=${3:-30}
 READ_CHECK=${4:-1}
+CLIENTS=${5:-1}
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 SRC="$ROOT/src"
@@ -37,7 +39,7 @@ log "环境信息"
   if command -v free >/dev/null 2>&1; then
     echo "内存      : $(free -h | awk '/Mem:/{print $2}')"
   fi
-  echo "参数      : target=$TARGET concurrency=$CONCURRENCY hold=$HOLD read_check=$READ_CHECK"
+  echo "参数      : target=$TARGET concurrency=$CONCURRENCY hold=$HOLD read_check=$READ_CHECK clients=$CLIENTS"
 } | tee "$OUT/env.txt"
 
 log "调整文件描述符上限"
@@ -104,14 +106,96 @@ fi
 STARTUP=$(python3 -c 'import sys,time; print("%.1f" % (time.time() - float(sys.argv[1])))' "$START_TS")
 echo "服务端就绪，启动耗时 ${STARTUP}s (pid=$SRV_PID)" | tee -a "$OUT/env.txt"
 
-log "开始压测"
+log "开始压测 (客户端进程数: $CLIENTS)"
 set +e
-python3 "$TESTS/load_test.py" "$TARGET" "$CONCURRENCY" "$READ_CHECK" "$HOLD" \
-  --pid "$SRV_PID" \
-  --sample-interval 1 \
-  --json "$OUT/result.json" \
-  2>&1 | tee "$OUT/result.txt"
-RC=${PIPESTATUS[0]}
+if [ "$CLIENTS" -le 1 ]; then
+  python3 "$TESTS/load_test.py" "$TARGET" "$CONCURRENCY" "$READ_CHECK" "$HOLD" \
+    --pid "$SRV_PID" \
+    --sample-interval 1 \
+    --json "$OUT/result.json" \
+    2>&1 | tee "$OUT/result.txt"
+  RC=${PIPESTATUS[0]}
+else
+  PER=$((TARGET / CLIENTS))
+  REM=$((TARGET % CLIENTS))
+  CONC=$((CONCURRENCY / CLIENTS))
+  [ "$CONC" -lt 1 ] && CONC=1
+  SHARD_PIDS=()
+  for i in $(seq 0 $((CLIENTS - 1))); do
+    T=$PER
+    if [ "$i" -lt "$REM" ]; then T=$((PER + 1)); fi
+    IP="127.0.0.$((i + 1))"
+    EXTRA=""
+    if [ "$i" -eq 0 ]; then EXTRA="--pid $SRV_PID"; fi
+    python3 "$TESTS/load_test.py" "$T" "$CONC" "$READ_CHECK" "$HOLD" \
+      --bind-ips "$IP" --json "$OUT/result-$i.json" $EXTRA \
+      2>&1 | tee "$OUT/result-$i.txt" &
+    SHARD_PIDS+=("$!")
+  done
+  RC=0
+  for p in "${SHARD_PIDS[@]}"; do
+    wait "$p" || RC=1
+  done
+  python3 - "$OUT" "$CLIENTS" <<'PY' | tee "$OUT/result.txt"
+import json
+import os
+import sys
+
+out, n = sys.argv[1], int(sys.argv[2])
+shards = []
+for i in range(n):
+    p = os.path.join(out, 'result-%d.json' % i)
+    if os.path.exists(p):
+        with open(p, encoding='utf-8') as f:
+            shards.append(json.load(f))
+if not shards:
+    print('没有可合并的分片结果')
+    sys.exit(0)
+
+connected = sum(s['result']['connected'] for s in shards)
+failed = sum(s['result']['failed'] for s in shards)
+reasons = {}
+for s in shards:
+    for k, v in s['result']['failed_by_reason'].items():
+        reasons[k] = reasons.get(k, 0) + v
+elapsed = max(s['result']['elapsed_seconds'] for s in shards)
+curves = [s['result'].get('rate_per_10s') or [] for s in shards]
+width = max((len(c) for c in curves), default=0)
+curve = [sum((c[i] if i < len(c) else 0) for c in curves) for i in range(width)]
+first = shards[0]
+
+merged = {
+    'config': {
+        'target': sum(s['config']['target'] for s in shards),
+        'concurrency': sum(s['config']['concurrency'] for s in shards),
+        'read_check': first['config']['read_check'],
+        'hold_seconds': first['config']['hold_seconds'],
+        'host': first['config']['host'],
+        'port': first['config']['port'],
+        'clients': n,
+    },
+    'result': {
+        'connected': connected,
+        'failed': failed,
+        'failed_by_reason': dict(sorted(reasons.items())),
+        'attempted': connected + failed,
+        'success_rate': round(connected / (connected + failed), 6) if (connected + failed) else 0.0,
+        'received_data': sum(s['result']['received_data'] for s in shards),
+        'no_data': sum(s['result']['no_data'] for s in shards),
+        'elapsed_seconds': round(elapsed, 3),
+        'rate_per_second': round(connected / elapsed, 1) if elapsed else 0.0,
+        'latency_seconds': {'p50': None, 'p95': None, 'p99': None, 'max': None},
+        'rate_per_10s': curve,
+    },
+    'server': first.get('server', {}),
+    'timestamp': first.get('timestamp'),
+}
+with open(os.path.join(out, 'result.json'), 'w', encoding='utf-8') as f:
+    json.dump(merged, f, ensure_ascii=False, indent=2)
+print('合并 %d 个分片: 成功 %d / 失败 %d, 耗时 %.1fs, %.0f 连接/秒'
+      % (n, connected, failed, elapsed, connected / elapsed if elapsed else 0))
+PY
+fi
 set -e
 echo "压测退出码: $RC" | tee -a "$OUT/result.txt"
 

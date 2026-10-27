@@ -23,6 +23,10 @@ on:
         description: '读取欢迎数据 1/0'
         required: true
         default: '1'
+      clients:
+        description: '压测客户端进程数（分片数）'
+        required: true
+        default: '1'
 
 permissions:
   contents: read
@@ -44,7 +48,7 @@ jobs:
 
       - name: Benchmark
         run: |
-          bash tests/bench.sh "${{ inputs.target }}" "${{ inputs.concurrency }}" "${{ inputs.hold }}" "${{ inputs.read_check }}"
+          bash tests/bench.sh "${{ inputs.target }}" "${{ inputs.concurrency }}" "${{ inputs.hold }}" "${{ inputs.read_check }}" "${{ inputs.clients || '2' }}"
 
       - name: Publish key metrics as annotations
         if: always()
