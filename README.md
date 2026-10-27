@@ -150,6 +150,20 @@ bash tests/bench.sh 100000 5000 30 1 2
 
 `bench.sh` 会自动调整 `ulimit -n` 与内核参数、编译、启动服务端、执行压测，并采样服务端 RSS / fd / CPU，结果写入 `bench-results/<时间戳>/`（`result.json`、`result.txt`、`summary.md`）。
 
+**远程客户端模式（多台机器拼压测能力）**
+
+服务端在本机、压测客户端在别的机器时（需要免密 ssh，远端只需有 `python3`）：
+
+```bash
+BENCH_REMOTE_CLIENTS="user@host1,user@host2" BENCH_HOST=10.0.0.5 \
+  bash tests/bench.sh 200000 10000 30 1 4
+```
+
+- `BENCH_HOST` 是远程客户端要连接的服务端地址；不填会自动探测本机第一个 IP。
+- 前 N 个分片分给 `BENCH_REMOTE_CLIENTS` 里的机器，剩余分片在本机跑，最后统一合并结果。
+- 脚本会通过 ssh 把 `load_test.py` 上传到远端 `/tmp/russia-bench`，跑完把 JSON 结果取回。
+- 记得放行服务端 `9999` 端口；远端机器的 `ulimit -n` 由脚本自动尝试提升。
+
 也可以在 GitHub Actions 里手动触发：**Actions → bench → Run workflow**，填写目标连接数和并发度（默认 10000 / 2000），跑完在 Artifacts 里下载 `bench-results`。
 
 也可以手动执行（`--pid` 指定服务端进程即可采样其资源占用）：

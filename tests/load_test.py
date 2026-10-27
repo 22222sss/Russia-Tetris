@@ -136,7 +136,7 @@ def classify(exc):
     return 'other:' + type(exc).__name__
 
 
-async def worker(idx, bind_ip, sem, stats, read_check, connect_timeout, read_timeout):
+async def worker(idx, bind_ip, sem, stats, read_check, connect_timeout, read_timeout, host, port):
     async with sem:
         started = time.perf_counter()
         sock = None
@@ -146,7 +146,7 @@ async def worker(idx, bind_ip, sem, stats, read_check, connect_timeout, read_tim
             sock.setblocking(False)
             sock.bind((bind_ip, 0))
             loop = asyncio.get_event_loop()
-            await asyncio.wait_for(loop.sock_connect(sock, (DEFAULT_HOST, DEFAULT_PORT)),
+            await asyncio.wait_for(loop.sock_connect(sock, (host, port)),
                                    timeout=connect_timeout)
             stats.connected += 1
             stats.latencies.append(time.perf_counter() - started)
@@ -201,7 +201,7 @@ def rate_buckets(done_times, start, bucket=10.0, t_end=None):
 
 
 def summarize(stats, target, concurrency, read_check, hold, elapsed,
-              sampler, start):
+              sampler, start, host, port):
     failed_total = sum(stats.failed.values())
     tried = stats.connected + failed_total
     success_rate = (stats.connected / tried) if tried else 0.0
@@ -213,8 +213,8 @@ def summarize(stats, target, concurrency, read_check, hold, elapsed,
             'concurrency': concurrency,
             'read_check': bool(read_check),
             'hold_seconds': hold,
-            'host': DEFAULT_HOST,
-            'port': DEFAULT_PORT,
+            'host': host,
+            'port': port,
         },
         'result': {
             'connected': stats.connected,
@@ -308,7 +308,8 @@ async def main(args):
         bind_ip = args.bind_ips[i % len(args.bind_ips)]
         tasks.append(asyncio.create_task(
             worker(i, bind_ip, sem, stats, args.read_check,
-                   args.connect_timeout, args.read_timeout)))
+                   args.connect_timeout, args.read_timeout,
+                   args.host, args.port)))
     await asyncio.gather(*tasks)
     elapsed = time.perf_counter() - start
 
@@ -316,7 +317,7 @@ async def main(args):
         sampler.stop()
     summary, success_rate = summarize(stats, args.target, args.concurrency,
                                       args.read_check, args.hold, elapsed,
-                                      sampler, start)
+                                      sampler, start, args.host, args.port)
     print_summary(summary)
 
     if args.json:
@@ -349,6 +350,8 @@ def parse_args(argv):
     p.add_argument('concurrency', nargs='?', type=int, default=5000, help='并发度（默认 5000）')
     p.add_argument('read_check', nargs='?', type=int, default=1, help='是否读取欢迎数据 0/1（默认 1）')
     p.add_argument('hold', nargs='?', type=int, default=5, help='保持连接秒数（默认 5）')
+    p.add_argument('--host', default=DEFAULT_HOST, help='服务端地址（默认 127.0.0.1）')
+    p.add_argument('--port', type=int, default=DEFAULT_PORT, help='服务端端口（默认 9999）')
     p.add_argument('--pid', type=int, default=0, help='服务端进程 pid，用于采样 RSS/fd/CPU')
     p.add_argument('--sample-interval', type=float, default=1.0, help='采样间隔秒（默认 1.0）')
     p.add_argument('--json', default='', help='把结果写成 JSON 文件的路径')
