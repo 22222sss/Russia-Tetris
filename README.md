@@ -205,3 +205,7 @@ python3 tests/load_test.py 100000 5000 1 30 --pid "$(pgrep -f tetris_game)" --js
 ## 支持一下
 
 如果觉得这个项目还不错，点个 ⭐ Star，这将是对 **Russia-Tetris** 极大的鼓励与支持。
+
+## 许可证
+
+本项目采用 [MIT 许可证](LICENSE)。
