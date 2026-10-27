@@ -1,7 +1,7 @@
 name: bench
 
 on:
-  # 推送到 bench-run 分支即触发默认参数（10 万连接 / 5000 并发 / 保持 30 秒）
+  # 推送到 bench-run 分支即触发默认参数（20 万连接 / 1 万并发 / 4 个客户端进程 / 保持 30 秒）
   # 没有 token 时也能用它跑一次完整压测
   push:
     branches: [bench-run]
@@ -48,7 +48,7 @@ jobs:
 
       - name: Benchmark
         run: |
-          bash tests/bench.sh "${{ inputs.target }}" "${{ inputs.concurrency }}" "${{ inputs.hold }}" "${{ inputs.read_check }}" "${{ inputs.clients || '2' }}"
+          bash tests/bench.sh "${{ inputs.target || '200000' }}" "${{ inputs.concurrency || '10000' }}" "${{ inputs.hold || '30' }}" "${{ inputs.read_check || '1' }}" "${{ inputs.clients || '4' }}"
 
       - name: Publish key metrics as annotations
         if: always()

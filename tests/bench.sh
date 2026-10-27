@@ -6,7 +6,7 @@
 #   bash tests/bench.sh 100000 5000 30 1 2
 #
 # 说明:
-#   * 会尝试把 ulimit -n 提到 20 万，并在有 root/sudo 时调整内核参数
+#   * 会尝试把 ulimit -n 提到 40 万，并在有 root/sudo 时调整内核参数
 #   * 服务端在 src/ 下启动，userdata.csv / log.txt 自动生成（已 gitignore）
 #   * 结果写入 bench-results/<时间戳>/，包含 result.json、result.txt、server.log、summary.md
 #   * 客户端进程数 > 1 时按目标数拆分，各进程绑定 127.0.0.1、127.0.0.2 ... 并合并结果
@@ -43,10 +43,10 @@ log "环境信息"
 } | tee "$OUT/env.txt"
 
 log "调整文件描述符上限"
-if ! ulimit -n 200000 2>/dev/null; then
+if ! ulimit -n 400000 2>/dev/null; then
   echo "直接提升失败（硬上限 $(ulimit -Hn)），尝试 sudo prlimit" | tee -a "$OUT/env.txt"
   if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-    sudo prlimit --pid $$ --nofile=200000:200000 2>/dev/null || true
+    sudo prlimit --pid $$ --nofile=400000:400000 2>/dev/null || true
   fi
 fi
 echo "ulimit -n = $(ulimit -n)（硬上限 $(ulimit -Hn)）" | tee -a "$OUT/env.txt"

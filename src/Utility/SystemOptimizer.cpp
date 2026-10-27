@@ -102,19 +102,22 @@ bool SystemOptimizer::setFileDescriptorLimit() {
     logger->info(current_info);
     std::cout << current_info << std::endl;
 
-    // 检查是否已经优化
-    bool is_optimized = (rl.rlim_cur >= 100000);
+    // 目标软限制：20 万连接需要 20 万+ fd（监听、日志、epoll 等另算）
+    const rlim_t target = 300000;
 
-    if (is_optimized) {
-        logger->info("当前文件描述符限制已足够");
+    // 已经更高（例如外部 ulimit 设得更大）就保持，绝不降回去
+    if (rl.rlim_cur >= target) {
+        logger->info("当前文件描述符限制已足够（{} >= {}）", rl.rlim_cur, target);
         std::cout << "✅ 当前文件描述符限制已足够" << std::endl;
         return true;
     }
 
     // 尝试设置新的限制
     rlimit new_rl = rl;
-    new_rl.rlim_cur = 100000;  // 软限制：10万
-    new_rl.rlim_max = 1000000; // 硬限制：100万
+    new_rl.rlim_cur = target;               // 软限制：30 万
+    if (new_rl.rlim_max < target) {
+        new_rl.rlim_max = 1000000;          // 硬限制至少 100 万
+    }
 
     if (setrlimit(RLIMIT_NOFILE, &new_rl) != 0) {
         logger->warn("无法设置文件描述符限制: {} (当前用户权限可能不足)", strerror(errno));
