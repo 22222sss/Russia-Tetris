@@ -100,6 +100,9 @@ telnet <服务器IP> 9999
 
 ## 项目展示
 
+> GitHub 对 README 内联图片有大小限制，下面的动图为压缩版本（帧率/分辨率有所降低）。
+
+
 #### 登录注册界面
 
 ![登录注册](images-and-gif/登录注册.gif)
@@ -112,15 +115,15 @@ telnet <服务器IP> 9999
 
 **简单模式**（方块下降间隔 1 秒）
 
-![简单模式](images-and-gif/简单模式.gif)
+![简单模式](images-and-gif/简单模式-demo.gif)
 
 **普通模式**（方块下降间隔 0.5 秒）
 
-![普通模式](images-and-gif/普通模式.gif)
+![普通模式](images-and-gif/普通模式-demo.gif)
 
 **困难模式**（方块下降间隔 0.2 秒）
 
-![困难模式](images-and-gif/困难模式.gif)
+![困难模式](images-and-gif/困难模式-demo.gif)
 
 #### 游戏结束后返回初始菜单
 
