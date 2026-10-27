@@ -13,6 +13,7 @@ jobs:
   build:
     name: ubuntu-latest / g++
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,3 +29,49 @@ jobs:
         run: |
           make -j"$(nproc)"
           file tetris_game
+
+      - name: Memory sanity check (sizeof User)
+        working-directory: src
+        run: |
+          cat > /tmp/sizeof_user.cpp <<'EOF'
+          #include "TetrisGame/User.h"
+          #include <cstdio>
+          int main() {
+              const double n = 100000.0;
+              std::printf("sizeof(User) = %zu bytes; 100k users ~= %.1f MB\n",
+                          sizeof(User), sizeof(User) * n / 1024.0 / 1024.0);
+              return 0;
+          }
+          EOF
+          g++ -std=c++17 -ICommon -IUtility -IEventLoop -ITetrisGame -IUImanage -IConnectionPool \
+              /tmp/sizeof_user.cpp -o /tmp/sizeof_user
+          /tmp/sizeof_user
+
+      - name: Smoke test (200 connections)
+        working-directory: src
+        run: |
+          set +e
+          ./tetris_game > /tmp/server.log 2>&1 &
+          echo $! > /tmp/server.pid
+
+          for i in $(seq 1 120); do
+            if (exec 3<>/dev/tcp/127.0.0.1/9999) 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          python3 ../tests/load_test.py 200 200 1 0 \
+            --pid "$(cat /tmp/server.pid)" \
+            --json /tmp/smoke.json \
+            --min-success 0.95
+          RC=$?
+
+          kill "$(cat /tmp/server.pid)" 2>/dev/null
+          wait "$(cat /tmp/server.pid)" 2>/dev/null
+          cat /tmp/smoke.json 2>/dev/null
+          if [ "$RC" -ne 0 ]; then
+            echo "---- server.log (tail) ----"
+            tail -40 /tmp/server.log
+          fi
+          exit "$RC"

@@ -1,0 +1,51 @@
+name: bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: '目标连接数'
+        required: true
+        default: '10000'
+      concurrency:
+        description: '并发度'
+        required: true
+        default: '2000'
+      hold:
+        description: '保持连接秒数'
+        required: true
+        default: '30'
+      read_check:
+        description: '读取欢迎数据 1/0'
+        required: true
+        default: '1'
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: ubuntu-latest / bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libevent-dev libspdlog-dev libfmt-dev
+
+      - name: Benchmark
+        run: |
+          bash tests/bench.sh "${{ inputs.target }}" "${{ inputs.concurrency }}" "${{ inputs.hold }}" "${{ inputs.read_check }}"
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench-results/
+          if-no-files-found: warn

@@ -48,7 +48,7 @@ Russia-Tetris/
 │   ├── makefile              # 构建脚本
 │   └── optimize_system.sh    # 系统调优脚本
 ├── images-and-gif/           # 演示截图与 GIF
-├── tests/                    # 并发压测脚本
+├── tests/                    # 压测脚本（load_test.py / bench.sh）
 └── README.md                 # 项目说明
 ```
 
@@ -134,6 +134,27 @@ telnet <服务器IP> 9999
 
 - 使用 Python asyncio 编写压测客户端，通过两个 loopback IP（`127.0.0.1` / `127.0.0.2`）各承担一半连接，突破单 IP 约 6.4 万个源端口的限制。
 - 客户端分批建立 TCP 连接，连接成功后读取服务端下发的欢迎界面，验证数据收发是否正常。
+
+**如何复现**
+
+在一台 Linux 机器上（连接数越大，对 CPU、文件描述符上限和内核参数要求越高）：
+
+```bash
+git clone git@github.com:22222sss/Russia-Tetris.git
+cd Russia-Tetris
+sudo apt install -y g++ make libevent-dev libspdlog-dev libfmt-dev python3
+bash tests/bench.sh 100000 5000 30
+```
+
+`bench.sh` 会自动调整 `ulimit -n` 与内核参数、编译、启动服务端、执行压测，并采样服务端 RSS / fd / CPU，结果写入 `bench-results/<时间戳>/`（`result.json`、`result.txt`、`summary.md`）。
+
+也可以手动执行（`--pid` 指定服务端进程即可采样其资源占用）：
+
+```bash
+python3 tests/load_test.py 100000 5000 1 30 --pid "$(pgrep -f tetris_game)" --json result.json
+```
+
+> 客户端与服务端同机时，压测客户端本身也会占用 CPU 和文件描述符；失败会按 timeout / refused / reset / bind 失败 / fd 耗尽等原因分类，便于判断瓶颈在服务端还是压测端。
 
 **实测结果**
 
