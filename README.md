@@ -148,6 +148,8 @@ bash tests/bench.sh 100000 5000 30
 
 `bench.sh` 会自动调整 `ulimit -n` 与内核参数、编译、启动服务端、执行压测，并采样服务端 RSS / fd / CPU，结果写入 `bench-results/<时间戳>/`（`result.json`、`result.txt`、`summary.md`）。
 
+也可以在 GitHub Actions 里手动触发：**Actions → bench → Run workflow**，填写目标连接数和并发度（默认 10000 / 2000），跑完在 Artifacts 里下载 `bench-results`。
+
 也可以手动执行（`--pid` 指定服务端进程即可采样其资源占用）：
 
 ```bash
