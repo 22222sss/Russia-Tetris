@@ -62,7 +62,7 @@ jobs:
       - name: Memory sanity check (sizeof User)
         working-directory: src
         run: |
-          cat > /tmp/sizeof_user.cpp <<'EOF'
+          cat > sizeof_user.cpp <<'EOF'
           #include "TetrisGame/User.h"
           #include <cstdio>
           int main() {
@@ -72,6 +72,9 @@ jobs:
               return 0;
           }
           EOF
-          g++ -std=c++17 -I. -ICommon -IUtility -IEventLoop -ITetrisGame -IUImanage -IConnectionPool \
-              /tmp/sizeof_user.cpp -o /tmp/sizeof_user
-          /tmp/sizeof_user
+          if ! g++ -std=c++17 -I. -ICommon -IUtility -IEventLoop -ITetrisGame -IUImanage -IConnectionPool \
+                sizeof_user.cpp -o sizeof_user 2> sizeof_err.txt; then
+            echo "::error::sizeof check failed: $(tr '\n' '|' < sizeof_err.txt | cut -c1-900)"
+            exit 1
+          fi
+          ./sizeof_user
