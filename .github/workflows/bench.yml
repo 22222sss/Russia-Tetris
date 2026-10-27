@@ -59,10 +59,12 @@ jobs:
             if [ -n "$ul" ]; then echo "::notice::env: $ul"; fi
           fi
           if [ -f "${d}summary.md" ] && grep -q "成功建立" "${d}summary.md"; then
-            for k in "成功建立" "失败" "总耗时" "建立速率" "服务端内存" "服务端 CPU"; do
+            for k in "成功建立" "失败" "失败原因" "总耗时" "建立速率" "服务端内存" "服务端 fd" "服务端 CPU"; do
               line=$(grep -m1 -- "| $k" "${d}summary.md" || true)
               if [ -n "$line" ]; then echo "::notice::$line"; fi
             done
+            curve=$(awk '/## 每 10 秒建立速率/{f=1;next} f&&/^```/{c++} f&&c==1&&!/^```/{print;exit}' "${d}summary.md" || true)
+            if [ -n "$curve" ]; then echo "::notice::rate/10s: $curve"; fi
           else
             echo "::notice::未生成结果，附 result.txt 尾部"
             tail -8 "${d}result.txt" 2>/dev/null | while IFS= read -r line; do echo "::notice::$line"; done
