@@ -23,3 +23,8 @@ bench-results/
 
 # Python 缓存
 __pycache__/
+
+# CI 中 sizeof 检查的产物
+src/sizeof_user
+src/sizeof_user.cpp
+src/sizeof_err.txt

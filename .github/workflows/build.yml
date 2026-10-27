@@ -59,6 +59,10 @@ jobs:
           fi
           exit "$RC"
 
+      - name: bench.sh smoke (100 connections)
+        run: |
+          bash tests/bench.sh 100 100 0 1
+
       - name: Memory sanity check (sizeof User)
         working-directory: src
         run: |
