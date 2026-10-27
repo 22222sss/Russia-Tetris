@@ -1,6 +1,10 @@
 name: bench
 
 on:
+  # 推送到 bench-run 分支即触发默认参数（10 万连接 / 5000 并发 / 保持 30 秒）
+  # 没有 token 时也能用它跑一次完整压测
+  push:
+    branches: [bench-run]
   workflow_dispatch:
     inputs:
       target:
@@ -41,6 +45,29 @@ jobs:
       - name: Benchmark
         run: |
           bash tests/bench.sh "${{ inputs.target }}" "${{ inputs.concurrency }}" "${{ inputs.hold }}" "${{ inputs.read_check }}"
+
+      - name: Publish key metrics as annotations
+        if: always()
+        run: |
+          d=$(ls -1d bench-results/*/ 2>/dev/null | tail -1)
+          if [ -z "$d" ]; then
+            echo "::warning::bench-results 目录不存在"
+            exit 0
+          fi
+          if [ -f "${d}summary.md" ]; then
+            for k in "目标连接数" "成功建立" "失败" "总耗时" "建立速率" "服务端内存" "服务端 fd" "服务端 CPU" "每 10 秒"; do
+              line=$(grep -m1 -- "$k" "${d}summary.md" 2>/dev/null || true)
+              if [ -n "$line" ]; then
+                echo "::notice::$line"
+              fi
+            done
+          fi
+          if [ -f "${d}result.txt" ]; then
+            grep -E "失败原因|等待|超时" "${d}result.txt" 2>/dev/null | head -3 | while IFS= read -r line; do
+              echo "::notice::$line"
+            done
+          fi
+          exit 0
 
       - name: Upload benchmark results
         if: always()
