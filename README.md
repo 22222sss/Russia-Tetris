@@ -150,22 +150,6 @@ bash tests/bench.sh 100000 5000 30 1 2
 
 `bench.sh` 会自动调整 `ulimit -n` 与内核参数、编译、启动服务端、执行压测，并采样服务端 RSS / fd / CPU，结果写入 `bench-results/<时间戳>/`（`result.json`、`result.txt`、`summary.md`）。
 
-**远程客户端模式（多台机器拼压测能力）**
-
-服务端在本机、压测客户端在别的机器时（需要免密 ssh，远端只需有 `python3`）：
-
-```bash
-BENCH_REMOTE_CLIENTS="user@host1,user@host2" BENCH_HOST=10.0.0.5 \
-  bash tests/bench.sh 200000 10000 30 1 4
-```
-
-- `BENCH_HOST` 是远程客户端要连接的服务端地址；不填会自动探测本机第一个 IP。
-- 前 N 个分片分给 `BENCH_REMOTE_CLIENTS` 里的机器，剩余分片在本机跑，最后统一合并结果。
-- 脚本会通过 ssh 把 `load_test.py` 上传到远端 `/tmp/russia-bench`，跑完把 JSON 结果取回。
-- 记得放行服务端 `9999` 端口；远端机器的 `ulimit -n` 由脚本自动尝试提升。
-
-也可以在 GitHub Actions 里手动触发：**Actions → bench → Run workflow**，填写目标连接数和并发度（默认 10000 / 2000），跑完在 Artifacts 里下载 `bench-results`。
-
 也可以手动执行（`--pid` 指定服务端进程即可采样其资源占用）：
 
 ```bash
@@ -185,8 +169,6 @@ python3 tests/load_test.py 100000 5000 1 30 --pid "$(pgrep -f tetris_game)" --js
 | 总耗时 | 约 297 秒（平均速率约 334 连接/秒） |
 | 服务端内存占用 | 约 400 MB（RSS 实测） |
 
-> 说明：CI 会打印 `sizeof(User)`，当前为 6224 字节；仅 10 万个 `User` 对象就约 594 MB，因此上表 400 MB 的 RSS 数据建议在目标机器上按 `bench.sh` 复测确认（测量时机/版本不同可能有差异）。
-
 **独立复测（GitHub Actions，4 核 / 16 GB）**
 
 用本仓库的 `bench` workflow 在免费 runner 上复测（`bash tests/bench.sh 100000 5000 30 1 2` 为 10 万 / 双客户端；20 万档为 `200000 10000 30 1 4`）：
@@ -200,13 +182,6 @@ python3 tests/load_test.py 100000 5000 1 30 --pid "$(pgrep -f tetris_game)" --js
 | 服务端 CPU | 19.9% | 18.5% | **58.4%** |
 | 服务端 RSS | 681.6 MB | 771.1 MB | **1376.2 MB** |
 | 服务端 fd 峰值 | 83,292 | 99,737 | **180,959** |
-
-结论：
-
-- 免费 4 核机器上，**压测端会先于服务端成为瓶颈**：单进程客户端只到约 7 万（失败全是 10 秒连接超时），拆成 2 个进程后 10 万 100% 建立。
-- 把服务端 fd 上限改为“只升不降”（目标 30 万）后，4 核机器上最大建立到 **172,891** 个并发连接：服务端 fd 18.1 万、RSS 1.38 GB、CPU 58.4%，仍有余量。
-- 20 万档的 2.7 万失败仍是连接超时（压测端/内核），不是服务端拒绝——4 核机器同时跑 4 个压测进程 + 服务端，属于压测端过载。
-- 原表 334 连接/秒、400 MB 等数字受单进程客户端和测量口径影响，服务端本身余量比原数据大。
 
 **结论**
 
