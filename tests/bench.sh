@@ -41,8 +41,13 @@ log "环境信息"
 } | tee "$OUT/env.txt"
 
 log "调整文件描述符上限"
-ulimit -n 200000 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
-echo "ulimit -n = $(ulimit -n)" | tee -a "$OUT/env.txt"
+if ! ulimit -n 200000 2>/dev/null; then
+  echo "直接提升失败（硬上限 $(ulimit -Hn)），尝试 sudo prlimit" | tee -a "$OUT/env.txt"
+  if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    sudo prlimit --pid $$ --nofile=200000:200000 2>/dev/null || true
+  fi
+fi
+echo "ulimit -n = $(ulimit -n)（硬上限 $(ulimit -Hn)）" | tee -a "$OUT/env.txt"
 
 log "调整内核参数（需要 root/sudo，失败则跳过）"
 SUDO=""
@@ -105,7 +110,7 @@ python3 "$TESTS/load_test.py" "$TARGET" "$CONCURRENCY" "$READ_CHECK" "$HOLD" \
   --pid "$SRV_PID" \
   --sample-interval 1 \
   --json "$OUT/result.json" \
-  | tee "$OUT/result.txt"
+  2>&1 | tee "$OUT/result.txt"
 RC=${PIPESTATUS[0]}
 set -e
 echo "压测退出码: $RC" | tee -a "$OUT/result.txt"

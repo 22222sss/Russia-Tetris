@@ -54,18 +54,18 @@ jobs:
             echo "::warning::bench-results 目录不存在"
             exit 0
           fi
-          if [ -f "${d}summary.md" ]; then
-            for k in "目标连接数" "成功建立" "失败" "总耗时" "建立速率" "服务端内存" "服务端 fd" "服务端 CPU" "每 10 秒"; do
-              line=$(grep -m1 -- "$k" "${d}summary.md" 2>/dev/null || true)
-              if [ -n "$line" ]; then
-                echo "::notice::$line"
-              fi
-            done
+          if [ -f "${d}env.txt" ]; then
+            ul=$(grep -m1 "ulimit" "${d}env.txt" || true)
+            if [ -n "$ul" ]; then echo "::notice::env: $ul"; fi
           fi
-          if [ -f "${d}result.txt" ]; then
-            grep -E "失败原因|等待|超时" "${d}result.txt" 2>/dev/null | head -3 | while IFS= read -r line; do
-              echo "::notice::$line"
+          if [ -f "${d}summary.md" ] && grep -q "成功建立" "${d}summary.md"; then
+            for k in "成功建立" "失败" "总耗时" "建立速率" "服务端内存" "服务端 CPU"; do
+              line=$(grep -m1 -- "| $k" "${d}summary.md" || true)
+              if [ -n "$line" ]; then echo "::notice::$line"; fi
             done
+          else
+            echo "::notice::未生成结果，附 result.txt 尾部"
+            tail -8 "${d}result.txt" 2>/dev/null | while IFS= read -r line; do echo "::notice::$line"; done
           fi
           exit 0
 

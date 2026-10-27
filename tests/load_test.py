@@ -138,10 +138,12 @@ def classify(exc):
 
 async def worker(idx, bind_ip, sem, stats, read_check, connect_timeout, read_timeout):
     async with sem:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setblocking(False)
         started = time.perf_counter()
+        sock = None
         try:
+            # 注意：socket() 本身也可能因 fd 耗尽抛 EMFILE，必须放在 try 内
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setblocking(False)
             sock.bind((bind_ip, 0))
             loop = asyncio.get_event_loop()
             await asyncio.wait_for(loop.sock_connect(sock, (DEFAULT_HOST, DEFAULT_PORT)),
@@ -164,10 +166,11 @@ async def worker(idx, bind_ip, sem, stats, read_check, connect_timeout, read_tim
             return True
         except Exception as exc:
             stats.add_failure(classify(exc))
-            try:
-                sock.close()
-            except OSError:
-                pass
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
             return False
 
 
