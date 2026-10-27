@@ -9,13 +9,12 @@ std::atomic<long> total_events_processed(0);    // 原子计数器
 std::atomic<long> active_connections(0);        // 原子计数器
 
 EventLoop::EventLoop() {
-    // 使用epoll作为后端（如果可用）- 性能关键！
+    // 让 libevent 选用 epoll 等高效后端：避开有 1024 连接上限的 select，
+    // 以及在大连接数下性能较差的 poll
     struct event_config* cfg = event_config_new();
     if (cfg) {
-        // 优先使用epoll，避免select/poll
-        // epoll在大量连接时性能远优于select/poll
-        event_config_avoid_method(cfg, "select");  // select有1024连接限制
-        event_config_avoid_method(cfg, "poll");    // poll在大连接数时性能差
+        event_config_avoid_method(cfg, "select");  // select 有 1024 连接限制
+        event_config_avoid_method(cfg, "poll");    // poll 在大连接数时性能差
         base = event_base_new_with_config(cfg);
         event_config_free(cfg);
     }

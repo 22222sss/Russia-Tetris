@@ -10,8 +10,6 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <sys/epoll.h>
-#include <sys/timerfd.h>
 #include <signal.h>
 #include <vector>
 #include <map>
@@ -48,7 +46,6 @@
 #include <atomic>  // 用于线程安全的计数器
 #include <condition_variable>
 
-#include <iconv.h>
 #include <errno.h>
 
 

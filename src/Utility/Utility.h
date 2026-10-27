@@ -10,9 +10,6 @@
 #include"../EventLoop/EventLoop.h"
 #include"../TetrisGame/PlayerInfo.h"
 
-// UTF-8 转 GBK 函数
-string utf8_to_gbk(const std::string& utf8_str);
-
 //设置非阻塞/阻塞套接字
 bool IsSetSocketBlocking(int socket, bool blocking);
 

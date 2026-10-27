@@ -456,7 +456,7 @@ bool UImanage::showover(const shared_ptr<User>& user)
 
 bool UImanage::clear(const shared_ptr<User>& user)
 {
-    // 用 ANSI 清屏码一次性清屏，替代 240 行空格（约 33KB → 8 字节）
+    // 用 ANSI 清屏码一次性清屏，替代 240 行空格（约 33KB → 7 字节）
     // \x1b[2J 清除整个屏幕，\x1b[H 光标回到左上角
     return output(user, "\x1b[2J\x1b[H");
 }

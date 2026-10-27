@@ -2,34 +2,6 @@
 
 extern shared_ptr<spdlog::logger> logger;
 
-string utf8_to_gbk(const std::string& utf8_str) {
-    if (utf8_str.empty()) return "";
-
-    iconv_t cd = iconv_open("GBK", "UTF-8");
-    if (cd == (iconv_t)-1) {
-        return utf8_str; // 转换失败，返回原字符串
-    }
-
-    size_t in_len = utf8_str.length();
-    size_t out_len = in_len * 2; // GBK 可能占用更多字节
-    char* in_buf = const_cast<char*>(utf8_str.c_str());
-    char* out_buf = new char[out_len + 1];
-    char* out_ptr = out_buf;
-
-    memset(out_buf, 0, out_len + 1);
-
-    if (iconv(cd, &in_buf, &in_len, &out_ptr, &out_len) == (size_t)-1) {
-        delete[] out_buf;
-        iconv_close(cd);
-        return utf8_str; // 转换失败
-    }
-
-    std::string result(out_buf);
-    delete[] out_buf;
-    iconv_close(cd);
-    return result;
-}
-
 bool output(const shared_ptr<User>& user, string s)
 {
     // 直接发送 UTF-8 文本（现代终端均支持 UTF-8，无需每次 output 做 GBK 转换）
