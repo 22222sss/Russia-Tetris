@@ -30,6 +30,40 @@ jobs:
           make -j"$(nproc)"
           file tetris_game
 
+      - name: Protocol integration test
+        working-directory: src
+        run: |
+          set +e
+
+          # 先做语法检查：语法错误的报错在日志里读不到，只能用注解回传
+          if ! python3 -m py_compile ../tests/integration_test.py 2> /tmp/pyc.txt; then
+            echo "::error::integration_test.py 语法错误: $(tr '\n' '|' < /tmp/pyc.txt | cut -c1-800)"
+            exit 1
+          fi
+
+          # 用干净的数据文件起服务端，工作目录与测试脚本保持一致（userdata.csv 在 src/）
+          rm -f userdata.csv
+          ./tetris_game > /tmp/it_server.log 2>&1 &
+          echo $! > /tmp/it_server.pid
+
+          for i in $(seq 1 120); do
+            if (exec 3<>/dev/tcp/127.0.0.1/9999) 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          python3 ../tests/integration_test.py --host 127.0.0.1 --port 9999
+          RC=$?
+
+          kill "$(cat /tmp/it_server.pid)" 2>/dev/null
+          wait "$(cat /tmp/it_server.pid)" 2>/dev/null
+
+          if [ "$RC" -ne 0 ]; then
+            echo "::error::协议集成测试失败，服务端日志尾部: $(tail -40 /tmp/it_server.log | tr '\n' '|' | cut -c1-900)"
+          fi
+          exit "$RC"
+
       - name: Smoke test (200 connections)
         working-directory: src
         run: |
