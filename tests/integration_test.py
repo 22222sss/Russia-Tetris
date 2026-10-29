@@ -94,8 +94,13 @@ class Conn:
         limit = time.time() + (self.timeout if timeout is None else timeout)
         while True:
             text = self._text()
-            if needle_bytes in text[self.mark:]:
-                self.mark = len(text)
+            # 只把 mark 推到"匹配串末尾"，而不是缓冲区末尾：
+            # 一次 recv 常常带回多段文本（如 "Next:" 和 "Score:" 被合并发送），
+            # 若直接推到末尾，下一次断言就再也看不到同批到达的内容。
+            window = text[self.mark:]
+            index = window.find(needle_bytes)
+            if index >= 0:
+                self.mark += index + len(needle_bytes)
                 return True
             if time.time() > limit:
                 return False
