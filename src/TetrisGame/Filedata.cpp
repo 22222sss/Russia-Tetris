@@ -1,7 +1,98 @@
 #include"Filedata.h"
 #include"../EventLoop/EventLoop.h"
+#include <sys/file.h>   // flock：多进程共享 userdata.csv 时的跨进程互斥
 
 extern shared_ptr<spdlog::logger> logger;
+
+namespace {
+
+const char* const kUserDataFile = "userdata.csv";
+const char* const kUserDataLockFile = "userdata.csv.lock";
+
+// 缓存对应的文件状态。多进程共享同一份 userdata.csv 时，别的进程写过文件，
+// 本进程的缓存就必须失效，否则会看不到对方刚注册/更新的账号。
+time_t gCacheMtimeSec = 0;
+long gCacheMtimeNsec = 0;
+off_t gCacheSize = -1;
+
+void rememberFileState() {
+    struct stat st;
+    if (stat(kUserDataFile, &st) == 0) {
+        gCacheMtimeSec = st.st_mtime;
+        gCacheMtimeNsec = st.st_mtim.tv_nsec;
+        gCacheSize = st.st_size;
+    } else {
+        gCacheSize = -1;
+    }
+}
+
+void forgetFileState() {
+    gCacheSize = -1;
+}
+
+bool cacheMatchesFileState() {
+    if (gCacheSize < 0) {
+        return false;
+    }
+    struct stat st;
+    if (stat(kUserDataFile, &st) != 0) {
+        return false;
+    }
+    return st.st_size == gCacheSize
+        && st.st_mtime == gCacheMtimeSec
+        && st.st_mtim.tv_nsec == gCacheMtimeNsec;
+}
+
+// 跨进程读写锁（flock）。同一线程内可重入：嵌套获取只加一次锁，
+// 否则"外层已持锁、内层又 flock 另一个 fd"会把自己锁死。
+class DataFileLock {
+public:
+    explicit DataFileLock(bool exclusive) {
+        if (depth_ > 0) {
+            ++depth_;
+            return;
+        }
+        depth_ = 1;
+        fd_ = open(kUserDataLockFile, O_CREAT | O_RDWR, 0644);
+        if (fd_ < 0) {
+            logger->warn("无法创建锁文件 {}，userdata.csv 将按单进程方式访问", kUserDataLockFile);
+            return;
+        }
+        locked_ = (flock(fd_, exclusive ? LOCK_EX : LOCK_SH) == 0);
+        if (!locked_) {
+            logger->warn("flock 加锁失败，userdata.csv 将按单进程方式访问");
+        }
+    }
+
+    ~DataFileLock() {
+        --depth_;
+        if (depth_ > 0) {
+            return;
+        }
+        if (fd_ >= 0) {
+            if (locked_) {
+                flock(fd_, LOCK_UN);
+            }
+            close(fd_);
+            fd_ = -1;
+            locked_ = false;
+        }
+    }
+
+    DataFileLock(const DataFileLock&) = delete;
+    DataFileLock& operator=(const DataFileLock&) = delete;
+
+private:
+    static thread_local int depth_;
+    static thread_local int fd_;
+    static thread_local bool locked_;
+};
+
+thread_local int DataFileLock::depth_ = 0;
+thread_local int DataFileLock::fd_ = -1;
+thread_local bool DataFileLock::locked_ = false;
+
+}  // namespace
 
 // 添加静态成员定义
 std::queue<std::function<void()>> Filedata::writeQueue;
@@ -107,7 +198,10 @@ void Filedata::removeFromCache(const std::string& username) {
 // 异步保存方法
 void Filedata::saveNewUserDataAsync(const shared_ptr<User>& user) {
     auto task = [user]() {
-        ofstream file("userdata.csv", std::ios::app);
+        // 跨进程独占锁：多个 worker 进程同时注册会互相覆盖
+        DataFileLock fileLock(true);
+
+        ofstream file(kUserDataFile, std::ios::app);
         if (!file.is_open()) {
             logger->error("无法打开文件保存用户数据");
             return;
@@ -128,6 +222,7 @@ void Filedata::saveNewUserDataAsync(const shared_ptr<User>& user) {
             << "0" << "," << "DIFFICULT" << "," << "" << ",\n";
 
         file.close();
+        forgetFileState();   // 本进程刚改过文件，缓存的"文件状态账本"作废
 
         // 添加到缓存
         auto player = std::make_shared<PlayerInfo>();
@@ -145,7 +240,11 @@ void Filedata::saveNewUserDataAsync(const shared_ptr<User>& user) {
 
 void Filedata::update_TopScore_RecentScoreAsync(shared_ptr<User>& user) {
     auto task = [user]() {
+        // 跨进程独占锁：这条路径是"读整个文件 -> 改 -> 写回"，
+        // 两个 worker 同时做会互相覆盖（丢分数）。
+        DataFileLock fileLock(true);
         Update_TopScore_RecentScore(user);
+        forgetFileState();
         };
 
     {
@@ -159,19 +258,24 @@ void Filedata::update_TopScore_RecentScoreAsync(shared_ptr<User>& user) {
 bool Filedata::loadPlayerData() {
     PlayerInfo::clearPlayers();
 
-    // 先尝试从缓存加载
+    // 共享锁：避免读到别的进程正在写入的半行
+    DataFileLock fileLock(false);
+
+    // 先尝试从缓存加载。多进程共享同一个 userdata.csv，缓存必须与文件状态
+    // 对得上才能用，否则会看不到别的进程刚注册的账号。
     {
         std::lock_guard<std::mutex> lock(cacheMutex);
-        if (!playerCache.empty()) {
+        if (!playerCache.empty() && cacheMatchesFileState()) {
             for (const auto& pair : playerCache) {
                 PlayerInfo::addPlayer(pair.second);
             }
             logger->info("从缓存加载了 {} 个玩家数据", playerCache.size());
             return true;
         }
+        playerCache.clear();   // 文件已被别的进程改过，旧缓存作废
     }
 
-    // 缓存为空，从文件加载
+    // 缓存不可用，从文件加载
     ifstream file("userdata.csv");
     if (!file.is_open()) {
         // 首次运行：数据文件不存在时自动创建带表头的空文件（不含任何用户数据），
@@ -185,6 +289,7 @@ bool Filedata::loadPlayerData() {
                << "Normal_Score,Normal_Difficulty,Normal_Timestamp,"
                << "Difficult_Score,Difficult_Difficulty,Difficult_Timestamp,Recent_Scores\n";
         create.close();
+        rememberFileState();
         logger->info("用户数据文件不存在，已自动创建空数据文件");
         return true;
     }
@@ -297,6 +402,7 @@ bool Filedata::loadPlayerData() {
     }
 
     file.close();
+    rememberFileState();   // 记下这份缓存对应的文件状态
     logger->info("从文件加载了 {} 个玩家数据到缓存", playerCache.size());
     return true;
 }
@@ -792,6 +898,8 @@ bool Filedata::Update_TopScore_RecentScore(const shared_ptr<User>& user)
 void Filedata::readRecentGradesAsync(const shared_ptr<User>& user,std::function<void(bool success, vector<string> result)> callback) 
 {
     auto task = [user, callback]() {
+        // 共享锁：和写入方互斥，避免读到写了一半的文件
+        DataFileLock fileLock(false);
         try {
             vector<string> result = Read_recent_grades(user);
             bool success = !(result.empty() || result.front() == "-1");
@@ -821,6 +929,8 @@ void Filedata::readRecentGradesAsync(const shared_ptr<User>& user,std::function<
 // 🔥 新增：异步读取所有玩家信息（带callback）
 void Filedata::readAllPlayerInfoAsync(std::function<void(bool success, vector<shared_ptr<PlayerInfo>> result)> callback) {
     auto task = [callback]() {
+        // 共享锁：和写入方互斥，避免读到写了一半的文件
+        DataFileLock fileLock(false);
         try {
             ifstream file("userdata.csv");
             if (!file.is_open()) {

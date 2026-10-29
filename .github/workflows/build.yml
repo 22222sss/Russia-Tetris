@@ -71,6 +71,47 @@ jobs:
           fi
           exit "$RC"
 
+      - name: Cross-process userdata test
+        working-directory: src
+        run: |
+          set +e
+
+          if ! python3 -m py_compile ../tests/cross_process_test.py 2> /tmp/pyc2.txt; then
+            echo "::error::cross_process_test.py 语法错误: $(tr '\n' '|' < /tmp/pyc2.txt | cut -c1-800)"
+            exit 1
+          fi
+
+          # 两个进程：同一工作目录（共享同一份 userdata.csv），端口不同
+          rm -f userdata.csv userdata.csv.lock log.txt
+          TETRIS_PORT=10001 ./tetris_game > /tmp/pa.log 2>&1 &
+          echo $! > /tmp/pa.pid
+          TETRIS_PORT=10002 ./tetris_game > /tmp/pb.log 2>&1 &
+          echo $! > /tmp/pb.pid
+
+          for port in 10001 10002; do
+            for i in $(seq 1 120); do
+              if (exec 3<>/dev/tcp/127.0.0.1/$port) 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+          done
+
+          python3 ../tests/cross_process_test.py --port-a 10001 --port-b 10002
+          RC=$?
+
+          kill "$(cat /tmp/pa.pid)" 2>/dev/null
+          kill "$(cat /tmp/pb.pid)" 2>/dev/null
+          wait "$(cat /tmp/pa.pid)" 2>/dev/null
+          wait "$(cat /tmp/pb.pid)" 2>/dev/null
+          sleep 1
+
+          if [ "$RC" -ne 0 ]; then
+            detail=$(grep -aE 'Error|error|warn|Client\[|缓存' log.txt 2>/dev/null | tail -25 | tr '\n' '|' | cut -c1-1500)
+            echo "::error::跨进程测试失败，服务端日志: $detail"
+          fi
+          exit "$RC"
+
       - name: Smoke test (200 connections)
         working-directory: src
         run: |

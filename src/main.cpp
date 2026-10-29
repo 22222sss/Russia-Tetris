@@ -81,12 +81,25 @@ int main()
         logger->warn("setsockopt SO_RCVTIMEO failed: {}\n", strerror(errno));
     }
 
+    // 监听端口：默认 9999，可用 TETRIS_PORT 覆盖。
+    // 多进程部署时各 worker 用 SO_REUSEPORT 绑同一端口；
+    // 而测试需要同一个共享数据目录下跑多个实例，就得能换端口。
+    int listen_port = DEFAULT_PORT;
+    if (const char* env_port = std::getenv("TETRIS_PORT")) {
+        int parsed = std::atoi(env_port);
+        if (parsed > 0 && parsed < 65536) {
+            listen_port = parsed;
+        } else {
+            logger->warn("TETRIS_PORT 非法（{}），仍使用 {}", env_port, DEFAULT_PORT);
+        }
+    }
+
     // 绑定地址
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(DEFAULT_PORT);
+    addr.sin_port = htons(listen_port);
 
     if (bind(serverSocket, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
         close(serverSocket);
@@ -103,7 +116,7 @@ int main()
         return -1;
     }
 
-    std::cout << "✅ 服务器初始化完成，监听端口: " << DEFAULT_PORT << std::endl;
+    std::cout << "✅ 服务器初始化完成，监听端口: " << listen_port << std::endl;
     std::cout << "   监听队列大小: 65535" << std::endl;
 
     // 初始化libevent

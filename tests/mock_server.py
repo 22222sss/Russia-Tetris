@@ -27,8 +27,23 @@ DIFF = ("\x1b[2J\x1b[H\x1b[12;14H\x1b[37m1. 简单模式"
 GAME_ON = "\x1b[2J\x1b[H\x1b[2;41H\x1b[37mNext:\x1b[14;42H\x1b[37mScore: "
 OVER = "\x1b[12;14H\x1b[37mGAME OVER\r\n\x1b[15;14H\x1b[37mStart Again ? (y/n):"
 
-users = {}
-lock = threading.Lock()
+def read_users():
+    """从 CSV 读账号（不用内存字典）：多个 mock 实例共享同一份文件时，
+    行为和真服务端一致，才能用来验证跨进程测试脚本。"""
+    found = {}
+    try:
+        with open(USERDATA, "r", encoding="utf-8") as fh:
+            next(fh, None)   # 跳过表头
+            for line in fh:
+                line = line.rstrip("\r\n")
+                if not line:
+                    continue
+                parts = line.split(",")
+                if len(parts) >= 2 and parts[0]:
+                    found[parts[0]] = parts[1]
+    except FileNotFoundError:
+        pass
+    return found
 
 
 def write_csv(name, password):
@@ -87,17 +102,13 @@ def serve(conn):
                     else:
                         conn.sendall(MENU.encode())
                 elif state == "reg_user":
-                    if cmd in users:
+                    if cmd in read_users():
                         conn.sendall("该用户名已被注册，请选择其他用户名:".encode())
                     else:
-                        with lock:
-                            users[cmd] = None
                         conn.sendall("\x1b[15;14H\x1b[37m请输入密码：".encode())
                         state = "reg_pwd"
                         pending_user = cmd
                 elif state == "reg_pwd":
-                    with lock:
-                        users[pending_user] = cmd
                     write_csv(pending_user, cmd)
                     conn.sendall("\x1b[16;14H\x1b[37m注册成功！\r\n"
                                  "\x1b[17;14H\x1b[37m请按3返回上级菜单：".encode())
@@ -110,7 +121,7 @@ def serve(conn):
                     conn.sendall("\x1b[15;14H\x1b[37m请输入密码：".encode())
                     state = "login_pwd"
                 elif state == "login_pwd":
-                    if users.get(pending_user) == cmd:
+                    if read_users().get(pending_user) == cmd:
                         conn.sendall("登录中...\r\n".encode())
                         conn.sendall(LOAD_MENU.encode())
                         state = "load_menu"

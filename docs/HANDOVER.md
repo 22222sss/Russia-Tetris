@@ -51,6 +51,7 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 | `tests/merge_results.py` | 合并多分片 JSON 与采样数据，生成 `result.json` |
 | `tests/integration_test.py` | 协议级集成测试（仅标准库）：注册 → 登录 → 排行榜 → 选难度 → 进游戏 → 按键 → 游戏结束，外加二次登录、错误密码、快速重连；失败时发 `::error::` 注解 |
 | `tests/mock_server.py` | 协议 mock，**只用于在本地验证集成测试脚本本身**（沙箱里跑不了真服务端时），不是协议规范 |
+| `tests/cross_process_test.py` | 跨进程存储一致性：两个服务进程共享同一份 `userdata.csv`，验证 A 注册的账号能在 B 登录（多进程化的前置验证） |
 | `.github/workflows/build.yml` | 每次 push：编译 + 协议级集成测试 + 200 连接冒烟 + bench.sh 100 连接冒烟 + `sizeof(User)` |
 | `.github/workflows/bench.yml` | 手动触发（或 push 到 `bench-run` 分支）跑大压测，结果作为 Artifact |
 
@@ -85,6 +86,8 @@ bash tests/bench.sh 200000 10000 30 1 4     # 20 万 / 四客户端
 - **修复连接静默（集成测试发现）**：连接结束时从不释放 `struct event`。内核在 `close()` 时已把 fd 从 epoll 摘除，而 libevent 仍认为已注册，导致新连接复用到同一 fd 时 `event_add` 不再 `epoll_ctl(ADD)` —— 该连接永远收不到可读事件。现在 `registerFdEvent` 注册前先 `event_del`+`event_free` 同 fd 旧事件（`fd < 0` 的定时器事件除外），并新增 `EventLoop::removeFdEvent` 在连接结束时调用；
 - `User::addUser` 改用 `insert_or_assign`：原 `emplace` 在 fd 复用窗口（死连接尚未被 100ms 清理）会插入失败且返回值被忽略，留下僵尸映射；
 - 新增 `TETRIS_LOG_LEVEL` 环境变量（默认 `warn`）按需打开 debug 日志；
+- 新增 `TETRIS_PORT` 环境变量覆盖监听端口（默认 9999），方便同机跑多实例与跨进程测试；
+- **存储层做成多进程安全**（多核化的前置）：`userdata.csv` 的读-改-写放进 `flock` 临界区（跨进程互斥、同线程可重入），写整表时仍是"临时文件 + rename"；缓存改为按文件 `mtime`/`size` 失效，否则别的进程注册的账号在本进程看不到。锁文件是 `userdata.csv.lock`；
 - **修复发送路径丢字节**：`output()` 原来只判断 `send` 返回 -1/0，"部分写"和 EAGAIN 都被当成成功，高负载或慢客户端下会静默丢数据。现在每个 `User` 带发送缓冲（`sendbuf` + `sendmutex` + `pendingoutput`），`flushUserOutput()` 写多少算多少，剩下的由 100ms 定时器（`EventLoop::unregister_Event_User`）补发；缓冲超过 1 MB 视为死连接并关闭；
 - `showRecentScores` 现在能识别 `Read_recent_grades` 的哨兵值 `"1"`（否则新账号点"我最近的成绩"会看到一个孤零零的 `1`）；
 - **异步文件回调收回事件循环线程**：`loadPlayerDataAsync` / `readRecentGradesAsync` / `readAllPlayerInfoAsync` 的回调原来跑在异步文件线程上，却直接操作 `User`（`setStatus`/`setReceivedata`/`showLoadMenu`），与事件循环线程竞争同一批字段（data race）。现在统一用 `EventLoop::post()` 经**自管道**投递回循环线程执行——没用 `evthread_use_pthreads()`，避免给每个 event 操作加全局锁；回调里还加了"状态已变化就丢弃"的守卫，防止连接断开/被复用后仍往旧连接渲染；
@@ -117,7 +120,7 @@ bash tests/bench.sh 200000 10000 30 1 4     # 20 万 / 四客户端
 |---|---|---|
 | 质量工程 | ✅ 已覆盖：注册/登录/排行榜（最近成绩、全服 top）/选难度/进游戏/按键/游戏结束/错误密码/快速重连，并接入 CI | 已建立回归保护 |
 | 密码安全 | `userdata.csv` 明文 → 加盐哈希 + 迁移 | 中：部署前提 |
-| 服务端多核化 | 多进程 + `SO_REUSEPORT` 或线程 event_base | 高：README 里点名的瓶颈 |
+| 服务端多核化 | 前置已完成：存储层多进程安全（flock + 缓存失效）。下一步：`main()` fork N 个 worker + `SO_REUSEPORT` 绑同端口，每个 worker 独立 event loop（现有单线程代码不用改） | 高：README 里点名的瓶颈 |
 | 远程压测 | 用 `BENCH_REMOTE_CLIENTS` 跑多机，目标 30 万 | 中：需多台机器 |
 
 ## 9. 给新会话的起步提示
