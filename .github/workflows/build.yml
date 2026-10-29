@@ -125,3 +125,19 @@ jobs:
           out=$(./sizeof_user)
           echo "$out"
           echo "::notice::$out"
+
+      - name: Verify header dependency tracking
+        working-directory: src
+        run: |
+          # makefile 用 -MMD -MP 生成 .d 依赖文件：改头文件必须触发依赖它的 .cpp 重编。
+          # 这里只 touch 一个头文件再 make -n 看"编译计划"，不真的重编。
+          touch TetrisGame/User.h
+          plan=$(make -n 2>&1)
+          if ! echo "$plan" | grep -q -- '-c main.cpp'; then
+            echo "::error::头文件依赖跟踪失效：touch TetrisGame/User.h 后 make 没有计划重编 main.cpp"
+            echo "---- make -n 输出（前 20 行）----"
+            echo "$plan" | head -20
+            exit 1
+          fi
+          count=$(echo "$plan" | grep -c -- ' -c ' || true)
+          echo "::notice::头文件依赖跟踪正常：touch User.h 触发 ${count} 个源文件重编"

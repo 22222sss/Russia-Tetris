@@ -87,6 +87,7 @@ bash tests/bench.sh 200000 10000 30 1 4     # 20 万 / 四客户端
 - 新增 `TETRIS_LOG_LEVEL` 环境变量（默认 `warn`）按需打开 debug 日志；
 - **修复发送路径丢字节**：`output()` 原来只判断 `send` 返回 -1/0，"部分写"和 EAGAIN 都被当成成功，高负载或慢客户端下会静默丢数据。现在每个 `User` 带发送缓冲（`sendbuf` + `sendmutex` + `pendingoutput`），`flushUserOutput()` 写多少算多少，剩下的由 100ms 定时器（`EventLoop::unregister_Event_User`）补发；缓冲超过 1 MB 视为死连接并关闭；
 - `showRecentScores` 现在能识别 `Read_recent_grades` 的哨兵值 `"1"`（否则新账号点"我最近的成绩"会看到一个孤零零的 `1`）；
+- makefile 加 `-MMD -MP` + `-include $(DEPS)`：改头文件会正确触发依赖它的 `.cpp` 重编。此前规则只依赖 `.cpp`，改 `User.h` 会留下按旧布局编译的 `.o`（结构体大小不一致，运行期会内存错乱）。CI 里有一步用 `touch User.h` + `make -n` 验证它没退化；
 - README 只保留**已复测**的数据（原 32 核 126 GB 的数字已删）。
 
 ## 6. 已知坑

@@ -1,6 +1,6 @@
 # 编译器设置
 CXX = g++
-CXXFLAGS = -Wall -g -O0 -std=c++17 -pthread
+CXXFLAGS = -Wall -g -O0 -std=c++17 -pthread -MMD -MP
 INCLUDES = -ICommon -IUtility -IEventLoop -ITetrisGame -IUImanage -IConnectionPool
 LDFLAGS = -levent -lspdlog -lfmt -pthread   # 添加了 -lfmt
 
@@ -22,6 +22,7 @@ SOURCES = \
 OBJECTS = $(SOURCES:.cpp=.o)
 OBJDIR = obj
 OBJS = $(addprefix $(OBJDIR)/, $(OBJECTS))
+DEPS = $(OBJS:.o=.d)
 
 # 目标
 TARGET = tetris_game
@@ -54,3 +55,7 @@ run: $(TARGET)
 	./$(TARGET)
 
 .PHONY: all clean rebuild run
+
+# 自动生成的头文件依赖（-MMD -MP）。没有 .d 文件时 -include 会静默跳过，
+# 所以首次构建和 clean 之后都不会报错。
+-include $(DEPS)
