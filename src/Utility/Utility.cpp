@@ -5,33 +5,81 @@ extern shared_ptr<spdlog::logger> logger;
 bool output(const shared_ptr<User>& user, string s)
 {
     // 直接发送 UTF-8 文本（现代终端均支持 UTF-8，无需每次 output 做 GBK 转换）
-
-    int bytesSent = send(user->getFd(), s.c_str(), s.length(), 0);
-    if (bytesSent == -1)
+    //
+    // socket 是非阻塞的：send 可能只写出去一部分，甚至返回 EAGAIN。
+    // 旧实现只看 -1/0，把"部分写"和 EAGAIN 都当成功，等于静默丢字节/丢整条消息。
+    // 现在统一进发送缓冲，由 flushUserOutput 写多少算多少。
     {
-        // 非阻塞 socket 发送缓冲区满时返回 EAGAIN/EWOULDBLOCK，
-        // 这是正常情况，不应关闭连接，稍后由事件循环继续处理
-        if (errno == EAGAIN || errno == EWOULDBLOCK)
+        std::lock_guard<std::mutex> lock(user->getSendMutex());
+        user->getSendBuffer() += s;
+        user->setPendingOutput(true);
+    }
+    return flushUserOutput(user);
+}
+
+bool flushUserOutput(const shared_ptr<User>& user)
+{
+    std::lock_guard<std::mutex> lock(user->getSendMutex());
+
+    string& buffer = user->getSendBuffer();
+    if (buffer.empty())
+    {
+        user->setPendingOutput(false);
+        return true;
+    }
+
+    // 兜底：客户端长时间不读时缓冲区会一直涨，超过上限按死连接处理，
+    // 避免被一个卡住的客户端拖爆内存。
+    static const size_t MAX_SEND_BUFFER = 1u << 20;  // 1 MB
+    if (buffer.size() > MAX_SEND_BUFFER)
+    {
+        buffer.clear();
+        user->setPendingOutput(false);
+        user->setStatus(STATUS_OVER_QUIT);
+        logger->error("Client[{}] 待发数据超过 {} 字节，判定为不读数据的死连接",
+                      user->getFd(), MAX_SEND_BUFFER);
+        logger->flush();
+        close(user->getFd());
+        return false;
+    }
+
+    size_t sent = 0;
+    while (sent < buffer.size())
+    {
+        ssize_t n = send(user->getFd(), buffer.data() + sent, buffer.size() - sent, 0);
+        if (n > 0)
         {
-            return true;
+            sent += static_cast<size_t>(n);
+            continue;
+        }
+        if (n == -1 && errno == EINTR)
+        {
+            continue;   // 被信号打断，重试
+        }
+        if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+        {
+            break;      // 内核发送缓冲已满：剩下的留着下次发，不能丢
+        }
+        if (n == 0)
+        {
+            break;      // 本次一个字节都没写出去，留待下次
         }
 
+        // 真正的错误：连接已不可用
+        buffer.clear();
+        user->setPendingOutput(false);
         user->setStatus(STATUS_OVER_QUIT);
-
-        close(user->getFd());
-        //printf("Client[%d] send Error: %s (errno: %d)\n", fd, strerror(errno), errno);
-        logger->error("Client[{}] send Error: {} (errno: {})\n", user->getFd(), strerror(errno), errno);
+        logger->error("Client[{}] send Error: {} (errno: {})", user->getFd(), strerror(errno), errno);
         logger->flush();
-        return false;
-    }
-    else if (bytesSent == 0)
-    {
-        // 客户端连接已关闭
-        user->setStatus(STATUS_OVER_QUIT);
-
         close(user->getFd());
         return false;
     }
+
+    if (sent > 0)
+    {
+        buffer.erase(0, sent);
+    }
+    user->setPendingOutput(!buffer.empty());
     return true;
 }
 

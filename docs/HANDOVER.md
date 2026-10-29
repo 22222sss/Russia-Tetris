@@ -49,7 +49,8 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 | `tests/bench.sh` | 一键：调 `ulimit -n 400000`、sysctl、编译、起服务、采样、分片压测、合并报告 |
 | `tests/sample_proc.py` | 独立采样服务端 RSS/fd/CPU（写 `server_samples.json`） |
 | `tests/merge_results.py` | 合并多分片 JSON 与采样数据，生成 `result.json` |
-| `tests/integration_test.py` | 协议级集成测试（仅标准库）：注册 → 登录 → 选难度 → 进游戏 → 按键，外加二次登录、错误密码、快速重连；失败时发 `::error::` 注解 |
+| `tests/integration_test.py` | 协议级集成测试（仅标准库）：注册 → 登录 → 排行榜 → 选难度 → 进游戏 → 按键 → 游戏结束，外加二次登录、错误密码、快速重连；失败时发 `::error::` 注解 |
+| `tests/mock_server.py` | 协议 mock，**只用于在本地验证集成测试脚本本身**（沙箱里跑不了真服务端时），不是协议规范 |
 | `.github/workflows/build.yml` | 每次 push：编译 + 协议级集成测试 + 200 连接冒烟 + bench.sh 100 连接冒烟 + `sizeof(User)` |
 | `.github/workflows/bench.yml` | 手动触发（或 push 到 `bench-run` 分支）跑大压测，结果作为 Artifact |
 
@@ -84,6 +85,8 @@ bash tests/bench.sh 200000 10000 30 1 4     # 20 万 / 四客户端
 - **修复连接静默（集成测试发现）**：连接结束时从不释放 `struct event`。内核在 `close()` 时已把 fd 从 epoll 摘除，而 libevent 仍认为已注册，导致新连接复用到同一 fd 时 `event_add` 不再 `epoll_ctl(ADD)` —— 该连接永远收不到可读事件。现在 `registerFdEvent` 注册前先 `event_del`+`event_free` 同 fd 旧事件（`fd < 0` 的定时器事件除外），并新增 `EventLoop::removeFdEvent` 在连接结束时调用；
 - `User::addUser` 改用 `insert_or_assign`：原 `emplace` 在 fd 复用窗口（死连接尚未被 100ms 清理）会插入失败且返回值被忽略，留下僵尸映射；
 - 新增 `TETRIS_LOG_LEVEL` 环境变量（默认 `warn`）按需打开 debug 日志；
+- **修复发送路径丢字节**：`output()` 原来只判断 `send` 返回 -1/0，"部分写"和 EAGAIN 都被当成成功，高负载或慢客户端下会静默丢数据。现在每个 `User` 带发送缓冲（`sendbuf` + `sendmutex` + `pendingoutput`），`flushUserOutput()` 写多少算多少，剩下的由 100ms 定时器（`EventLoop::unregister_Event_User`）补发；缓冲超过 1 MB 视为死连接并关闭；
+- `showRecentScores` 现在能识别 `Read_recent_grades` 的哨兵值 `"1"`（否则新账号点"我最近的成绩"会看到一个孤零零的 `1`）；
 - README 只保留**已复测**的数据（原 32 核 126 GB 的数字已删）。
 
 ## 6. 已知坑
@@ -104,13 +107,13 @@ bash tests/bench.sh 200000 10000 30 1 4     # 20 万 / 四客户端
 - `bench-run` 分支已删除（如需触发 bench：重建该分支并 push）；
 - 远程另有 `Russia-Tetris_1.0` 分支（历史版本，未维护）；
 - 许可证：MIT（`LICENSE`）；
-- 遗留：远程压测代码无文档、`userdata.csv` 明文密码、`output()` 未处理非阻塞 socket 的**部分写**（`send` 返回值没和长度比对，高负载下可能丢字节）。
+- 遗留：远程压测代码无文档、`userdata.csv` 明文密码。
 
 ## 8. 后续可选路线
 
 | 方向 | 内容 | 价值 |
 |---|---|---|
-| 质量工程 | ✅ 已有协议级集成测试（注册/登录/进游戏/成绩落盘/错误密码/快速重连）并接入 CI；**未覆盖**：排行榜（`showRecentScores`/`showTopScores`）与游戏结束流程 | 已建立回归保护 |
+| 质量工程 | ✅ 已覆盖：注册/登录/排行榜（最近成绩、全服 top）/选难度/进游戏/按键/游戏结束/错误密码/快速重连，并接入 CI | 已建立回归保护 |
 | 密码安全 | `userdata.csv` 明文 → 加盐哈希 + 迁移 | 中：部署前提 |
 | 服务端多核化 | 多进程 + `SO_REUSEPORT` 或线程 event_base | 高：README 里点名的瓶颈 |
 | 远程压测 | 用 `BENCH_REMOTE_CLIENTS` 跑多机，目标 30 万 | 中：需多台机器 |

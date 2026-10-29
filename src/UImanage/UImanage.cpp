@@ -173,7 +173,9 @@ bool UImanage::showRecentScores(const shared_ptr<User>& user)
                 return;
             }
 
-            if (result.empty()) {
+            if (result.empty() || (result.size() == 1 && result.front() == "1")) {
+                // Read_recent_grades 用单个 "1" 作为"用户存在但没有成绩"的哨兵值
+                // （见 Filedata::Read_recent_grades），不能当成一条成绩渲染出来
                 outputText(user, WINDOW_ROW_COUNT / 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "暂无成绩记录");
                 return;
             }

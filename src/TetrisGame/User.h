@@ -141,6 +141,12 @@ public:
     string getGameDiffculty() const;
     void setGameDiffculty(const string& value);
 
+    // 发送缓冲：非阻塞 socket 上一次 send 可能写不完，剩余部分留在这里下次重发
+    std::string& getSendBuffer();
+    std::mutex& getSendMutex();
+    bool hasPendingOutput() const;
+    void setPendingOutput(bool value);
+
 private:
     int fd;
     int line;
@@ -168,6 +174,10 @@ private:
     string timestamp_diffcult;
 
     string receivedata;
+
+    string sendbuf;                          // 待发数据（非阻塞 socket 上 send 可能只写出去一部分）
+    std::mutex sendmutex;                    // 保护 sendbuf：异步回调线程也会调用 output
+    std::atomic<bool> pendingoutput{false};  // 供 100ms 定时器快速判断是否需要补发
 
     double speed;
 

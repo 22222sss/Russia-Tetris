@@ -130,6 +130,12 @@ void EventLoop::unregister_Event_User(int timerfd, short events, void* arg) {
 
         // 锁内遍历收集需清理的连接（forEachUser 内部持有 users_mutex，不能在回调里调用 removeUser）
         User::forEachUser([&](int fd, std::shared_ptr<User>& user_ptr) {
+            // 非阻塞 socket 上有些输出一时写不完（部分写 / EAGAIN），
+            // 这里以 100ms 的节奏补发；发送真正失败时会把状态置为 OVER_QUIT。
+            if (user_ptr->hasPendingOutput()) {
+                flushUserOutput(user_ptr);
+            }
+
             if (user_ptr->getStatus() == STATUS_OVER_QUIT) {
                 toRemove.push_back(fd);
                 ConnectionPool::release(user_ptr);

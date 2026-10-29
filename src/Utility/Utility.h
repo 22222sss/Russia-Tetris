@@ -24,6 +24,10 @@ string currenttime();
 
 bool output(const shared_ptr<User>& user, string s);
 
+// 尽量把该用户缓冲里的待发数据写出去；遇到 EAGAIN 就把剩余部分留在缓冲区，
+// 由 100ms 定时器下次再试（见 EventLoop::unregister_Event_User）
+bool flushUserOutput(const shared_ptr<User>& user);
+
 bool moveTo(const shared_ptr<User>& user, int row, int col);
 
 bool ChangeCurrentColor(const shared_ptr<User>& user, int n);

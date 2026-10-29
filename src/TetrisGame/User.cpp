@@ -34,8 +34,30 @@ void User::resetUserInfo()
     this->receivedata = "";
     this->scores = {};
     this->game_diffclutys = {};
+    this->sendbuf.clear();
+    this->pendingoutput.store(false);
     memset(this->data, 0, sizeof(this->data));
     memset(this->color, -1, sizeof(this->color));
+}
+
+std::string& User::getSendBuffer()
+{
+    return sendbuf;
+}
+
+std::mutex& User::getSendMutex()
+{
+    return sendmutex;
+}
+
+bool User::hasPendingOutput() const
+{
+    return pendingoutput.load();
+}
+
+void User::setPendingOutput(bool value)
+{
+    pendingoutput.store(value);
 }
 
 bool User::addUser(int fd, std::shared_ptr<User> user) 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""协议级集成测试：注册 -> 返回菜单 -> 登录 -> 开始游戏 -> 按键 -> 持久化校验。
+"""协议级集成测试：注册 -> 返回菜单 -> 登录 -> 排行榜 -> 开始游戏 -> 按键 -> 游戏结束。
 
 只依赖 Python 标准库（CI 的 ubuntu runner 自带 python3，无需安装额外包）。
 
@@ -21,6 +21,11 @@
 
 服务端的工作目录决定 userdata.csv 的位置，本脚本的 --userdata 默认相对当前目录，
 所以请在服务端同一个目录下运行（CI 里两者都是 src/）。
+
+改了这个脚本本身后，可以先用 tests/mock_server.py 在本地把它跑通，不必等 CI：
+
+    python3 tests/mock_server.py 19999 /tmp/mock_userdata.csv &
+    python3 tests/integration_test.py --port 19999 --userdata /tmp/mock_userdata.csv
 """
 
 import argparse
@@ -61,18 +66,14 @@ class Conn:
 
     # --- 输出处理 ---
 
-    def _text(self):
-        """剥离 ANSI 转义后的原始字节（不解码，避免多字节字符被截断）。"""
-        return ANSI_RE.sub(b"", bytes(self.raw))
+    def tail(self, limit=500):
+        """最近输出的可读摘要，用于失败诊断（只处理尾部，避免整段缓冲区做正则）。"""
+        text = ANSI_RE.sub(b"", bytes(self.raw[-8192:])).decode("utf-8", "replace")
+        return " ".join(text.split())[-limit:]
 
     def mark_now(self):
         """把"当前已收到的输出"划为旧输出，之后只看新输出。"""
-        self.mark = len(self._text())
-
-    def tail(self, limit=500):
-        """最近输出的可读摘要，用于失败诊断。"""
-        text = self._text().decode("utf-8", "replace")
-        return " ".join(text.split())[-limit:]
+        self.mark = len(self.raw)
 
     # --- 发送 ---
 
@@ -89,18 +90,20 @@ class Conn:
     # --- 接收 ---
 
     def wait_for(self, needle, timeout=None):
-        """等待 needle 出现在 mark 之后的新输出中。"""
+        """等待 needle 出现在 mark 之后的新输出中。
+
+        直接在原始字节流里查找：服务端每段文字都是"定位+颜色+文本"一次 send
+        发出来的，文本在流里是连续的，不会被转义序列切断；同时省掉了每次
+        断言都对整段缓冲区跑正则的开销（游戏中红屏会迅速滚到几百 KB）。
+        """
         needle_bytes = needle.encode("utf-8")
         limit = time.time() + (self.timeout if timeout is None else timeout)
         while True:
-            text = self._text()
-            # 只把 mark 推到"匹配串末尾"，而不是缓冲区末尾：
-            # 一次 recv 常常带回多段文本（如 "Next:" 和 "Score:" 被合并发送），
-            # 若直接推到末尾，下一次断言就再也看不到同批到达的内容。
-            window = text[self.mark:]
-            index = window.find(needle_bytes)
+            # 只把 mark 推到"匹配串末尾"：一次 recv 常带回多段文本
+            # （如 "Next:" 和 "Score:"），推到末尾会让下一次断言看不到同批内容。
+            index = self.raw.find(needle_bytes, self.mark)
             if index >= 0:
-                self.mark += index + len(needle_bytes)
+                self.mark = index + len(needle_bytes)
                 return True
             if time.time() > limit:
                 return False
@@ -113,6 +116,28 @@ class Conn:
             if not chunk:          # 服务端关闭了连接
                 return False
             self.raw += chunk
+
+    def contains(self, needle):
+        """mark 之后是否已出现 needle（不推进 mark，供轮询用）。"""
+        return self.raw.find(needle.encode("utf-8"), self.mark) >= 0
+
+    def drain(self, timeout=0.001):
+        """把当前可读的数据都读进来，不推进 mark。"""
+        previous = self.sock.gettimeout()
+        self.sock.settimeout(timeout)
+        try:
+            while True:
+                try:
+                    chunk = self.sock.recv(65536)
+                except (socket.timeout, BlockingIOError):
+                    return
+                except OSError:
+                    return
+                if not chunk:
+                    return
+                self.raw += chunk
+        finally:
+            self.sock.settimeout(previous)
 
     def alive(self, window=1.0):
         """在 window 秒内持续读，若始终没有 EOF 则认为连接仍存活。"""
@@ -222,6 +247,23 @@ def test_register_and_login(args, user, password):
         conn.sendline(password)
         # 登录菜单由异步线程 loadPlayerDataAsync 的回调渲染，需等待
         expect(conn, "3. 开始游戏", timeout=args.timeout)
+
+        # ---- 排行榜：最近成绩（新账号应为空） ----
+        STAGE = "查看最近成绩（新账号）"
+        conn.sendline("1")
+        expect(conn, "暂无成绩记录")
+        # 无成绩时异步回调直接 return，不会打印"请按3返回菜单"；直接发 3 回主菜单
+        conn.sendline("3")
+        expect(conn, "3. 开始游戏")
+
+        # ---- 排行榜：全服 top 成绩 ----
+        STAGE = "查看全服排行榜"
+        conn.sendline("2")
+        expect(conn, "简单模式：")
+        expect(conn, "用户名 分数")
+        expect(conn, "请按3返回菜单")
+        conn.sendline("3")
+        expect(conn, "3. 开始游戏")
 
         STAGE = "进入难度选择"
         conn.sendline("3")
@@ -335,6 +377,51 @@ def test_fast_reconnect(args):
         second.close()
 
 
+def test_game_over(args, user, password):
+    """游戏结束流程：困难模式把棋盘堆满 -> GAME OVER -> 按 n 回主菜单。
+
+    不校验分数是否落盘：这里没有消行、分数为 0，未必会写入成绩记录，
+    那样断言会变成"假失败"。该用例覆盖的是结束状态机与"重新开始/退出"分支。
+    """
+    global STAGE
+
+    STAGE = "游戏结束：登录"
+    conn = Conn(args.host, args.port, args.timeout)
+    try:
+        expect(conn, "1. 注册帐号")
+        conn.sendline("2")
+        expect(conn, "请输入用户名")
+        conn.sendline(user)
+        expect(conn, "请输入密码")
+        conn.sendline(password)
+        expect(conn, "3. 开始游戏")
+
+        STAGE = "游戏结束：选择困难模式"
+        conn.sendline("3")
+        expect(conn, "3. 困难模式")
+        conn.sendline("3")
+        expect(conn, "Next:")
+
+        STAGE = "游戏结束：狂按下键把棋盘堆满"
+        # 困难模式 0.2s 落一格。服务端用 strcmp 比对整段 recv，
+        # 合并发送的多个按键会被整段丢弃，所以必须逐次发送。
+        deadline = time.time() + args.game_over_timeout
+        while time.time() < deadline and not conn.contains("GAME OVER"):
+            conn.sock.sendall(b"\x1b[B")
+            time.sleep(0.04)
+            conn.drain()
+
+        STAGE = "游戏结束：等待结束提示"
+        expect(conn, "GAME OVER", timeout=10)
+        expect(conn, "Start Again ? (y/n):")
+
+        STAGE = "游戏结束：按 n 返回主菜单"
+        conn.send("n")
+        expect(conn, "1. 注册帐号", timeout=10)
+    finally:
+        conn.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="俄罗斯方块服务端协议级集成测试")
     parser.add_argument("--host", default="127.0.0.1")
@@ -343,6 +430,8 @@ def main():
                         help="userdata.csv 路径（相对服务端工作目录）")
     parser.add_argument("--timeout", type=float, default=15.0,
                         help="单个断言的等待上限（秒）")
+    parser.add_argument("--game-over-timeout", type=float, default=45.0,
+                        help="把棋盘堆满以触发 GAME OVER 的等待上限（秒）")
     args = parser.parse_args()
 
     user = new_account_name()
@@ -355,6 +444,7 @@ def main():
         ("二次登录", lambda: test_login_again(args, user, password)),
         ("错误密码被拒绝", lambda: test_wrong_password(args, user)),
         ("快速重连后仍能响应输入", lambda: test_fast_reconnect(args)),
+        ("游戏结束流程", lambda: test_game_over(args, user, password)),
     ]
 
     failed = 0
