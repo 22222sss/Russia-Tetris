@@ -1,4 +1,5 @@
 #include"Filedata.h"
+#include"../EventLoop/EventLoop.h"
 
 extern shared_ptr<spdlog::logger> logger;
 
@@ -795,8 +796,10 @@ void Filedata::readRecentGradesAsync(const shared_ptr<User>& user,std::function<
             vector<string> result = Read_recent_grades(user);
             bool success = !(result.empty() || result.front() == "-1");
 
-            // 通过callback返回结果
-            callback(success, result);
+            // 通过callback返回结果。
+            // 关键：回调里会操作 User 和 socket，必须回到事件循环线程执行，
+            // 否则会与事件循环线程竞争 receivedata / status 等字段。
+            EventLoop::post([callback, success, result]() { callback(success, result); });
 
             logger->debug("异步读取最近成绩完成: 用户={}, 记录数={}",
                 user->getUsername(), result.size());
@@ -804,7 +807,7 @@ void Filedata::readRecentGradesAsync(const shared_ptr<User>& user,std::function<
         catch (const std::exception& e) {
             logger->error("异步读取最近成绩失败: 用户={}, 错误={}",
                 user->getUsername(), e.what());
-            callback(false, {});
+            EventLoop::post([callback]() { callback(false, {}); });
         }
         };
 
@@ -822,18 +825,18 @@ void Filedata::readAllPlayerInfoAsync(std::function<void(bool success, vector<sh
             ifstream file("userdata.csv");
             if (!file.is_open()) {
                 logger->error("无法打开用户数据文件");
-                callback(false, {});
+                EventLoop::post([callback]() { callback(false, {}); });
                 return;
             }
 
             vector<shared_ptr<PlayerInfo>> result = Read_AllpalyerInfo(file);
-            callback(true, result);
+            EventLoop::post([callback, result]() { callback(true, result); });
 
             logger->debug("异步读取所有玩家信息完成: 玩家数={}", result.size());
         }
         catch (const std::exception& e) {
             logger->error("异步读取所有玩家信息失败: {}", e.what());
-            callback(false, {});
+            EventLoop::post([callback]() { callback(false, {}); });
         }
         };
 
@@ -849,7 +852,7 @@ void Filedata::loadPlayerDataAsync(std::function<void(bool success)> callback) {
     auto task = [callback]() {
         try {
             bool success = loadPlayerData();
-            callback(success);
+            EventLoop::post([callback, success]() { callback(success); });
 
             if (success) {
                 logger->debug("异步加载玩家数据完成");
@@ -860,7 +863,7 @@ void Filedata::loadPlayerDataAsync(std::function<void(bool success)> callback) {
         }
         catch (const std::exception& e) {
             logger->error("异步加载玩家数据异常: {}", e.what());
-            callback(false);
+            EventLoop::post([callback]() { callback(false); });
         }
         };
 

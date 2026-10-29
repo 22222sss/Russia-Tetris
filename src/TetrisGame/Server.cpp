@@ -486,6 +486,15 @@ bool Server::process_STATUS_RECEIVE_PASSWORD_LOAD(shared_ptr<User>& user)
         Filedata::loadPlayerDataAsync(
             [user](bool success) 
             {
+                // 回调现在跑在事件循环线程上，但异步加载期间连接可能已经断开
+                // （甚至 fd 被回收复用给新连接），那时不能再往"这条连接"上渲染。
+                if (user->getStatus() != STATUS_RECEIVE_PASSWORD_LOAD)
+                {
+                    logger->warn("登录数据加载完成时状态已变化（{}），丢弃本次渲染",
+                                 static_cast<int>(user->getStatus()));
+                    return;
+                }
+
                 if (success) 
                 {
                     // 加载成功，显示主菜单

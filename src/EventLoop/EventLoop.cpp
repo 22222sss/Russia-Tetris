@@ -8,6 +8,14 @@ std::mutex EventLoop::events_mutex;
 std::atomic<long> total_events_processed(0);    // 原子计数器
 std::atomic<long> active_connections(0);        // 原子计数器
 
+// 异步线程 -> 事件循环线程 的任务投递：自管道 + 队列。
+// 用自管道而不是 evthread_use_pthreads()，是为了不给每个 event 操作加全局锁
+// （那对这个项目的性能主题是反向的）。
+static int post_pipe[2] = { -1, -1 };
+static std::mutex post_mutex;
+static std::vector<std::function<void()>> post_queue;
+static struct event* post_event = nullptr;
+
 EventLoop::EventLoop() {
     // 让 libevent 选用 epoll 等高效后端：避开有 1024 连接上限的 select，
     // 以及在大连接数下性能较差的 poll
@@ -30,6 +38,26 @@ EventLoop::EventLoop() {
         throw std::runtime_error("Failed to create event base");
     }
 
+    // 投递通道：异步文件线程通过自管道把回调送回事件循环线程执行
+    if (pipe(post_pipe) == 0) {
+        evutil_make_socket_nonblocking(post_pipe[0]);
+        evutil_make_socket_nonblocking(post_pipe[1]);
+        struct event* post_ev = event_new(base, post_pipe[0], EV_READ | EV_PERSIST,
+                                          &EventLoop::onPost, nullptr);
+        if (!post_ev || event_add(post_ev, nullptr) != 0) {
+            if (post_ev) { event_free(post_ev); }
+            close(post_pipe[0]);
+            close(post_pipe[1]);
+            post_pipe[0] = post_pipe[1] = -1;
+            logger->warn("投递事件注册失败，异步回调将退化为在调用线程直接执行");
+        } else {
+            post_event = post_ev;
+        }
+    } else {
+        post_pipe[0] = post_pipe[1] = -1;
+        logger->warn("创建投递管道失败，异步回调将退化为在调用线程直接执行");
+    }
+
     // 记录使用的事件机制 - 便于调试
     logger->info("EventLoop using backend: {}", event_base_get_method(base));
 }
@@ -42,6 +70,18 @@ EventLoop::~EventLoop() {
             event_free(pair.second);    // 释放事件内存
         }
         events.clear();  // 清空map
+    }
+
+    // 投递通道（不在 events 里，单独释放）
+    if (post_event) {
+        event_del(post_event);
+        event_free(post_event);
+        post_event = nullptr;
+    }
+    if (post_pipe[0] >= 0) {
+        close(post_pipe[0]);
+        close(post_pipe[1]);
+        post_pipe[0] = post_pipe[1] = -1;
     }
 
     if (base) {
@@ -167,6 +207,45 @@ void EventLoop::removeFdEvent(evutil_socket_t fd) {
     if (active_connections > 0) {
         active_connections--;
     }
+}
+
+void EventLoop::onPost(evutil_socket_t fd, short events, void* arg) {
+    // 把管道里的唤醒字节读干净
+    char buf[512];
+    while (read(fd, buf, sizeof(buf)) > 0) { }
+
+    std::vector<std::function<void()>> tasks;
+    {
+        std::lock_guard<std::mutex> lock(post_mutex);
+        tasks.swap(post_queue);
+    }
+
+    for (auto& task : tasks) {
+        if (task) {
+            task();
+        }
+    }
+}
+
+void EventLoop::post(std::function<void()> task) {
+    if (!task) {
+        return;
+    }
+    if (post_pipe[1] < 0) {
+        // 事件循环还没建好（或管道创建失败）：退化为在调用线程直接执行
+        task();
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(post_mutex);
+        post_queue.push_back(task);
+    }
+
+    // 唤醒事件循环。管道满时写不进去也无所谓：循环醒来后会把队列整个取走。
+    const char wakeup = 1;
+    ssize_t written = write(post_pipe[1], &wakeup, 1);
+    (void)written;
 }
 
 size_t EventLoop::getActiveEventsCount() {

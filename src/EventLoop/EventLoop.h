@@ -21,11 +21,19 @@ private:
     static std::unordered_map<evutil_socket_t, struct event*> events;
     static std::mutex events_mutex;  // 保护并发访问
 
+    // 自管道的读端回调：把排队的任务在事件循环线程上执行
+    static void onPost(evutil_socket_t fd, short events, void* arg);
+
 public:
     EventLoop();
     ~EventLoop();
 
     void run();
+
+    // 把任务投递到事件循环线程执行。
+    // 异步文件线程的回调不能直接操作 User / socket（会和事件循环线程竞争
+    // receivedata、status 等字段），必须经由这里回到循环线程再执行。
+    static void post(std::function<void()> task);
 
     // 添加批量事件注册功能 - 提高初始化性能
     bool registerFdEvent(evutil_socket_t fd, short events, EventCallback callback, void* arg, const struct timeval* timeout = nullptr);

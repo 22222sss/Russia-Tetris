@@ -164,7 +164,11 @@ bool UImanage::showRecentScores(const shared_ptr<User>& user)
     // 🔥 使用异步读取，传入callback处理结果
     Filedata::readRecentGradesAsync(user,
         [user](bool success, vector<string> result) {
-            // 这个callback会在后台线程完成时自动调用
+            // 回调已由 EventLoop::post 投递到事件循环线程执行；
+            // 但异步期间连接可能已断开或状态已变，那时不能再渲染。
+            if (user->getStatus() != STATUS_LOGIN_OVER) {
+                return;
+            }
 
             if (!success) {
                 logger->error("读取最近成绩失败");
@@ -213,6 +217,12 @@ bool UImanage::showTopScores(const shared_ptr<User>& user)
     // 🔥 使用异步读取，传入callback处理结果
     Filedata::readAllPlayerInfoAsync(
         [user](bool success, vector<shared_ptr<PlayerInfo>> allPlayers) {
+            // 回调已由 EventLoop::post 投递到事件循环线程执行；
+            // 但异步期间连接可能已断开或状态已变，那时不能再渲染。
+            if (user->getStatus() != STATUS_LOGIN_OVER) {
+                return;
+            }
+
             if (!success) {
                 logger->error("读取排行榜失败");
                 outputText(user, WINDOW_ROW_COUNT / 3, 2 * (WINDOW_COL_COUNT / 3),
