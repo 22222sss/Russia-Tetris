@@ -41,7 +41,16 @@ void User::resetUserInfo()
 bool User::addUser(int fd, std::shared_ptr<User> user) 
 {
     std::lock_guard<std::mutex> lock(users_mutex);
-    return users.emplace(fd, user).second;
+
+    // fd 会被内核快速复用，而上一条死连接要等 100ms 的清理定时器
+    // （EventLoop::unregister_Event_User）才会从 users 里移除。
+    // 旧实现用 emplace：正好撞上这个窗口时插入失败，但返回值被调用方忽略，
+    // users 里就留下指向"已关闭连接"的僵尸条目；之后 handleClientData 按 fd
+    // 查到的是僵尸，其状态不匹配任何分支，新连接于是对输入完全无响应
+    // （同时新 User 对象既没进 map 也不会被归还连接池）。
+    // 改用 insert_or_assign 覆盖，保证 fd 始终指向当前这条连接。
+    users.insert_or_assign(fd, user);
+    return true;
 }
 
 bool User::removeUser(int fd) 

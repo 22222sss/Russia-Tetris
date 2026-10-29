@@ -300,6 +300,34 @@ def test_wrong_password(args, user):
         conn.close()
 
 
+def test_fast_reconnect(args):
+    """快速重连：上一条连接刚关闭时，新连接通常复用同一个 fd。
+
+    fd 复用撞上"死连接还没被 100ms 清理定时器移除"的窗口时，
+    旧实现（users.emplace）会插入失败并留下僵尸映射，新连接对输入无响应。
+    这个用例是该 bug 的回归防护。
+    """
+    global STAGE
+
+    STAGE = "快速重连：第一条连接"
+    first = Conn(args.host, args.port, args.timeout)
+    try:
+        expect(first, "1. 注册帐号")
+    finally:
+        first.close()   # 立刻关闭，制造 fd 复用窗口
+
+    STAGE = "快速重连：立刻建立第二条连接"
+    second = Conn(args.host, args.port, args.timeout)
+    try:
+        expect(second, "1. 注册帐号")
+
+        STAGE = "快速重连：新连接必须能响应输入"
+        second.sendline("1")
+        expect(second, "请输入用户名")
+    finally:
+        second.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="俄罗斯方块服务端协议级集成测试")
     parser.add_argument("--host", default="127.0.0.1")
@@ -319,6 +347,7 @@ def main():
         ("account 落盘", lambda: test_userdata_written(args, user)),
         ("二次登录", lambda: test_login_again(args, user, password)),
         ("错误密码被拒绝", lambda: test_wrong_password(args, user)),
+        ("快速重连后仍能响应输入", lambda: test_fast_reconnect(args)),
     ]
 
     failed = 0
