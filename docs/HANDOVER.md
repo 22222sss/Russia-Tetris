@@ -79,23 +79,26 @@ bash tests/bench.sh 200000 10000 30 1 4     # 20 万 / 四客户端
 - 移除无用的 `sys/epoll.h`、`sys/timerfd.h`、`iconv.h` 与 `utf8_to_gbk()`；
 - `UImanage::clear()` 用 `\x1b[2J\x1b[H`（7 字节）；
 - 首次运行自动创建空 `userdata.csv`；
+- 删除 `User::getAllUsers()`：`forEachUser` 锁内遍历替代后已无调用点，留着容易被误用（它按值复制整张 map，正是上次性能事故的根因）；
 - README 只保留**已复测**的数据（原 32 核 126 GB 的数字已删）。
 
 ## 6. 已知坑
 
 1. **telnet 不能用**：行模式 + 回车不是 CRLF → 用 `tetris_client.py`；
 2. **CRLF**：`/mnt/d` 里的 makefile 带 `\r` 会编译失败 → 在 `~/` 编译，或 `sed -i 's/\r$//'`；
-3. **GitHub Actions 日志**：公开仓库下载日志需要 admin token；调试靠 `::notice::` 注解回传指标；
+3. **GitHub Actions 日志**：公开仓库下载日志需要 admin token；调试靠 `::notice::` / `::error::` 注解回传；
 4. **README 图片**：GitHub 对单图有大小限制，大 GIF 压到 <10 MB（`*-demo.gif`）；
 5. **沙箱限制**：pwsh 跑在低完整性，`wsl` 命令会 `E_ACCESSDENIED`；MSYS 的 `sh.exe` 无法创建信号管道；
-6. **WSL 里的 `wsl` 命令**：不要在 Ubuntu 里执行，要在 Windows PowerShell 里执行。
+6. **WSL 里的 `wsl` 命令**：不要在 Ubuntu 里执行，要在 Windows PowerShell 里执行；
+7. **沙箱里没有本地验证能力**：`wsl` 会 `E_ACCESSDENIED`，也没有 `g++` 和可用的 `python`（只有 WindowsApps 占位 stub）。改代码只能 push 到 `main` 让 GitHub Actions 验证（`build.yml` 只在 push `main` 或 PR 时触发），结果用 GitHub API 读 run conclusion + annotations；日志全文读不到，**所以 CI 里任何失败细节都必须用 `::error::` 注解输出**，否则只能看到"某步红了"。
 
 ## 7. 仓库现状
 
 - `main` 干净，CI 全绿；无 tag；
 - `bench-run` 分支已删除（如需触发 bench：重建该分支并 push）；
+- 远程另有 `Russia-Tetris_1.0` 分支（历史版本，未维护）；
 - 许可证：MIT（`LICENSE`）；
-- 遗留：`User::getAllUsers()` 已无调用点（死代码）、远程压测代码无文档、`userdata.csv` 明文密码。
+- 遗留：远程压测代码无文档、`userdata.csv` 明文密码。
 
 ## 8. 后续可选路线
 
@@ -111,5 +114,5 @@ bash tests/bench.sh 200000 10000 30 1 4     # 20 万 / 四客户端
 ```
 读 docs/HANDOVER.md 了解现状，然后我们继续做 <方向>。
 注意：编译/运行在 WSL 的 ~/Russia-Tetris，Windows 侧仓库在 D:\dev\Russia-Tetris；
-不要再做 WSL 安装、README 数据清理、GIF 处理这些已完成的事。
+不要再做 WSL 安装、README 数据清理、GIF 处理、死代码清理这些已完成的事。
 ```

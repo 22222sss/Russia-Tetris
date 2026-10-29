@@ -57,12 +57,6 @@ std::shared_ptr<User> User::getUser(int fd)
     return it != users.end() ? it->second : nullptr;
 }
 
-std::map<int, std::shared_ptr<User>> User::getAllUsers()
-{
-    std::lock_guard<std::mutex> lock(users_mutex);
-    return users; // 返回副本
-}
-
 void User::forEachUser(const std::function<void(int, std::shared_ptr<User>&)>& func)
 {
     std::lock_guard<std::mutex> lock(users_mutex);
