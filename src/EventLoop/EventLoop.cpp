@@ -67,12 +67,36 @@ bool EventLoop::registerFdEvent(evutil_socket_t fd, short event_flags, EventCall
     // 进入作用域时：
     {
         std::lock_guard<std::mutex> lock(events_mutex); // 构造函数自动加锁
-        // 临界区代码 - 这里可以安全访问共享资源
+
+        // 同一个 fd 可能被内核复用给新连接。上一个连接结束时如果没有清理事件对象，
+        // libevent 内部仍然认为该 fd "已在 epoll 中注册"（而内核在 close() 时已自动
+        // 摘除），于是下面 event_add 不会重新 epoll_ctl(ADD)，这条连接将永远收不到
+        // 可读事件 —— 表现为客户端发什么服务端都没反应。这里先彻底删掉旧事件，
+        // 让 libevent 的引用计数归零，event_add 才会真正重新注册到 epoll。
+        //
+        // 注意：fd < 0 是定时器事件（main.cpp 用 -1 注册两个 100ms 定时器），
+        // 它们不能按 fd 去重，否则会把方块下落定时器删掉。
+        if (fd >= 0) {
+            auto it = events.find(fd);
+            if (it != events.end()) {
+                event_del(it->second);
+                event_free(it->second);
+            }
+        }
+
         events[fd] = ev;  // 线程安全操作
     } // 离开作用域时，lock析构函数自动解锁
 
     if (event_add(ev, timeout) != 0) {  // 添加到事件循环
         logger->error("Error adding event for fd: {}", fd);
+        {
+            // 别在 events 里留下已经释放的指针（否则后续 event_del/free 会二次释放）
+            std::lock_guard<std::mutex> lock(events_mutex);
+            auto it = events.find(fd);
+            if (it != events.end() && it->second == ev) {
+                events.erase(it);
+            }
+        }
         event_free(ev);
         return false;
     }
@@ -99,20 +123,43 @@ bool EventLoop::batchRegisterEvents(const std::vector<evutil_socket_t>& fds, sho
 
 // ✅ 使用连接池释放
 void EventLoop::unregister_Event_User(int timerfd, short events, void* arg) {
-    std::lock_guard<std::mutex> lock(events_mutex);
-
-    // 锁内遍历收集需清理的连接（forEachUser 内部持有 users_mutex，不能在回调里调用 removeUser）
     std::vector<int> toRemove;
-    User::forEachUser([&](int fd, std::shared_ptr<User>& user_ptr) {
-        if (user_ptr->getStatus() == STATUS_OVER_QUIT) {
-            toRemove.push_back(fd);
-            ConnectionPool::release(user_ptr);
-        }
-    });
 
-    // 锁外移除
+    {
+        std::lock_guard<std::mutex> lock(events_mutex);
+
+        // 锁内遍历收集需清理的连接（forEachUser 内部持有 users_mutex，不能在回调里调用 removeUser）
+        User::forEachUser([&](int fd, std::shared_ptr<User>& user_ptr) {
+            if (user_ptr->getStatus() == STATUS_OVER_QUIT) {
+                toRemove.push_back(fd);
+                ConnectionPool::release(user_ptr);
+            }
+        });
+    }
+
+    // 锁外移除（removeFdEvent 会自己加 events_mutex，不能在上面的锁内调用，否则死锁）
     for (int fd : toRemove) {
         User::removeUser(fd);
+        // 同时释放该 fd 的事件对象：既避免 struct event 随连接数无上限泄漏，
+        // 也保证 fd 被复用后新连接能重新注册到 epoll（否则新连接会"静默"）。
+        EventLoop::removeFdEvent(fd);
+    }
+}
+
+void EventLoop::removeFdEvent(evutil_socket_t fd) {
+    if (fd < 0) {   // 定时器事件（fd = -1）不参与按 fd 的清理
+        return;
+    }
+    std::lock_guard<std::mutex> lock(events_mutex);
+    auto it = events.find(fd);
+    if (it == events.end()) {
+        return;
+    }
+    event_del(it->second);
+    event_free(it->second);
+    events.erase(it);
+    if (active_connections > 0) {
+        active_connections--;
     }
 }
 

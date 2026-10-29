@@ -611,12 +611,14 @@ void Server::handleNewClientConnection(int serverSocket, short events, void* arg
         // 指向"池中对象"的条目（其 fd 已被 release 改成 -1），
         // 该对象随后被新连接复用时，同一个对象就同时挂在两个 fd 上。
         User::removeUser(clientSocket);
+        EventLoop::removeFdEvent(clientSocket);
         ConnectionPool::release(newUser);  // 失败时立即归还
         return;
     }
 
     if (!UImanage::showInitMenu(newUser)) {
         User::removeUser(clientSocket);
+        EventLoop::removeFdEvent(clientSocket);
         ConnectionPool::release(newUser);  // 失败时立即归还
         return;
     }

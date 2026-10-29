@@ -31,6 +31,11 @@ public:
     bool registerFdEvent(evutil_socket_t fd, short events, EventCallback callback, void* arg, const struct timeval* timeout = nullptr);
     bool batchRegisterEvents(const std::vector<evutil_socket_t>& fds, short events, EventCallback callback, void* arg);
 
+    // 释放某个 fd 的事件对象（连接结束时必须调用）
+    // 不调用会导致：事件对象泄漏，且该 fd 被内核复用时 libevent 不会重新
+    // epoll_ctl(ADD)，新连接将永远收不到可读事件（即"连接静默"）
+    static void removeFdEvent(evutil_socket_t fd);
+
     static void unregister_Event_User(int timerfd, short events, void* arg);
 
     // 添加事件统计功能 - 便于监控和调试
