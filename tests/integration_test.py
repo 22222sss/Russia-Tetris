@@ -224,8 +224,10 @@ def test_register_and_login(args, user, password):
 
         STAGE = "选择简单模式并进入游戏"
         conn.sendline("1")
-        expect(conn, "Score:")
+        # 注意顺序：InitInterface 先画 "Next:"（第 2 行）再画 "Score:"（第 14 行）。
+        # wait_for 只匹配 mark 之后的新输出，所以必须先等先出现的那个。
         expect(conn, "Next:")
+        expect(conn, "Score:")
 
         STAGE = "游戏中发送方向键"
         for key in (b"\x1b[B", b"\x1b[D", b"\x1b[C"):
