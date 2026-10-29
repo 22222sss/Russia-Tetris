@@ -42,8 +42,9 @@ jobs:
           fi
 
           # 用干净的数据文件起服务端，工作目录与测试脚本保持一致（userdata.csv 在 src/）
-          rm -f userdata.csv
-          ./tetris_game > /tmp/it_server.log 2>&1 &
+          # 打开 debug 日志：出问题时能通过注解回传服务端的连接/收发细节
+          rm -f userdata.csv log.txt
+          TETRIS_LOG_LEVEL=debug ./tetris_game > /tmp/it_server.log 2>&1 &
           echo $! > /tmp/it_server.pid
 
           for i in $(seq 1 120); do
@@ -58,9 +59,15 @@ jobs:
 
           kill "$(cat /tmp/it_server.pid)" 2>/dev/null
           wait "$(cat /tmp/it_server.pid)" 2>/dev/null
+          sleep 1
 
           if [ "$RC" -ne 0 ]; then
-            echo "::error::协议集成测试失败，服务端日志尾部: $(tail -40 /tmp/it_server.log | tr '\n' '|' | cut -c1-900)"
+            # 服务端日志写在 log.txt（不是 stdout）；挑与连接/收发相关的行
+            detail=$(grep -aE 'Client\[|连接池|handleClientData|Error|recv|send|用户' log.txt 2>/dev/null | tail -30 | tr '\n' '|' | cut -c1-1500)
+            if [ -z "$detail" ]; then
+              detail=$(tail -20 /tmp/it_server.log 2>/dev/null | tr '\n' '|' | cut -c1-1500)
+            fi
+            echo "::error::协议集成测试失败，服务端日志: $detail"
           fi
           exit "$RC"
 

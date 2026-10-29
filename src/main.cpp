@@ -12,10 +12,21 @@
 
 // 创建 spdlog::logger 对象（异步日志，避免高并发下同步写盘阻塞主线程）
 // 通过初始化函数配置：大队列 + 2 个写线程，避免队列溢出阻塞；生产环境只记录 warn 及以上
+//
+// 调试时可用环境变量 TETRIS_LOG_LEVEL=debug/info 打开更详细的日志：
+// 异步 sink 默认不逐条 flush，进程被杀会丢尾部，所以非默认级别下开启 flush_on。
 static std::shared_ptr<spdlog::logger> create_logger() {
     spdlog::init_thread_pool(65536, 2);
     auto l = spdlog::basic_logger_mt<spdlog::async_factory>("logger", "log.txt");
     l->set_level(spdlog::level::warn);
+
+    if (const char* env = std::getenv("TETRIS_LOG_LEVEL")) {
+        auto level = spdlog::level::from_str(env);
+        l->set_level(level);
+        if (level != spdlog::level::warn) {
+            l->flush_on(level);
+        }
+    }
     return l;
 }
 std::shared_ptr<spdlog::logger> logger = create_logger();
