@@ -68,11 +68,11 @@ jobs:
           }
 
           if [ -z "$WORKERS" ]; then
-            # push 到 bench-run 触发时跑对照实验：
-            # 单 worker 关/开 SO_REUSEPORT 各一次，隔离"选项本身"的影响；再加 4 worker 看扩展性
-            run_one 1 0
+            # push 到 bench-run 触发的对照实验。
+            # 这次用「先开后关」的逆序，与上一轮「先关后开」互为镜像，
+            # 用来排除 TIME_WAIT 残留 / 运行顺序造成的假象。
             run_one 1 1
-            run_one 4 1
+            run_one 1 0
           else
             for w in ${WORKERS//,/ }; do
               if [ "$w" -gt 1 ]; then run_one "$w" 1; else run_one "$w" ""; fi
