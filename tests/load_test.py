@@ -144,6 +144,11 @@ async def worker(idx, bind_ip, sem, stats, read_check, connect_timeout, read_tim
             # 注意：socket() 本身也可能因 fd 耗尽抛 EMFILE，必须放在 try 内
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.setblocking(False)
+            # 必须允许复用 TIME_WAIT 里的地址：连续跑多轮 10 万连接时，
+            # 上一轮会留下约 10 万个 TIME_WAIT 端口。没有它，第二轮起就只能
+            # 用剩下的端口，连接超时数会暴涨 —— 表现为"第二次跑成功率必掉"，
+            # 很容易被误读成被测服务端的问题（我们就被坑过一次）。
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind((bind_ip, 0))
             loop = asyncio.get_event_loop()
             await asyncio.wait_for(loop.sock_connect(sock, (host, port)),

@@ -116,6 +116,8 @@ BENCH_WORKERS=2 bash tests/bench.sh 100000 5000 30 1 2   # 2 个 worker
 7. **沙箱里没有本地验证能力**：`wsl` 会 `E_ACCESSDENIED`，也没有 `g++` 和可用的 `python`（只有 WindowsApps 占位 stub）。改代码只能 push 到 `main` 让 GitHub Actions 验证（`build.yml` 只在 push `main` 或 PR 时触发），结果用 GitHub API 读 run conclusion + annotations；日志全文读不到，**所以 CI 里任何失败细节都必须用 `::error::` 注解输出**，否则只能看到"某步红了"。
 8. **服务端日志默认只记 `warn`**：调试时用 `TETRIS_LOG_LEVEL=debug ./tetris_game`，会自动开启逐条 flush（异步 sink 不 flush 的话进程被杀会丢日志尾部）。日志写到工作目录下的 **`log.txt`**，不是 stdout。
 9. **GitHub API 的 check-runs 端点数据会滞后**：需要实时步骤状态时查 `/repos/:o/:r/actions/jobs/:job_id`；另外 job 的 "Complete job" 步骤结束前 annotations 是空的，要等它完成再读。
+10. **连续压测必须能复用 `TIME_WAIT` 端口**：同一台机器连续跑多轮 10 万连接时，压测客户端若没设 `SO_REUSEADDR`，第二轮起可用端口骤减、超时数暴涨（成功率 ~99% → ~81%）。**我们据此误判过一次**——以为是 `SO_REUSEPORT` 的代价，最后用**逆序 A/B/A**（先关后开、再先开后关）才看出真正的变量是"第几次跑"。现在 `load_test.py` 已设 `SO_REUSEADDR`；以后做多轮对比，要么保证这个前提，要么换干净 runner。
+11. **bench.yml 的 push 触发路径**默认跑对照实验（见 `Benchmark` 步骤里的 `run_one`）；`bench-run` 分支用完记得删。
 
 ## 7. 仓库现状
 
@@ -131,7 +133,7 @@ BENCH_WORKERS=2 bash tests/bench.sh 100000 5000 30 1 2   # 2 个 worker
 |---|---|---|
 | 质量工程 | ✅ 已覆盖：注册/登录/排行榜（最近成绩、全服 top）/选难度/进游戏/按键/游戏结束/错误密码/快速重连，并接入 CI | 已建立回归保护 |
 | 密码安全 | `userdata.csv` 明文 → 加盐哈希 + 迁移 | 中：部署前提 |
-| 服务端多核化 | ✅ 已实现多进程 worker（`TETRIS_WORKERS=N` + `SO_REUSEPORT`，存储层 flock 保护）。**待办**：用 `bench.yml` 实测 1/2/4 worker 的扩展性并补进 README | 高：README 里点名的瓶颈 |
+| 服务端多核化 | ✅ 已实现并已实测（`TETRIS_WORKERS=N` + `SO_REUSEPORT`）。结论：**纯建连场景下 worker 数无收益**——服务端只占 21%~30% 单核，瓶颈在压测端；reuseport 也没有代价。默认仍是 1 worker。要验证多核价值需换"每连接 CPU 开销高"的真实游戏负载 | 结论已给出 |
 | 远程压测 | 用 `BENCH_REMOTE_CLIENTS` 跑多机，目标 30 万 | 中：需多台机器 |
 
 ## 9. 给新会话的起步提示
