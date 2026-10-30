@@ -25,6 +25,9 @@ READ_CHECK=${4:-1}
 CLIENTS=${5:-1}
 
 REMOTE_CLIENTS=${BENCH_REMOTE_CLIENTS:-}
+# worker 进程数（0/1 = 单进程）。多 worker 时服务端是"父进程 + N 个子进程"，
+# 所以采样必须按进程树统计，否则 CPU/RSS 会全读到 0。
+WORKERS=${BENCH_WORKERS:-1}
 HOST=${BENCH_HOST:-}
 REMOTE_DIR=/tmp/russia-bench
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
@@ -127,11 +130,12 @@ if ! make -C "$SRC" -j"$(nproc)" > "$OUT/build.log" 2>&1; then
   exit 1
 fi
 echo "构建完成: $SRC/tetris_game" | tee -a "$OUT/env.txt"
+echo "workers   : $WORKERS" | tee -a "$OUT/env.txt"
 
 log "启动服务端"
 cd "$SRC"
 START_TS=$(date +%s.%N)
-./tetris_game > "$OUT/server.log" 2>&1 &
+TETRIS_WORKERS=$WORKERS ./tetris_game > "$OUT/server.log" 2>&1 &
 SRV_PID=$!
 SAMPLER_PID=""
 cleanup() {

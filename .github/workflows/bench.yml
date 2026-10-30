@@ -27,6 +27,10 @@ on:
         description: '压测客户端进程数（分片数）'
         required: true
         default: '1'
+      workers:
+        description: '服务端 worker 数，逗号分隔可做扩展性对比（如 1,2,4）'
+        required: true
+        default: '1'
 
 permissions:
   contents: read
@@ -48,31 +52,44 @@ jobs:
 
       - name: Benchmark
         run: |
-          bash tests/bench.sh "${{ inputs.target || '200000' }}" "${{ inputs.concurrency || '10000' }}" "${{ inputs.hold || '30' }}" "${{ inputs.read_check || '1' }}" "${{ inputs.clients || '4' }}"
+          TARGET="${{ inputs.target || '100000' }}"
+          CONC="${{ inputs.concurrency || '5000' }}"
+          HOLD="${{ inputs.hold || '30' }}"
+          READ="${{ inputs.read_check || '1' }}"
+          CLIENTS="${{ inputs.clients || '2' }}"
+          WORKERS="${{ inputs.workers || '1,2,4' }}"
+          for w in ${WORKERS//,/ }; do
+            echo "::notice::开始压测: workers=$w target=$TARGET concurrency=$CONC clients=$CLIENTS"
+            BENCH_WORKERS="$w" bash tests/bench.sh "$TARGET" "$CONC" "$HOLD" "$READ" "$CLIENTS" \
+              || echo "::warning::workers=$w 这一轮压测返回非 0（结果可能不完整）"
+          done
 
       - name: Publish key metrics as annotations
         if: always()
         run: |
-          d=$(ls -1d bench-results/*/ 2>/dev/null | tail -1)
-          if [ -z "$d" ]; then
+          # 注意：每个 step 的 notice/error/warning 各最多 10 条，
+          # 所以每轮压测只发"一条"汇总，而不是一条一个指标。
+          dirs=$(ls -1d bench-results/*/ 2>/dev/null | tail -3)
+          if [ -z "$dirs" ]; then
             echo "::warning::bench-results 目录不存在"
             exit 0
           fi
-          if [ -f "${d}env.txt" ]; then
-            ul=$(grep -m1 "ulimit" "${d}env.txt" || true)
-            if [ -n "$ul" ]; then echo "::notice::env: $ul"; fi
-          fi
-          if [ -f "${d}summary.md" ] && grep -q "成功建立" "${d}summary.md"; then
-            for k in "成功建立" "失败" "失败原因" "总耗时" "建立速率" "服务端内存" "服务端 fd" "服务端 CPU"; do
-              line=$(grep -m1 -- "| $k" "${d}summary.md" || true)
-              if [ -n "$line" ]; then echo "::notice::$line"; fi
-            done
-            curve=$(awk '/## 每 10 秒建立速率/{f=1;next} f&&/^```/{c++} f&&c==1&&!/^```/{print;exit}' "${d}summary.md" || true)
-            if [ -n "$curve" ]; then echo "::notice::rate/10s: $curve"; fi
-          else
-            echo "::notice::未生成结果，附 result.txt 尾部"
-            tail -8 "${d}result.txt" 2>/dev/null | while IFS= read -r line; do echo "::notice::$line"; done
-          fi
+          for d in $dirs; do
+            w=$(grep -m1 '^workers' "${d}env.txt" 2>/dev/null | tr -d ' ' | cut -d: -f2)
+            w=${w:-?}
+            if [ -f "${d}summary.md" ] && grep -q "成功建立" "${d}summary.md"; then
+              summary=""
+              for k in "成功建立" "失败" "总耗时" "建立速率" "服务端内存" "服务端 fd" "服务端 CPU"; do
+                line=$(grep -m1 -- "| $k" "${d}summary.md" || true)
+                if [ -n "$line" ]; then
+                  summary="${summary}$(echo "$line" | sed 's/^| *//; s/ *|$//') ; "
+                fi
+              done
+              echo "::notice::[workers=$w] $summary"
+            else
+              echo "::notice::[workers=$w] 未生成 summary.md，附 result.txt 尾部: $(tail -6 "${d}result.txt" 2>/dev/null | tr '\n' '|' | cut -c1-900)"
+            fi
+          done
           exit 0
 
       - name: Upload benchmark results

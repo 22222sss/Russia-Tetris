@@ -58,14 +58,19 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 | `tests/mock_server.py` | 协议 mock，**只用于在本地验证集成测试脚本本身**（沙箱里跑不了真服务端时），不是协议规范 |
 | `tests/cross_process_test.py` | 跨进程存储一致性：两个服务进程共享同一份 `userdata.csv`，验证 A 注册的账号能在 B 登录（多进程化的前置验证） |
 | `.github/workflows/build.yml` | 每次 push：编译 + 协议级集成测试 + 200 连接冒烟 + bench.sh 100 连接冒烟 + `sizeof(User)` |
-| `.github/workflows/bench.yml` | 手动触发（或 push 到 `bench-run` 分支）跑大压测，结果作为 Artifact |
+| `.github/workflows/bench.yml` | 手动触发（或 push 到 `bench-run` 分支）跑大压测，结果作为 Artifact；`workers` 输入支持逗号分隔做扩展性对比（如 `1,2,4`） |
 
 用法：
 
 ```bash
 bash tests/bench.sh 100000 5000 30 1 2      # 10 万 / 双客户端
 bash tests/bench.sh 200000 10000 30 1 4     # 20 万 / 四客户端
+BENCH_WORKERS=2 bash tests/bench.sh 100000 5000 30 1 2   # 2 个 worker
 ```
+
+注意 `sample_proc.py` 是**按进程树**采样的：多 worker 时服务端是"父进程 + N 个子进程"，
+只采样父进程会得到接近 0 的 CPU/RSS。`服务端 CPU` 的口径是"占满一个核 = 100%"，
+所以 4 核跑满约等于 400%。
 
 ## 4. 已跑出的数据（GitHub Actions，4 核 / 16 GB）
 
