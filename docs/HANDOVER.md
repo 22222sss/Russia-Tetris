@@ -93,6 +93,8 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 | `tests/mock_server.py` | 协议 mock，**只用于在没有真服务端的环境里验证上述测试脚本本身**，不是协议规范；密码行为与真服务端一致（注册写哈希、登录校验、明文迁移） |
 | `tests/play_test.py` | 游戏负载压测客户端：真实登录/开局/持续按键（只按左/右，不按下 → 不提前 GAME OVER）；`--seed` 直接写哈希账号，避免压测时触发迁移 |
 | `tests/play_bench.sh` | 按 worker 列表跑游戏负载对比，每组回传一条注解 |
+| `tests/login_bench.py` | 登录吞吐基准：N 个连接并发真实登录（只走到主菜单），统计就绪数、总耗时、登录/秒、延迟 p50/p95/max；`--seed` 直接造哈希账号 |
+| `tests/login_bench.sh` | 造账号 → 起服务端（可给 workers 列表）→ 多轮登录基准，每轮回传 `::notice::`；CI 用它记录登录吞吐 |
 | `tests/load_test.py` | 纯建连压测：`--host --port --pid --json --min-success --bind-ips`；失败按 timeout/refused/reset/fd 分类 |
 | `tests/bench.sh` | 一键连接压测：调 `ulimit`/sysctl、编译、起服务、采样、分片、合并报告 |
 | `tests/sample_proc.py` | 采样服务端**进程树**的 RSS/fd/CPU（多 worker 必须按树采样） |
@@ -102,7 +104,8 @@ CI 步骤（`build.yml`，每次 push `main` 都跑，顺序如下）：
 
 1. 编译 → 2. 密码哈希自检（`password_hash_test.cpp`，失败细节走注解）→ 3. 协议集成测试（8 项）
 → 4. 跨进程存储测试（3 项）→ 5. 双 worker 测试（先断言两个子进程都活着，再跑完整协议测试）
-→ 6. 200 连接冒烟 → 7. `bench.sh` 100 连接冒烟 → 8. `sizeof(User)` → 9. 头文件依赖跟踪自检
+→ 6. 登录吞吐基准（1/2 worker 各 2 轮，只回传 `::notice::`，不做时间断言）
+→ 7. 200 连接冒烟 → 8. `bench.sh` 100 连接冒烟 → 9. `sizeof(User)` → 10. 头文件依赖跟踪自检
 （`touch User.h` + `make -n`）。CI 的 apt 依赖里已加 `libssl-dev`。
 
 `bench.yml` 只在 push 到 `bench-run` 分支或手动触发时跑，**用完记得删分支**。

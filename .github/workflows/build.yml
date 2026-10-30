@@ -135,8 +135,7 @@ jobs:
           fi
           exit "$RC"
 
-      - name: Multi-worker test (2 workers, SO_REUSEPORT)
-        working-directory: src
+      - name: Multi-worker test (2 workers, SO_REUSEPORT)        working-directory: src
         run: |
           set +e
           rm -f userdata.csv userdata.csv.lock log*.txt
@@ -176,6 +175,13 @@ jobs:
             echo "::error::多 worker 集成测试失败，worker 日志: $detail"
           fi
           exit "$RC"
+
+      - name: Login throughput benchmark (notice)
+        working-directory: src
+        run: |
+          # 登录 = PBKDF2（10 万次迭代）+ 异步线程串行校验，是独立于游戏负载的瓶颈。
+          # 共享 runner 的绝对耗时会抖，所以这里只回传数据（::notice::），不设时间阈值。
+          bash ../tests/login_bench.sh 128 "1 2" 10110 2
 
       - name: Smoke test (200 connections)
         working-directory: src

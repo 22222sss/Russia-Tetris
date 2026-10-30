@@ -27,6 +27,7 @@ src/check_system.sh
 # 压测结果
 bench-results/
 play-results/
+login-results/
 
 # Python 缓存
 __pycache__/
