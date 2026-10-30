@@ -31,6 +31,8 @@ import os
 import sys
 import time
 
+import credential
+
 KEY_LEFT = b"\x1b[D"
 KEY_RIGHT = b"\x1b[C"
 
@@ -153,7 +155,11 @@ async def run_player(idx, args, stats):
 
 
 def seed_users(count, path):
-    """直接往 CSV 追加账号：省掉 N 次注册往返，把时间留给真正的游戏负载。"""
+    """直接往 CSV 追加账号：省掉 N 次注册往返，把时间留给真正的游戏负载。
+
+    密码写成当前格式的加盐哈希（与真服务端一致），否则每个账号登录时都会
+    触发一次"明文迁移"（重写整份 CSV），会严重污染压测结果。
+    """
     try:
         empty = os.path.getsize(path) == 0
     except OSError:
@@ -164,7 +170,7 @@ def seed_users(count, path):
             f.write(HEADER + "\n")
         for i in range(count):
             f.write("%s,%s,0,EASY,,0,NORMAL,,0,DIFFICULT,,\n"
-                    % (USER_FMT % i, PWD_FMT % i))
+                    % (USER_FMT % i, credential.hash_password(PWD_FMT % i)))
     print("已写入 %d 个账号 -> %s" % (count, path), flush=True)
 
 

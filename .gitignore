@@ -8,9 +8,11 @@ src/tetris_game
 src/log.txt
 src/log.*.txt
 
-# 用户数据（含明文密码，不入库）
+# 用户数据（含密码哈希/迁移前的明文，不入库）
 userdata.csv
 userdata.csv.lock
+userdata.csv.tmp.*
+userdata.csv.mock.tmp
 
 # 系统优化脚本生成的检查脚本
 src/check_system.sh

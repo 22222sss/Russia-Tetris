@@ -29,11 +29,14 @@
 """
 
 import argparse
+import os
 import random
 import re
 import socket
 import sys
 import time
+
+import credential
 
 # ANSI 转义：CSI（颜色/光标/清屏）、OSC、以及 ESC + 单字符
 ANSI_RE = re.compile(
@@ -46,6 +49,11 @@ ANSI_RE = re.compile(
 
 class Failure(Exception):
     """断言失败。"""
+
+
+HEADER = ("Username,Password,Easy_Score,Easy_Difficulty,Easy_Timestamp,"
+          "Normal_Score,Normal_Difficulty,Normal_Timestamp,"
+          "Difficult_Score,Difficult_Difficulty,Difficult_Timestamp,Recent_Scores")
 
 
 def annotate(level, message):
@@ -189,8 +197,8 @@ def new_account_name():
 def wait_for_userdata(path, user, timeout):
     """轮询 userdata.csv 直到出现账号名。
 
-    注册走的是 saveNewUserDataAsync（异步写盘），登录校验却同步读文件，
-    所以这里必须等落盘，否则立刻登录会偶发 "登录失败"。
+    注册走的是 saveNewUserDataAsync（异步写盘），所以这里必须等落盘，
+    否则立刻登录会偶发 "登录失败"。
     """
     limit = time.time() + timeout
     while time.time() < limit:
@@ -202,6 +210,79 @@ def wait_for_userdata(path, user, timeout):
             pass
         time.sleep(0.2)
     return False
+
+
+def read_credential(path, user):
+    """从 userdata.csv 取某个账号的 Password 字段（找不到返回 None）。"""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            next(fh, None)      # 跳过表头
+            for line in fh:
+                parts = line.rstrip("\r\n").split(",")
+                if parts and parts[0] == user and len(parts) >= 2:
+                    return parts[1]
+    except FileNotFoundError:
+        pass
+    return None
+
+
+def wait_for_credential(path, user, predicate, timeout):
+    """轮询等到 Password 字段满足 predicate；超时返回 None。
+
+    迁移走的是异步写盘（loginAsync -> rewriteStoredCredential + rename），
+    所以不能假设"登录返回成功"时文件已经更新。
+    """
+    limit = time.time() + timeout
+    while time.time() < limit:
+        stored = read_credential(path, user)
+        if stored is not None and predicate(stored):
+            return stored
+        time.sleep(0.2)
+    return None
+
+
+def append_legacy_account(path, user, password):
+    """直接往 CSV 追加一条"升级前"的明文账号，用来验证登录即迁移。"""
+    try:
+        empty = os.path.getsize(path) == 0
+    except OSError:
+        empty = True
+    with open(path, "a", encoding="utf-8") as fh:
+        if empty:
+            fh.write(HEADER + "\n")
+        fh.write("%s,%s,0,EASY,,0,NORMAL,,0,DIFFICULT,,\n" % (user, password))
+
+
+def login_expect_success(args, user, password, stage):
+    global STAGE
+    STAGE = stage
+    conn = Conn(args.host, args.port, args.timeout)
+    try:
+        expect(conn, "1. 注册帐号")
+        conn.sendline("2")
+        expect(conn, "请输入用户名")
+        conn.sendline(user)
+        expect(conn, "请输入密码")
+        conn.sendline(password)
+        expect(conn, "3. 开始游戏", timeout=args.timeout)
+    finally:
+        conn.close()
+
+
+def login_expect_failure(args, user, password, stage):
+    global STAGE
+    STAGE = stage
+    conn = Conn(args.host, args.port, args.timeout)
+    try:
+        expect(conn, "1. 注册帐号")
+        conn.sendline("2")
+        expect(conn, "请输入用户名")
+        conn.sendline(user)
+        expect(conn, "请输入密码")
+        conn.sendline(password)
+        expect(conn, "登录失败", timeout=args.timeout)
+    finally:
+        conn.close()
 
 
 def test_register_and_login(args, user, password):
@@ -296,6 +377,80 @@ def test_userdata_written(args, user):
     if not wait_for_userdata(args.userdata, user, args.timeout):
         raise Failure("在 %s 中未找到新注册的账号 %r（超时 %ss）"
                       % (args.userdata, user, args.timeout))
+
+
+def credential_matches(password):
+    """predicate：存储值必须是"这个密码"的合法加盐哈希。
+
+    只判断前缀不够——文件可能正在被写（读到半截哈希），
+    那样测试会以"哈希对不上"假失败；能复算通过才算写完。
+    """
+    def predicate(stored):
+        return credential.is_hashed(stored) and credential.verify(password, stored)
+    return predicate
+
+
+def test_password_hashed_at_rest(args, user, password):
+    """注册落盘的必须是"这个密码的加盐哈希"，既不是明文，也不是随便一串哈希。"""
+    global STAGE
+    STAGE = "密码落盘格式"
+
+    stored = wait_for_credential(args.userdata, user, credential_matches(password),
+                                 args.timeout)
+    if stored is None:
+        raise Failure("[%s] %r 的 Password 字段不是该密码的加盐哈希：%r"
+                      % (STAGE, user, read_credential(args.userdata, user)))
+    if stored == password:
+        raise Failure("[%s] 密码仍以明文落盘" % STAGE)
+    if credential.verify(password + "-not-it", stored):
+        raise Failure("[%s] 落盘哈希能匹配错误密码：%r" % (STAGE, stored))
+
+
+def test_legacy_migration(args):
+    """旧版明文账号：登录成功后应就地迁移成加盐哈希（盐随机），且之后仍能登录。
+
+    这条用例覆盖两件事：
+    1. 迁移逻辑（否则升级后所有老账号都登不上）；
+    2. 盐是随机生成的 —— 两个同密码账号迁移后的哈希必须不同。
+    """
+    global STAGE
+
+    suffix = "%d%d" % (int(time.time()) % 100000, random.randint(100, 999))
+    user_a = "mgA" + suffix
+    user_b = "mgB" + suffix
+    password = "legacy" + str(random.randint(100000, 999999))
+
+    STAGE = "旧明文迁移：写入两条旧版明文账号"
+    append_legacy_account(args.userdata, user_a, password)
+    append_legacy_account(args.userdata, user_b, password)
+
+    STAGE = "旧明文迁移：账号 A 首次登录（明文路径）"
+    login_expect_success(args, user_a, password, STAGE)
+
+    STAGE = "旧明文迁移：等待 A 落盘为哈希"
+    cred_a = wait_for_credential(args.userdata, user_a, credential_matches(password),
+                                 args.timeout)
+    if cred_a is None:
+        raise Failure("[%s] 登录后 A 的密码仍是：%r"
+                      % (STAGE, read_credential(args.userdata, user_a)))
+
+    STAGE = "旧明文迁移：账号 A 二次登录（哈希路径）"
+    login_expect_success(args, user_a, password, STAGE)
+
+    STAGE = "旧明文迁移：账号 B 首次登录"
+    login_expect_success(args, user_b, password, STAGE)
+
+    STAGE = "旧明文迁移：等待 B 落盘为哈希"
+    cred_b = wait_for_credential(args.userdata, user_b, credential_matches(password),
+                                 args.timeout)
+    if cred_b is None:
+        raise Failure("[%s] 登录后 B 的密码仍是：%r"
+                      % (STAGE, read_credential(args.userdata, user_b)))
+    if cred_a == cred_b:
+        raise Failure("[%s] 同密码的两个账号得到相同哈希，盐没有随机化" % STAGE)
+
+    STAGE = "旧明文迁移：迁移后的账号仍拒绝错误密码"
+    login_expect_failure(args, user_a, password + "-wrong", STAGE)
 
 
 def test_login_again(args, user, password):
@@ -441,8 +596,10 @@ def main():
     checks = [
         ("注册/登录/进入游戏", lambda: test_register_and_login(args, user, password)),
         ("account 落盘", lambda: test_userdata_written(args, user)),
+        ("密码以加盐哈希落盘", lambda: test_password_hashed_at_rest(args, user, password)),
         ("二次登录", lambda: test_login_again(args, user, password)),
         ("错误密码被拒绝", lambda: test_wrong_password(args, user)),
+        ("旧明文账号登录即迁移", lambda: test_legacy_migration(args)),
         ("快速重连后仍能响应输入", lambda: test_fast_reconnect(args)),
         ("游戏结束流程", lambda: test_game_over(args, user, password)),
     ]

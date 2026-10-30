@@ -35,6 +35,16 @@ void PlayerInfo::clearPlayers() {
     PlayerInfo::players.clear();
 }
 
+std::shared_ptr<PlayerInfo> PlayerInfo::findPlayer(const std::string& playerName) {
+    std::lock_guard<std::mutex> lock(players_mutex);
+    for (const auto& player : PlayerInfo::players) {
+        if (player && player->getPlayerName() == playerName) {
+            return player;
+        }
+    }
+    return nullptr;
+}
+
 
 std::string PlayerInfo::getPlayerName() const 
 {

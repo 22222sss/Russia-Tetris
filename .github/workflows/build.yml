@@ -18,17 +18,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install libevent / spdlog / fmt
+      - name: Install libevent / spdlog / fmt / OpenSSL
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential libevent-dev libspdlog-dev libfmt-dev
+            build-essential libevent-dev libspdlog-dev libfmt-dev libssl-dev
 
       - name: Build
         working-directory: src
         run: |
           make -j"$(nproc)"
           file tetris_game
+
+      - name: Password hash self-test
+        working-directory: src
+        run: |
+          # 单独测 PasswordHash：集成测试只能看"登录通不通"，哈希实现错了
+          # （盐没进 PBKDF2、hex 编解码错位）也可能自洽地通过。这里用 Python
+          # hashlib 生成的已知向量做交叉验证，失败细节用注解回传。
+          if ! g++ -std=c++17 -Wall -Wextra -I. TetrisGame/PasswordHash.cpp \
+                ../tests/password_hash_test.cpp -lcrypto -pthread -o /tmp/ph_test \
+                2> /tmp/ph_build.txt; then
+            echo "::error::密码哈希自检编译失败: $(tr '\n' '|' < /tmp/ph_build.txt | cut -c1-1200)"
+            exit 1
+          fi
+
+          set +e
+          out=$(/tmp/ph_test 2>&1)
+          rc=$?
+          echo "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::密码哈希自检失败: $(echo "$out" | tr '\n' '|' | cut -c1-1500)"
+            exit 1
+          fi
+          echo "::notice::密码哈希自检通过: $(echo "$out" | tr '\n' '|' | cut -c1-600)"
 
       - name: Protocol integration test
         working-directory: src
@@ -63,7 +86,7 @@ jobs:
 
           if [ "$RC" -ne 0 ]; then
             # 服务端日志写在 log.txt（不是 stdout）；挑与连接/收发相关的行
-            detail=$(grep -aE 'Client\[|连接池|handleClientData|Error|recv|send|用户' log.txt 2>/dev/null | tail -30 | tr '\n' '|' | cut -c1-1500)
+            detail=$(grep -aE 'Client\[|连接池|handleClientData|Error|recv|send|用户|密码|迁移' log.txt 2>/dev/null | tail -30 | tr '\n' '|' | cut -c1-1500)
             if [ -z "$detail" ]; then
               detail=$(tail -20 /tmp/it_server.log 2>/dev/null | tr '\n' '|' | cut -c1-1500)
             fi
@@ -107,7 +130,7 @@ jobs:
           sleep 1
 
           if [ "$RC" -ne 0 ]; then
-            detail=$(grep -aE 'Error|error|warn|Client\[|缓存' log.txt 2>/dev/null | tail -25 | tr '\n' '|' | cut -c1-1500)
+            detail=$(grep -aE 'Error|error|warn|Client\[|缓存|密码|迁移' log.txt 2>/dev/null | tail -25 | tr '\n' '|' | cut -c1-1500)
             echo "::error::跨进程测试失败，服务端日志: $detail"
           fi
           exit "$RC"

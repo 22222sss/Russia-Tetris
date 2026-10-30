@@ -2,7 +2,7 @@
 CXX = g++
 CXXFLAGS = -Wall -g -O0 -std=c++17 -pthread -MMD -MP
 INCLUDES = -ICommon -IUtility -IEventLoop -ITetrisGame -IUImanage -IConnectionPool
-LDFLAGS = -levent -lspdlog -lfmt -pthread   # 添加了 -lfmt
+LDFLAGS = -levent -lspdlog -lfmt -lcrypto -pthread   # -lcrypto: PBKDF2/随机盐（libssl-dev）
 
 # 源文件
 SOURCES = \
@@ -12,6 +12,7 @@ SOURCES = \
     EventLoop/EventLoop.cpp \
     TetrisGame/Filedata.cpp \
     TetrisGame/Game.cpp \
+    TetrisGame/PasswordHash.cpp \
     TetrisGame/PlayerInfo.cpp \
     TetrisGame/Server.cpp \
     TetrisGame/User.cpp \

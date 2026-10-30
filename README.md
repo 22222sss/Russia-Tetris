@@ -22,6 +22,7 @@
 |------|------|
 | libevent | 事件通知库，核心网络框架 |
 | spdlog | C++ 日志库 |
+| OpenSSL | 密码加盐哈希（PBKDF2-HMAC-SHA256 / 随机盐） |
 | Socket | TCP 网络编程 |
 | C++17 | 开发语言标准 |
 
@@ -41,6 +42,7 @@ Russia-Tetris/
 │   │   ├── Server.h/.cpp     # 登录与注册逻辑
 │   │   ├── User.h/.cpp       # 当前用户信息与状态管理
 │   │   ├── PlayerInfo.h/.cpp # 已注册用户信息管理
+│   │   ├── PasswordHash.h/.cpp # 密码加盐哈希（PBKDF2）与旧明文迁移
 │   │   └── Filedata.h/.cpp   # userdata.csv 数据读写
 │   ├── UImanage/             # 界面管理（TUI）
 │   ├── Utility/              # 工具函数与系统优化
@@ -66,7 +68,7 @@ Ubuntu / Debian 下一条命令安装全部依赖：
 
 ```bash
 sudo apt update
-sudo apt install -y g++ make libevent-dev libspdlog-dev libfmt-dev
+sudo apt install -y g++ make libevent-dev libspdlog-dev libfmt-dev libssl-dev
 ```
 
 ### 3. 编译
@@ -129,6 +131,21 @@ telnet <服务器IP> 9999
 
 ![游戏结束返回初始菜单](images-and-gif/游戏结束返回初始菜单.gif)
 
+## 密码存储
+
+账号密码**不以明文落盘**。`userdata.csv` 的 `Password` 列保存的是：
+
+```
+$pbkdf2-sha256$<迭代次数>$<随机盐 hex>$<摘要 hex>
+```
+
+- 算法：PBKDF2-HMAC-SHA256（OpenSSL 实现），默认 10 万次迭代；每个账号 16 字节随机盐，因此相同密码的哈希也不同；
+- 校验在**异步线程**进行（单次约几十毫秒，不能占用事件循环线程），事件循环只负责收发与渲染；
+- **旧数据自动迁移**：升级前遗留的明文密码仍可登录，登录成功后会在 `flock` 临界区内就地改写成哈希（临时文件 + rename，多进程安全），之后按新格式校验；
+- 老账号在首次登录前仍是明文——这是有意的渐进迁移，避免启动时对所有账号做一次昂贵的全量重哈希。
+
+`tests/password_hash_test.cpp` 用 Python `hashlib` 生成的已知向量交叉验证哈希实现，集成测试则断言"注册落盘的是这个密码的加盐哈希"和"旧明文账号登录后完成迁移"。
+
 ## 并发性能测试
 
 服务端程序的核心指标之一是**并发连接数**。本项目提供了自动化压测脚本 `tests/load_test.py` 与 `tests/bench.sh`，并在 GitHub Actions 的 4 核 / 16 GB runner 上做了实测。
@@ -145,7 +162,7 @@ telnet <服务器IP> 9999
 ```bash
 git clone git@github.com:22222sss/Russia-Tetris.git
 cd Russia-Tetris
-sudo apt install -y g++ make libevent-dev libspdlog-dev libfmt-dev python3
+sudo apt install -y g++ make libevent-dev libspdlog-dev libfmt-dev libssl-dev python3
 bash tests/bench.sh 100000 5000 30 1 2
 ```
 

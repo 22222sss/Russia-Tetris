@@ -98,26 +98,24 @@ void User::forEachUser(const std::function<void(int, std::shared_ptr<User>&)>& f
 
 void User::initUserInfo()
 {
-    for (const auto& player : PlayerInfo::getPlayers())
+    // 登录阶段已经校验过密码，而且磁盘上存的是加盐哈希：
+    // 这里再比一次明文/密文既没意义（还会让成绩永远对不上），按用户名取即可。
+    auto player = PlayerInfo::findPlayer(this->getUsername());
+    if (!player)
     {
-        if (player->getPlayerName() == this->getUsername() && player->getPassword() == this->getPassword())
-        {
-            
-            this->setMaximum_Score_Easy(player->getMaximum_Score_Easy());
+        return;
+    }
 
-            for (const auto& score : player->getScores())
-            {
-                this->setScores_Push(score);
-            }
+    this->setMaximum_Score_Easy(player->getMaximum_Score_Easy());
 
-            for (const auto& diffculty : player->getGameDifficulties())
-            {
-                this->setGameDiffclutys_Push(diffculty);
-            }
+    for (const auto& score : player->getScores())
+    {
+        this->setScores_Push(score);
+    }
 
-            break;
-
-        }
+    for (const auto& diffculty : player->getGameDifficulties())
+    {
+        this->setGameDiffclutys_Push(diffculty);
     }
 }
 

@@ -81,7 +81,11 @@ enum GameStatus
 
     STATUS_REGISTER_OR_LOAD_OVER,
 
-    STATUS_SELECT_GAME_DIFFICULTY
+    STATUS_SELECT_GAME_DIFFICULTY,
+
+    // 密码校验在异步线程进行（PBKDF2），期间连接处于这个"等待"状态。
+    // 追加在末尾，避免改动已有状态值。
+    STATUS_VERIFYING_PASSWORD
 };
 
 

@@ -1,10 +1,17 @@
 """最小协议 mock：用来在本地验证 tests/integration_test.py 的断言逻辑。
 
 只实现集成测试会走到的分支，行为按 Russia-Tetris 服务端源码的文本拼出来。
+
+密码部分刻意和真服务端保持一致：注册落盘写加盐哈希、登录按哈希校验，
+遇到旧版明文账号则"登录成功后就地迁移"（见 migrate_credential），
+否则集成测试里针对哈希/迁移的断言在 mock 上跑不通，就失去本地预检的意义。
 """
+import os
 import socket
 import sys
 import threading
+
+import credential
 
 PORT = int(sys.argv[1])
 USERDATA = sys.argv[2]
@@ -59,10 +66,35 @@ def write_csv(name, password):
                 fh.write("Username,Password,Easy_Score,Easy_Difficulty,Easy_Timestamp,"
                          "Normal_Score,Normal_Difficulty,Normal_Timestamp,"
                          "Difficult_Score,Difficult_Difficulty,Difficult_Timestamp,Recent_Scores\n")
-            fh.write("%s,%s,0,EASY,,0,NORMAL,,0,DIFFICULT,,\n" % (name, password))
+            fh.write("%s,%s,0,EASY,,0,NORMAL,,0,DIFFICULT,,\n"
+                     % (name, credential.hash_password(password)))
     except OSError as exc:
         print("csv error:", exc)
         sys.exit(1)
+
+
+def migrate_credential(name, password):
+    """模拟服务端"旧明文账号登录成功后迁移成加盐哈希"：只替换该行的第 2 个字段。"""
+    new_credential = credential.hash_password(password)
+    tmp = USERDATA + ".mock.tmp"
+    try:
+        with open(USERDATA, "r", encoding="utf-8") as src, \
+                open(tmp, "w", encoding="utf-8") as dst:
+            for line in src:
+                parts = line.split(",")
+                if (len(parts) >= 2 and parts[0] == name
+                        and not credential.is_hashed(parts[1])):
+                    parts[1] = new_credential
+                    dst.write(",".join(parts))
+                else:
+                    dst.write(line)
+        os.replace(tmp, USERDATA)
+    except OSError as exc:
+        print("migrate error:", exc)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 def serve(conn):
@@ -121,7 +153,11 @@ def serve(conn):
                     conn.sendall("\x1b[15;14H\x1b[37m请输入密码：".encode())
                     state = "login_pwd"
                 elif state == "login_pwd":
-                    if read_users().get(pending_user) == cmd:
+                    stored = read_users().get(pending_user)
+                    if stored is not None and credential.verify(cmd, stored):
+                        # 旧版明文账号：登录成功后迁移（与真服务端一致）
+                        if not credential.is_hashed(stored):
+                            migrate_credential(pending_user, cmd)
                         conn.sendall("登录中...\r\n".encode())
                         conn.sendall(LOAD_MENU.encode())
                         state = "load_menu"

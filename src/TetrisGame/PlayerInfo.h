@@ -16,6 +16,10 @@ public:
     static void addPlayer(shared_ptr<PlayerInfo> player);
     static void clearPlayers();
 
+    // 按用户名查（加锁，返回 shared_ptr 副本，调用方可以在锁外安全使用）。
+    // 不能用 getPlayers() 的引用：它返回后就解锁了，并发重载列表会悬空。
+    static std::shared_ptr<PlayerInfo> findPlayer(const std::string& playerName);
+
     // Getter and Setter functions for playername
     string getPlayerName() const;
     void setPlayerName(const string& playerName);

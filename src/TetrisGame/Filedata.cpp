@@ -1,4 +1,5 @@
 #include"Filedata.h"
+#include"PasswordHash.h"
 #include"../EventLoop/EventLoop.h"
 #include <sys/file.h>   // flock：多进程共享 userdata.csv 时的跨进程互斥
 
@@ -91,6 +92,12 @@ private:
 thread_local int DataFileLock::depth_ = 0;
 thread_local int DataFileLock::fd_ = -1;
 thread_local bool DataFileLock::locked_ = false;
+
+// loadPlayerData 会被两类线程同时调用：事件循环线程（注册/选难度前刷新）和
+// 异步文件线程（登录校验、loadPlayerDataAsync）。两边都会"清空 + 重新填充"
+// PlayerInfo::players，交错执行会重复或丢玩家，所以整段串行化。
+// 加锁顺序固定为"文件锁 -> 本锁"（loginAsync 先拿共享文件锁再进来），避免反向嵌套。
+std::mutex gLoadMutex;
 
 }  // namespace
 
@@ -197,7 +204,23 @@ void Filedata::removeFromCache(const std::string& username) {
 
 // 异步保存方法
 void Filedata::saveNewUserDataAsync(const shared_ptr<User>& user) {
-    auto task = [user]() {
+    // 在事件循环线程上先把值拷出来：任务真正执行时这条连接可能已经断开、
+    // User 对象已被放回连接池并复用（用户名/密码会被 resetUserInfo 清空）。
+    const string username = user->getUsername();
+    const string password = user->getPassword();
+
+    auto task = [username, password]() {
+        // 落盘只存加盐哈希，明文密码不进入 userdata.csv。
+        // 先算哈希再拿文件锁：PBKDF2 要几十毫秒，不该占着跨进程锁。
+        string credential;
+        try {
+            credential = PasswordHash::hash(password);
+        }
+        catch (const std::exception& e) {
+            logger->error("生成密码哈希失败，账号未保存: 用户={}, 错误={}", username, e.what());
+            return;
+        }
+
         // 跨进程独占锁：多个 worker 进程同时注册会互相覆盖
         DataFileLock fileLock(true);
 
@@ -216,7 +239,7 @@ void Filedata::saveNewUserDataAsync(const shared_ptr<User>& user) {
         }
 
         // 写入用户数据
-        file << user->getUsername() << "," << user->getPassword() << ","
+        file << username << "," << credential << ","
             << "0" << "," << "EASY" << "," << "" << ","
             << "0" << "," << "NORMAL" << "," << "" << ","
             << "0" << "," << "DIFFICULT" << "," << "" << ",\n";
@@ -226,8 +249,8 @@ void Filedata::saveNewUserDataAsync(const shared_ptr<User>& user) {
 
         // 添加到缓存
         auto player = std::make_shared<PlayerInfo>();
-        player->setPlayerName(user->getUsername());
-        player->setPassword(user->getPassword());
+        player->setPlayerName(username);
+        player->setPassword(credential);
         addToCache(player);
         };
 
@@ -254,12 +277,167 @@ void Filedata::update_TopScore_RecentScoreAsync(shared_ptr<User>& user) {
     queueCondition.notify_one();
 }
 
+// 把某一行的 Password 字段原地替换成新值。调用方必须已持有独占数据锁。
+bool Filedata::rewriteStoredCredential(const std::string& username, const std::string& credential) {
+    const string filename = kUserDataFile;
+    // 临时文件名带 pid：多进程各写各的临时文件，最后 rename 覆盖，
+    // 不会出现"两个进程共用 temp_file.csv 互相踩"的问题。
+    const string tempName = filename + ".tmp." + std::to_string(getpid());
+
+    ifstream in(filename);
+    if (!in.is_open()) {
+        logger->error("迁移密码失败：无法打开 {}", filename);
+        return false;
+    }
+
+    ofstream out(tempName, std::ios::trunc);
+    if (!out.is_open()) {
+        logger->error("迁移密码失败：无法创建临时文件 {}", tempName);
+        return false;
+    }
+
+    string line;
+    bool found = false;
+
+    // 表头原样保留
+    if (getline(in, line)) {
+        out << line << '\n';
+    }
+
+    while (getline(in, line)) {
+        // 只替换第 2 个字段，其余（成绩、时间戳、\r 等）原样不动
+        size_t firstComma = line.find(',');
+        size_t secondComma = (firstComma == string::npos)
+            ? string::npos : line.find(',', firstComma + 1);
+
+        if (firstComma != string::npos && secondComma != string::npos &&
+            line.compare(0, firstComma, username) == 0) {
+            out << line.substr(0, firstComma) << ','
+                << credential << ','
+                << line.substr(secondComma + 1) << '\n';
+            found = true;
+        }
+        else {
+            out << line << '\n';
+        }
+    }
+
+    out.flush();
+    const bool writeOk = out.good();
+    out.close();
+    in.close();
+
+    if (!writeOk) {
+        logger->error("迁移密码失败：写入临时文件出错 {}", tempName);
+        remove(tempName.c_str());
+        return false;
+    }
+    if (!found) {
+        logger->warn("迁移密码时没找到用户 {}，保留原文件", username);
+        remove(tempName.c_str());
+        return false;
+    }
+    if (rename(tempName.c_str(), filename.c_str()) != 0) {
+        logger->error("迁移密码失败：rename 出错: {}", strerror(errno));
+        remove(tempName.c_str());
+        return false;
+    }
+
+    forgetFileState();
+    return true;
+}
+
+void Filedata::updateCredentialInMemory(const std::string& username, const std::string& credential) {
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        auto it = playerCache.find(username);
+        if (it != playerCache.end() && it->second) {
+            it->second->setPassword(credential);
+        }
+    }
+
+    auto player = PlayerInfo::findPlayer(username);
+    if (player) {
+        player->setPassword(credential);
+    }
+}
+
+void Filedata::loginAsync(const std::string& username, const std::string& password,
+    std::function<void(bool success)> callback) {
+    // 参数全部按值捕获：任务在异步线程上跑，不能再去读 User（连接可能已断、对象已被复用）。
+    auto task = [username, password, callback]() {
+        auto report = [callback](bool ok) {
+            // 回到事件循环线程再动 User / socket（与其它异步回调保持同一约定）
+            EventLoop::post([callback, ok]() { callback(ok); });
+            };
+
+        try {
+            string stored;
+            {
+                // 共享锁：读一份最新的账号表（别的进程可能刚注册/迁移过）。
+                // 锁内只做内存查找，PBKDF2 放到锁外算，避免长时间占着文件锁。
+                DataFileLock fileLock(false);
+                if (!loadPlayerData()) {
+                    logger->error("登录校验失败：加载玩家数据失败");
+                    report(false);
+                    return;
+                }
+                auto player = PlayerInfo::findPlayer(username);
+                if (!player) {
+                    report(false);
+                    return;
+                }
+                stored = player->getPassword();
+            }
+
+            bool needsRehash = false;
+            if (!PasswordHash::verify(password, stored, &needsRehash)) {
+                report(false);
+                return;
+            }
+
+            if (needsRehash) {
+                // 旧版明文（或参数落后的哈希）：登录成功后原地迁移成当前格式。
+                // 迁移失败不影响本次登录 —— 用户已经证明知道密码。
+                try {
+                    const string upgraded = PasswordHash::hash(password);
+                    DataFileLock fileLock(true);
+                    if (rewriteStoredCredential(username, upgraded)) {
+                        updateCredentialInMemory(username, upgraded);
+                        logger->info("账号密码已迁移为加盐哈希: {}", username);
+                    }
+                    else {
+                        logger->warn("账号密码迁移失败，保留旧值: {}", username);
+                    }
+                }
+                catch (const std::exception& e) {
+                    logger->error("账号密码迁移异常: 用户={}, 错误={}", username, e.what());
+                }
+            }
+
+            report(true);
+        }
+        catch (const std::exception& e) {
+            logger->error("登录校验异常: 用户={}, 错误={}", username, e.what());
+            report(false);
+        }
+        };
+
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        writeQueue.push(task);
+    }
+    queueCondition.notify_one();
+}
+
 // 修改loadPlayerData使用缓存
 bool Filedata::loadPlayerData() {
-    PlayerInfo::clearPlayers();
-
     // 共享锁：避免读到别的进程正在写入的半行
     DataFileLock fileLock(false);
+    // 本进程内串行化"清空 + 填充"，否则两个线程交错会把玩家列表弄重复/弄丢
+    std::lock_guard<std::mutex> loadLock(gLoadMutex);
+
+    PlayerInfo::clearPlayers();
 
     // 先尝试从缓存加载。多进程共享同一个 userdata.csv，缓存必须与文件状态
     // 对得上才能用，否则会看不到别的进程刚注册的账号。

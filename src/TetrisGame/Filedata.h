@@ -35,6 +35,11 @@ private:
 	static std::shared_ptr<PlayerInfo> getFromCache(const std::string& username);
 	static void removeFromCache(const std::string& username);
 
+	// 把某一行的 Password 字段原地替换成新值（调用方必须已持有 DataFileLock 独占锁）
+	static bool rewriteStoredCredential(const std::string& username, const std::string& credential);
+	// 迁移后同步内存里的明文/旧哈希，避免本进程后续登录仍按旧值校验
+	static void updateCredentialInMemory(const std::string& username, const std::string& credential);
+
 public:
 	// 初始化异步写入系统
 	static bool initializeAsyncSystem();
@@ -57,6 +62,12 @@ public:
 	static void saveNewUserDataAsync(const shared_ptr<User>& user);
 	//更新用户最高分和最近20次分数
 	static void update_TopScore_RecentScoreAsync(shared_ptr<User>& user);
+
+	// 校验密码（异步，PBKDF2 有意较慢，不能占事件循环线程）。
+	// 校验通过且存储的是旧版明文/旧参数哈希时，顺手迁移成当前格式。
+	// callback 在事件循环线程上执行，参数为是否通过。
+	static void loginAsync(const std::string& username, const std::string& password,
+		std::function<void(bool success)> callback);
 
 	// 🔥 新增：异步读取方法（带callback）
 	static void readRecentGradesAsync(const shared_ptr<User>& user,std::function<void(bool success, vector<string> result)> callback);

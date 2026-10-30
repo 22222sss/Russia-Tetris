@@ -4,15 +4,23 @@
 
 ## 0. 当前状态（截至 2026-10-30）
 
-最近这一轮做完了三件事，`main` 干净、CI 全绿：
+**本轮做完了密码加盐哈希 + 迁移**（`main` 上，CI 全绿）：
 
-1. **质量工程**：新增协议级集成测试（6 项）+ 跨进程存储一致性测试（3 项），都接进了 CI；
-2. **修了 4 个真实 bug**（都是上面这些测试挖出来的，见第 5 节）：连接静默、僵尸映射、
-   发送部分写丢数据、异步回调跨线程改 `User`；
-3. **多核化做完并实测收口**：实现了多进程 worker，但实测**单机上测不出收益**，
-   默认仍是 1 worker（结论和成本模型见 4.3）。
+1. 新注册账号落盘即 **PBKDF2-HMAC-SHA256**（10 万次迭代 + 16 字节随机盐），
+   `userdata.csv` 的 Password 列不再出现明文；
+2. **旧明文账号登录即迁移**：登录成功后在 `flock` 临界区内重写该行（临时文件 +
+   rename），迁移失败不影响本次登录；同进程内的缓存/`PlayerInfo` 同步更新；
+3. 密码校验移到**异步线程**（单次约 50ms，放事件循环上会卡住所有连接），
+   新增 `STATUS_VERIFYING_PASSWORD` 状态与回调守卫；
+4. 测试补齐：`tests/password_hash_test.cpp`（Python hashlib 已知向量交叉验证，
+   CI 里单独一步）+ 集成测试新增"哈希落盘""旧明文登录即迁移（含盐随机性）"两项。
 
-**下一步建议**：密码加盐哈希 + 迁移（现在有完整回归网兜底，改起来安全）。
+**上一轮**（作为上下文）：质量工程（协议集成 + 跨进程测试）、修 4 个真实 bug
+（连接静默 / 僵尸映射 / 部分写丢数据 / 异步回调跨线程改 `User`）、多核化实测收口
+（单机测不出收益，默认仍 1 worker）。
+
+**下一步建议**：远程压测（`BENCH_REMOTE_CLIENTS`，要证多核收益必须多机）；
+或给登录加专用哈希线程池（见 7 节"遗留"）。
 
 **三个最有用的结论**（细节见后文）：
 
@@ -45,7 +53,7 @@
 ## 2. 构建与运行（WSL）
 
 ```bash
-sudo apt update && sudo apt install -y build-essential libevent-dev libspdlog-dev libfmt-dev telnet
+sudo apt update && sudo apt install -y build-essential libevent-dev libspdlog-dev libfmt-dev libssl-dev telnet
 cd ~/Russia-Tetris && git pull --ff-only
 cd src && make -j"$(nproc)"
 ./tetris_game          # 监听 0.0.0.0:9999
@@ -78,10 +86,12 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 
 | 文件 | 作用 |
 |---|---|
-| `tests/integration_test.py` | 协议级集成测试（仅标准库，6 项）：注册 → 登录 → 排行榜 → 选难度 → 进游戏 → 按键 → 游戏结束，外加二次登录、错误密码、快速重连 |
-| `tests/cross_process_test.py` | 跨进程存储一致性（3 项）：两个服务进程共享同一份 `userdata.csv`，验证 A 注册的账号能在 B 登录 |
-| `tests/mock_server.py` | 协议 mock，**只用于在没有真服务端的环境里验证上述测试脚本本身**，不是协议规范 |
-| `tests/play_test.py` | 游戏负载压测客户端：真实登录/开局/持续按键（只按左/右，不按下 → 不提前 GAME OVER） |
+| `tests/integration_test.py` | 协议级集成测试（仅标准库，8 项）：注册 → 登录 → 排行榜 → 选难度 → 进游戏 → 按键 → 游戏结束，外加二次登录、错误密码、**加盐哈希落盘**、**旧明文登录即迁移**、快速重连 |
+| `tests/password_hash_test.cpp` | 哈希层自检（CI 单独编译运行）：Python `hashlib` 已知向量交叉验证、随机盐、旧明文兼容、坏记录拒绝、单次耗时 |
+| `tests/credential.py` | 哈希格式的 Python 实现（与 `PasswordHash.cpp` 对齐），供 mock / 集成测试 / play_test 复用 |
+| `tests/cross_process_test.py` | 跨进程存储一致性（3 项）：两个服务进程共享同一份 `userdata.csv`，验证 A 注册的账号能在 B 登录（哈希校验跨进程同样生效） |
+| `tests/mock_server.py` | 协议 mock，**只用于在没有真服务端的环境里验证上述测试脚本本身**，不是协议规范；密码行为与真服务端一致（注册写哈希、登录校验、明文迁移） |
+| `tests/play_test.py` | 游戏负载压测客户端：真实登录/开局/持续按键（只按左/右，不按下 → 不提前 GAME OVER）；`--seed` 直接写哈希账号，避免压测时触发迁移 |
 | `tests/play_bench.sh` | 按 worker 列表跑游戏负载对比，每组回传一条注解 |
 | `tests/load_test.py` | 纯建连压测：`--host --port --pid --json --min-success --bind-ips`；失败按 timeout/refused/reset/fd 分类 |
 | `tests/bench.sh` | 一键连接压测：调 `ulimit`/sysctl、编译、起服务、采样、分片、合并报告 |
@@ -90,9 +100,10 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 
 CI 步骤（`build.yml`，每次 push `main` 都跑，顺序如下）：
 
-1. 编译 → 2. 协议集成测试（6 项）→ 3. 跨进程存储测试（3 项）→ 4. 双 worker 测试
-（先断言两个子进程都活着，再跑完整协议测试）→ 5. 200 连接冒烟 → 6. `bench.sh` 100 连接冒烟
-→ 7. `sizeof(User)` → 8. 头文件依赖跟踪自检（`touch User.h` + `make -n`）
+1. 编译 → 2. 密码哈希自检（`password_hash_test.cpp`，失败细节走注解）→ 3. 协议集成测试（8 项）
+→ 4. 跨进程存储测试（3 项）→ 5. 双 worker 测试（先断言两个子进程都活着，再跑完整协议测试）
+→ 6. 200 连接冒烟 → 7. `bench.sh` 100 连接冒烟 → 8. `sizeof(User)` → 9. 头文件依赖跟踪自检
+（`touch User.h` + `make -n`）。CI 的 apt 依赖里已加 `libssl-dev`。
 
 `bench.yml` 只在 push 到 `bench-run` 分支或手动触发时跑，**用完记得删分支**。
 
@@ -136,6 +147,8 @@ bash tests/play_bench.sh 200 20 0.02 "1 2 4" 10009         # 游戏负载：200 
 - **单机 4 核无法证明多核收益**：压测端与服务端抢同一批核心。要证必须多机压测（`BENCH_REMOTE_CLIENTS`）。
 - 附带观察：2/4 worker 时玩家就绪数略降（199 → 189/191），怀疑与共享 `userdata.csv` 时
   登录阶段的 `flock` 争用有关，**未进一步定位**。
+- ⚠️ 上表是**加盐哈希之前**测的。现在登录阶段每个玩家多一次 PBKDF2（异步线程串行，单次几十 ms），
+  游戏阶段的开销不变，但复测时登录准备时间/就绪数会受影响；`play_test.py --seed` 已改为直接写哈希账号。
 
 ## 5. 代码里改过的关键点
 
@@ -160,6 +173,32 @@ bash tests/play_bench.sh 200 20 0.02 "1 2 4" 10009         # 游戏负载：200 
   `flock` 另一个 fd 会把自己锁死）；整表写入仍是"临时文件 + rename"；锁文件 `userdata.csv.lock`；
 - 缓存改为按文件 `mtime`(含纳秒)/`size` 失效，否则别的进程注册的账号本进程看不到；
 - `load_test.py` 的 socket 补了 `SO_REUSEADDR`（见 6.10）。
+
+### 密码存储（本轮）
+
+- 新增 `TetrisGame/PasswordHash.{h,cpp}`：PBKDF2-HMAC-SHA256（OpenSSL `PKCS5_PBKDF2_HMAC`）
+  - 存储格式 `$pbkdf2-sha256$<iter>$<salt-hex>$<hash-hex>`，当前 `iter=100000`、盐 16 字节、
+    摘要 32 字节；用 hex 而不是 base64，因为 CSV 是裸切逗号的；
+  - 盐来自 `RAND_bytes`；比较用 `CRYPTO_memcmp`；
+  - `verify()` 对旧版明文兼容匹配并置 `needsRehash=true`；**前缀像哈希但解析失败时直接拒绝**，
+    绝不退回明文比较（否则改坏一行记录就能绕过校验）；
+- 注册（`saveNewUserDataAsync`）：在**每次调用时先拷贝用户名/密码**（原实现直接捕获 `shared_ptr<User>`，
+  异步线程执行时连接可能已断开、对象已被池复用并清空），再用哈希落盘、缓存也只存哈希；
+- 登录（`Filedata::loginAsync`）：
+  - 共享文件锁内 `loadPlayerData()` + 查库取存储值，**锁外**算 PBKDF2（不让慢哈希占着跨进程锁）；
+  - 校验通过且 `needsRehash` 时：独占锁内 `rewriteStoredCredential()`（只替换该行第 2 个字段，
+    临时文件带 pid、rename 覆盖、保留 `\r` 与其余字段），再同步更新缓存与 `PlayerInfo`；
+  - 校验、迁移都在**异步文件线程**执行，结果用 `EventLoop::post` 回到循环线程；
+- 状态机：新增 `STATUS_VERIFYING_PASSWORD`（枚举末尾，避免改动已有状态值）。密码送出后立即进入该状态，
+  回调先校验"状态没变"再渲染；期间客户端若继续发数据，`handleClientData` 会读走丢弃
+  （libevent 水平触发，不读会空转）；
+- `User::initUserInfo()` 改为**只按用户名**取成绩（原来还比密码，而磁盘上是哈希，永远比不中）；
+  登录已经认证过，没必要再算一次 PBKDF2；
+- `Filedata::loadPlayerData()` 增加 `gLoadMutex`，把"清空 + 填充 `PlayerInfo::players`"串行化：
+  它现在会被事件循环线程（注册/选难度）和异步线程（登录校验）同时调用，交错会重复/丢玩家；
+  加锁顺序固定为"文件锁 → gLoadMutex"；
+- 测试：`tests/credential.py` 与 C++ 实现对齐（mock 也用它模拟哈希/迁移，集成测试用它复算落盘哈希）；
+  `play_test.py --seed` 直接写哈希账号，否则压测时每个账号都会触发一次整文件重写。
 
 ### 其它
 
@@ -203,6 +242,12 @@ bash tests/play_bench.sh 200 20 0.02 "1 2 4" 10009         # 游戏负载：200 
     手动 `workflow_dispatch` 才会跑连接压测；
 12. **写文件路径别用相对路径跨 `cd`**：`play_bench.sh` 曾因此 0 秒失败——`mkdir` 在 `cd src/` 之前执行，
     之后往相对路径重定向时目录不存在，重定向本身失败，脚本立刻退出 1。
+13. **PBKDF2 单次约几十毫秒**（本机 10 万次迭代约 54ms，CI runner 有 SHA-NI 会快不少）。校验在**单个**异步
+    文件线程上串行执行，所以登录吞吐约 20 次/秒/进程；`play_test.py --seed` 造 200 个账号本身也要跑 200 次
+    PBKDF2（本地约 11 秒）。如果哪天登录阶段明显拖慢压测，优先怀疑这里，而不是游戏逻辑；
+14. **旧账号在首次登录前仍是明文**：这是有意设计的渐进迁移。若要做"启动即全量迁移"，注意每个账号一次
+    PBKDF2，几千账号就是几分钟启动时间，必须放进后台线程并限速。
+15. **`libssl-dev` 是新增构建依赖**：WSL/CI/README 都已加；老环境直接 `make` 会报 `openssl/evp.h: No such file`。
 
 ## 7. 仓库现状
 
@@ -211,7 +256,9 @@ bash tests/play_bench.sh 200 20 0.02 "1 2 4" 10009         # 游戏负载：200 
 - 远程另有 `Russia-Tetris_1.0` 分支（历史版本，未维护）；
 - 许可证：MIT（`LICENSE`）；
 - 遗留：
-  - `userdata.csv` **明文密码**（下一步就要做这个）；
+  - 登录校验与文件写共用**一个**异步线程：高并发登录时会排队（每进程约 20 次/秒）。需要更高吞吐
+    再加专用哈希线程池（PBKDF2 是纯 CPU、可并行，且 `PasswordHash` 无共享状态，改造点很集中）；
+  - 旧明文账号必须登录一次才会迁移（见 6.14）；
   - 远程压测（`BENCH_REMOTE_CLIENTS`）代码在但无文档、无实测；
   - 多 worker 时登录就绪数略降（疑 `flock` 争用），未定位；
   - `output()` 的 1 MB 慢客户端上限是拍脑袋定的，未针对极端场景验证过。
@@ -220,10 +267,10 @@ bash tests/play_bench.sh 200 20 0.02 "1 2 4" 10009         # 游戏负载：200 
 
 | 方向 | 内容 | 价值 |
 |---|---|---|
-| 密码安全 | `userdata.csv` 明文 → 加盐哈希 + 迁移 | 中：部署前提，**建议下一步** |
 | 远程压测 | 用 `BENCH_REMOTE_CLIENTS` 跑多机，目标 30 万；同时才能验证多核收益 | 中：需多台机器 |
+| 登录吞吐 | 专用哈希线程池（默认 1 线程；按需 N 线程），把单进程登录吞吐从 ~20/s 提上去 | 中：多人在线登录高峰才需要 |
 | 质量工程（续） | 已覆盖主链路；仍缺：成绩落盘后的排行榜断言（需要能稳定消行）、并发多连接交互 | 中 |
-| 多核化（续） | 能力已具备、单机测不出收益；若要继续，唯一有意义的动作是多机压测 | 低（除非有多机） |
+| 密码策略 | 最小长度/复杂度、改密/重置、登录失败限速（防在线爆破） | 低~中：看部署场景 |
 
 ## 9. 给新会话的起步提示
 
@@ -235,5 +282,5 @@ bash tests/play_bench.sh 200 20 0.02 "1 2 4" 10009         # 游戏负载：200 
 - 沙箱里跑不了 WSL 和 g++，C++ 改动只能 push 到 main 让 CI 验证；失败细节靠 ::notice::/::error:: 注解回传；
 - 但沙箱里有 Python：改测试脚本时先用 tests/mock_server.py 本地跑通，别浪费 CI 轮次；
 - 不要再做这些已完成的事：WSL 安装、README 数据清理、GIF 处理、死代码清理、
-  质量工程（集成/跨进程测试）、多核化（已实现且已有结论）。
+  质量工程（集成/跨进程测试）、多核化（已实现且已有结论）、密码加盐哈希 + 迁移（已实现）。
 ```

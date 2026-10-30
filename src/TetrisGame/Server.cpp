@@ -261,12 +261,6 @@ int Server::receive_username_load(shared_ptr<User>& user)
 
 int Server::receive_password_load(shared_ptr<User>& user)
 {
-
-    if (!Filedata::loadPlayerData())
-    {
-        return -1;
-    }
-
     string password = "";
 
     int temp = Server::ReceiveData(user);
@@ -289,6 +283,7 @@ int Server::receive_password_load(shared_ptr<User>& user)
             {
                 return -1;
             }
+            user->setReceivedata("");
         }
     }
 
@@ -296,20 +291,40 @@ int Server::receive_password_load(shared_ptr<User>& user)
     {
         user->setPassword(password);
 
-        for (const auto& player : PlayerInfo::getPlayers())
-        {
-            if (player->getPlayerName() == user->getUsername() && player->getPassword() == user->getPassword())
-            {
-                return 1;
-            }
-        }
+        // PBKDF2 是有意设计得慢的（当前约 50ms/次）。如果在事件循环线程上算，
+        // 一个登录就会卡住所有连接（包括正在游戏的玩家），所以交给异步线程。
+        user->setStatus(STATUS_VERIFYING_PASSWORD);
 
-        if (!UImanage::show_Login_Failure(user))
-        {
-            return -1;
-        }
-        
-        return 0;
+        Filedata::loginAsync(user->getUsername(), password,
+            [user](bool success)
+            {
+                // 校验期间连接可能已断开（甚至 fd 已被回收复用），
+                // 状态一变就不能再往"这条连接"上渲染。与其它异步回调同一约定。
+                if (user->getStatus() != STATUS_VERIFYING_PASSWORD)
+                {
+                    logger->warn("密码校验完成时状态已变化（{}），丢弃本次结果",
+                                 static_cast<int>(user->getStatus()));
+                    return;
+                }
+
+                if (!success)
+                {
+                    UImanage::show_Login_Failure(user);
+                    user->setStatus(STATUS_REGISTER_OR_LOAD_OVER);
+                    user->setReceivedata("");
+                    logger->info("用户登录失败: {}", user->getUsername());
+                    return;
+                }
+
+                // loginAsync 已经重新加载过账号表（校验就是用最新的那份），
+                // 这里直接进主菜单；选难度时还会再刷新一次成绩数据。
+                UImanage::showLoadMenu(user);
+                user->setStatus(STATUS_LOGIN);
+                user->setReceivedata("");
+                logger->info("用户登录成功: {}", user->getUsername());
+            });
+
+        return 1;
     }
 
     return 2;
@@ -469,8 +484,6 @@ bool Server::process_STATUS_RECEIVE_USERNAME_LOAD(shared_ptr<User>& user)
 
 bool Server::process_STATUS_RECEIVE_PASSWORD_LOAD(shared_ptr<User>& user)
 {
-    //std::unique_ptr<UImanage> UI(new UImanage);
-
     int key = Server::receive_password_load(user);
 
     if (key == -1)
@@ -479,47 +492,9 @@ bool Server::process_STATUS_RECEIVE_PASSWORD_LOAD(shared_ptr<User>& user)
     }
     else if (key == 1)
     {
-        // 显示"登录中..."提示
+        // 密码校验已交给异步线程；这里只给用户一个即时提示，
+        // 主菜单/登录失败由 loginAsync 的回调负责渲染（见 receive_password_load）。
         outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3),COLOR_WHITE, "登录中...");
-
-        // 🔥 异步加载玩家数据，加载完成后显示菜单
-        Filedata::loadPlayerDataAsync(
-            [user](bool success) 
-            {
-                // 回调现在跑在事件循环线程上，但异步加载期间连接可能已经断开
-                // （甚至 fd 被回收复用给新连接），那时不能再往"这条连接"上渲染。
-                if (user->getStatus() != STATUS_RECEIVE_PASSWORD_LOAD)
-                {
-                    logger->warn("登录数据加载完成时状态已变化（{}），丢弃本次渲染",
-                                 static_cast<int>(user->getStatus()));
-                    return;
-                }
-
-                if (success) 
-                {
-                    // 加载成功，显示主菜单
-                    UImanage::showLoadMenu(user);
-                    user->setStatus(STATUS_LOGIN);
-                    user->setReceivedata("");
-
-                    logger->info("用户登录成功: {}", user->getUsername());
-                }
-                else 
-                {
-                    // 加载失败，显示错误
-                    UImanage::show_Login_Failure(user);
-                    user->setStatus(STATUS_REGISTER_OR_LOAD_OVER);
-                    user->setReceivedata("");
-
-                    logger->error("用户登录数据加载失败: {}", user->getUsername());
-                }
-            }
-        );
-    }
-    else if (key == 0)
-    {
-        user->setStatus(STATUS_REGISTER_OR_LOAD_OVER);
-        user->setReceivedata("");
     }
     return true;
 }
@@ -693,6 +668,17 @@ void Server::handleClientData(int clientSocket, short events, void* arg)
             return;
         }
 
+    }
+    else if (user->getStatus() == STATUS_VERIFYING_PASSWORD)
+    {
+        // 异步校验期间客户端若又发了数据，读走丢弃：
+        // libevent 默认水平触发，不读会让这条连接被反复唤醒空转。
+        int temp = Server::ReceiveData(user);
+        if (temp == -1)
+        {
+            return;
+        }
+        user->setReceivedata("");
     }
     else if (user->getStatus() == STATUS_LOGIN)
     {
