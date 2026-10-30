@@ -123,6 +123,12 @@ else
   echo "无 sudo 权限，跳过内核参数调整（可能影响大连接数结果）" | tee -a "$OUT/env.txt"
 fi
 
+# 记录实际生效值：判断大连接数的成败必须知道这些到底改没改上
+echo "somaxconn  : $(cat /proc/sys/net/core/somaxconn 2>/dev/null)" | tee -a "$OUT/env.txt"
+echo "syn_backlog: $(cat /proc/sys/net/ipv4/tcp_max_syn_backlog 2>/dev/null)" | tee -a "$OUT/env.txt"
+echo "port_range : $(cat /proc/sys/net/ipv4/ip_local_port_range 2>/dev/null | tr '\t' '-')" | tee -a "$OUT/env.txt"
+echo "tw_reuse   : $(cat /proc/sys/net/ipv4/tcp_tw_reuse 2>/dev/null)" | tee -a "$OUT/env.txt"
+
 log "构建"
 if ! make -C "$SRC" -j"$(nproc)" > "$OUT/build.log" 2>&1; then
   echo "构建失败，最后 40 行日志："

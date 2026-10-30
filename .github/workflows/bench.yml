@@ -79,7 +79,7 @@ jobs:
             w=${w:-?}
             if [ -f "${d}summary.md" ] && grep -q "成功建立" "${d}summary.md"; then
               summary=""
-              for k in "成功建立" "失败" "总耗时" "建立速率" "服务端内存" "服务端 fd" "服务端 CPU"; do
+              for k in "成功建立" "失败" "失败原因" "收到欢迎数据" "总耗时" "建立速率" "服务端内存" "服务端 fd" "服务端 CPU"; do
                 line=$(grep -m1 -- "| $k" "${d}summary.md" || true)
                 if [ -n "$line" ]; then
                   summary="${summary}$(echo "$line" | sed 's/^| *//; s/ *|$//') ; "
