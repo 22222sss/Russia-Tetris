@@ -135,7 +135,8 @@ jobs:
           fi
           exit "$RC"
 
-      - name: Multi-worker test (2 workers, SO_REUSEPORT)        working-directory: src
+      - name: Multi-worker test (2 workers, SO_REUSEPORT)
+        working-directory: src
         run: |
           set +e
           rm -f userdata.csv userdata.csv.lock log*.txt
