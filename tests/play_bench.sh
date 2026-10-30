@@ -18,7 +18,8 @@ PORT=${5:-10009}
 
 TESTS="$(cd "$(dirname "$0")" && pwd)"
 SRC="$(cd "$TESTS/../src" && pwd)"
-OUT="play-results/$(date +%Y%m%d-%H%M%S)"
+# 结果目录必须用绝对路径：后面会 cd 进 src/，相对路径会指到别处去
+OUT="$(pwd)/play-results/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
 
 cd "$SRC" || exit 1
