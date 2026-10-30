@@ -11,6 +11,9 @@
 #   * BENCH_HOST 是远程客户端要连接的服务端地址；不填则自动探测本机第一个 IP
 #   * 第 1~N 个分片交给 BENCH_REMOTE_CLIENTS 里的机器，剩余分片在本机跑
 #   * 远程机器只需要 python3，脚本会通过 ssh 自动上传到 /tmp/russia-bench
+#   * 远程客户端默认绑定"到服务端路由会用的源 IP"；单机超过 6.4 万连接时，
+#     先给网卡加多个 IP，再用 BENCH_REMOTE_BIND_IPS="ip1,ip2;ip3" 按主机顺序覆盖
+#     （分号分隔每台机器，逗号分隔该机器的多个源 IP）
 #
 # 说明:
 #   * 会尝试把 ulimit -n 提到 40 万，并在有 root/sudo 时调整内核参数
@@ -56,6 +59,13 @@ if [ -n "$REMOTE_CLIENTS" ]; then
 fi
 REMOTE_COUNT=${#REMOTE_HOSTS[@]}
 
+# 每台远程客户端用于 bind 的源 IP（可被 BENCH_REMOTE_BIND_IPS 覆盖）
+REMOTE_BIND=()
+BIND_OVERRIDES=()
+if [ -n "${BENCH_REMOTE_BIND_IPS:-}" ]; then
+  IFS=';' read -r -a BIND_OVERRIDES <<< "$BENCH_REMOTE_BIND_IPS"
+fi
+
 if [ "$REMOTE_COUNT" -gt 0 ] && [ -z "$HOST" ]; then
   HOST=$(hostname -I 2>/dev/null | awk '{print $1}')
   if [ -z "$HOST" ]; then
@@ -87,6 +97,7 @@ log "环境信息"
 
 log "准备远程客户端"
 if [ "$REMOTE_COUNT" -gt 0 ]; then
+  remote_idx=0
   for h in "${REMOTE_HOSTS[@]}"; do
     if ! ssh "${SSH_OPTS[@]}" "$h" "mkdir -p $REMOTE_DIR && python3 --version" >/dev/null 2>&1; then
       echo "无法通过 ssh 连接 $h（需要免密登录且远端有 python3）"
@@ -96,7 +107,29 @@ if [ "$REMOTE_COUNT" -gt 0 ]; then
       echo "上传压测脚本到 $h 失败"
       exit 1
     fi
-    echo "已准备远程客户端: $h" | tee -a "$OUT/env.txt"
+
+    # 源 IP：默认取"到服务端路由会用的源地址"；远程没有 ip 命令时退回 hostname -I
+    bind_ip=""
+    if [ "$remote_idx" -lt "${#BIND_OVERRIDES[@]}" ] && [ -n "${BIND_OVERRIDES[$remote_idx]}" ]; then
+      bind_ip=${BIND_OVERRIDES[$remote_idx]}
+    else
+      bind_ip=$(ssh "${SSH_OPTS[@]}" "$h" \
+        "ip -4 route get $HOST 2>/dev/null | awk '{for(i=1;i<=NF;i++) if (\$i==\"src\") {print \$(i+1); exit}}'" \
+        2>/dev/null | tr -d '[:space:]' || true)
+      if [ -z "$bind_ip" ]; then
+        bind_ip=$(ssh "${SSH_OPTS[@]}" "$h" \
+          "hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9.]+\$' | head -n1" \
+          2>/dev/null | tr -d '[:space:]' || true)
+      fi
+    fi
+    if [ -z "$bind_ip" ]; then
+      echo "无法探测 $h 的源 IP；可用 BENCH_REMOTE_BIND_IPS 显式指定"
+      exit 1
+    fi
+    REMOTE_BIND[remote_idx]="$bind_ip"
+
+    echo "已准备远程客户端: $h（源 IP: $bind_ip）" | tee -a "$OUT/env.txt"
+    remote_idx=$((remote_idx + 1))
   done
 else
   echo "未配置 BENCH_REMOTE_CLIENTS，使用本机压测" | tee -a "$OUT/env.txt"
@@ -200,7 +233,7 @@ for i in $(seq 0 $((CLIENTS - 1))); do
   if [ "$i" -lt "$REMOTE_COUNT" ]; then
     h=${REMOTE_HOSTS[$i]}
     ssh "${SSH_OPTS[@]}" "$h" \
-      "bash -c 'ulimit -n 400000 2>/dev/null; python3 $REMOTE_DIR/load_test.py $T $CONC $READ_CHECK $HOLD --host $HOST --bind-ips 127.0.0.1 --json $REMOTE_DIR/result-$i.json'" \
+      "bash -c 'ulimit -n 400000 2>/dev/null; python3 $REMOTE_DIR/load_test.py $T $CONC $READ_CHECK $HOLD --host $HOST --bind-ips ${REMOTE_BIND[$i]} --json $REMOTE_DIR/result-$i.json'" \
       > "$OUT/remote-$i.log" 2>&1 &
     PIDS+=("$!")
   else

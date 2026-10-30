@@ -24,10 +24,14 @@ src/check_system.sh
 *.swp
 *.swo
 
+# 临时提交信息
+.commit*.txt
+
 # 压测结果
 bench-results/
 play-results/
 login-results/
+play-remote-results/
 
 # Python 缓存
 __pycache__/

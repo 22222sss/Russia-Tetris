@@ -30,6 +30,22 @@ jobs:
           make -j"$(nproc)"
           file tetris_game
 
+      - name: Test scripts syntax
+        run: |
+          # 压测脚本不在 CI 里真跑（远程压测要独立机器），但语法错误在这里拦住
+          set +e
+          if ! python3 -m py_compile tests/*.py 2> /tmp/pyc_all.txt; then
+            echo "::error::测试脚本语法错误: $(tr '\n' '|' < /tmp/pyc_all.txt | cut -c1-1200)"
+            exit 1
+          fi
+          for s in tests/*.sh; do
+            if ! bash -n "$s" 2> /tmp/sh_err.txt; then
+              echo "::error::shell 语法错误 $s: $(tr '\n' '|' < /tmp/sh_err.txt | cut -c1-800)"
+              exit 1
+            fi
+          done
+          echo "::notice::测试脚本语法检查通过：$(ls tests/*.py tests/*.sh | wc -l) 个"
+
       - name: Password hash self-test
         working-directory: src
         run: |

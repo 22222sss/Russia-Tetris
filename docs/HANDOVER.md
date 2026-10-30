@@ -98,6 +98,8 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 | `tests/mock_server.py` | 协议 mock，**只用于在没有真服务端的环境里验证上述测试脚本本身**，不是协议规范；密码行为与真服务端一致（注册写哈希、登录校验、明文迁移） |
 | `tests/play_test.py` | 游戏负载压测客户端：真实登录/开局/持续按键（只按左/右，不按下 → 不提前 GAME OVER）；`--seed` 直接写哈希账号，避免压测时触发迁移 |
 | `tests/play_bench.sh` | 按 worker 列表跑游戏负载对比，每组回传一条注解 |
+| `tests/play_remote.sh` | **远程**游戏负载：SSH 到独立服务端，按 1/2/4 worker 正反序各跑一轮，取回采样并汇总（解决同机抢核） |
+| `tests/summarize_play.py` | 汇总远程结果：只取游戏窗口的 CPU、就绪数、按键/下行、RSS/fd/进程数，写 `summary.md` |
 | `tests/login_bench.py` | 登录吞吐基准：N 个连接并发真实登录（只走到主菜单），统计就绪数、总耗时、登录/秒、延迟 p50/p95/max；`--seed` 直接造哈希账号 |
 | `tests/login_bench.sh` | 造账号 → 起服务端（可给 workers 列表）→ 多轮登录基准，每轮回传 `::notice::`；CI 用它记录登录吞吐 |
 | `tests/load_test.py` | 纯建连压测：`--host --port --pid --json --min-success --bind-ips`；失败按 timeout/refused/reset/fd 分类 |
@@ -107,10 +109,11 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 
 CI 步骤（`build.yml`，每次 push `main` 都跑，顺序如下）：
 
-1. 编译 → 2. 密码哈希自检（`password_hash_test.cpp`，失败细节走注解）→ 3. 协议集成测试（8 项）
-→ 4. 跨进程存储测试（3 项）→ 5. 双 worker 测试（先断言两个子进程都活着，再跑完整协议测试）
-→ 6. 登录吞吐基准（1/2 worker 各 2 轮，只回传 `::notice::`，不做时间断言）
-→ 7. 200 连接冒烟 → 8. `bench.sh` 100 连接冒烟 → 9. `sizeof(User)` → 10. 头文件依赖跟踪自检
+1. 编译 → 2. 测试脚本语法（`tests/*.py` py_compile + `tests/*.sh` `bash -n`）
+→ 3. 密码哈希自检（`password_hash_test.cpp`，失败细节走注解）→ 4. 协议集成测试（8 项）
+→ 5. 跨进程存储测试（3 项）→ 6. 双 worker 测试（先断言两个子进程都活着，再跑完整协议测试）
+→ 7. 登录吞吐基准（1/2 worker 各 2 轮，只回传 `::notice::`，不做时间断言）
+→ 8. 200 连接冒烟 → 9. `bench.sh` 100 连接冒烟 → 10. `sizeof(User)` → 11. 头文件依赖跟踪自检
 （`touch User.h` + `make -n`）。CI 的 apt 依赖里已加 `libssl-dev`。
 
 `bench.yml` 只在 push 到 `bench-run` 分支或手动触发时跑，**用完记得删分支**。
@@ -119,6 +122,8 @@ CI 步骤（`build.yml`，每次 push `main` 都跑，顺序如下）：
 bash tests/bench.sh 100000 5000 30 1 2                     # 10 万 / 双客户端
 BENCH_WORKERS=2 bash tests/bench.sh 100000 5000 30 1 2     # 2 个 worker
 bash tests/play_bench.sh 200 20 0.02 "1 2 4" 10009         # 游戏负载：200 玩家 × 50 次/秒
+bash tests/play_remote.sh --ssh root@VPS_IP --host VPS_IP \
+    --players 800 --workers "1 2 4" --rounds 2             # 远程/多核：见 docs/REMOTE_BENCH.md
 ```
 
 口径说明：`服务端 CPU` 是"占满一个核 = 100%"，所以 4 核跑满约 400%。
@@ -282,6 +287,10 @@ bash tests/play_bench.sh 200 20 0.02 "1 2 4" 10009         # 游戏负载：200 
 14. **旧账号在首次登录前仍是明文**：这是有意设计的渐进迁移。若要做"启动即全量迁移"，注意每个账号一次
     PBKDF2，几千账号就是几分钟启动时间，必须放进后台线程并限速。
 15. **`libssl-dev` 是新增构建依赖**：WSL/CI/README 都已加；老环境直接 `make` 会报 `openssl/evp.h: No such file`。
+16. **远程压测必须"服务端和压测端不在同一台机器"**：同机（包括 WSL 与 Windows 宿主）永远测不出多 worker 收益。
+    现成入口是 `tests/play_remote.sh` + [REMOTE_BENCH.md](REMOTE_BENCH.md)（一台按量云主机即可，几元~几十元/次）。
+    另外 WSL2 默认 NAT，局域网里的其它机器**访问不到** WSL 内的 9999：要么 Windows 11 的 mirrored networking，
+    要么 `netsh interface portproxy` + 防火墙放行。
 
 ## 7. 仓库现状
 
@@ -293,7 +302,8 @@ bash tests/play_bench.sh 200 20 0.02 "1 2 4" 10009         # 游戏负载：200 
   - 登录吞吐默认 2 哈希线程；更高并发需要调 `TETRIS_HASH_THREADS`（注意多 worker 时线程数按进程相乘），
     没有做"自动按核数伸缩"；
   - 旧明文账号必须登录一次才会迁移（见 6.14）；
-  - 远程压测（`BENCH_REMOTE_CLIENTS`）代码在但无文档、无实测；
+  - 远程压测脚本与手册已就绪（`play_remote.sh` / `REMOTE_BENCH.md`），尚未在真实云主机上跑过；
+  - 连接数多机压测（`BENCH_REMOTE_CLIENTS`）修了源 IP 绑定，但 >6.4 万/台仍需加网卡 alias，未实测；
   - 多 worker 时登录就绪数略降（疑 `flock` 争用），未定位；
   - `output()` 的 1 MB 慢客户端上限是拍脑袋定的，未针对极端场景验证过。
 
@@ -301,7 +311,7 @@ bash tests/play_bench.sh 200 20 0.02 "1 2 4" 10009         # 游戏负载：200 
 
 | 方向 | 内容 | 价值 |
 |---|---|---|
-| 远程压测 | 用 `BENCH_REMOTE_CLIENTS` 跑多机，目标 30 万；同时才能验证多核收益 | 中：需多台机器 |
+| 远程压测 | 已具备 `play_remote.sh` + [REMOTE_BENCH.md](REMOTE_BENCH.md)：一台按量云主机（几元~几十元/次）+ 家里客户端，800~1600 玩家验证 1/2/4 worker；连接数多机压测仍需多台客户端 + 多 IP | 中：要证多核收益 |
 | 登录吞吐（收尾） | 若部署环境登录更密集，压 `TETRIS_HASH_THREADS` × `TETRIS_WORKERS` 的组合找最优点 | 低：当前 108 次/秒已够用 |
 | 质量工程（续） | 已覆盖主链路；仍缺：成绩落盘后的排行榜断言（需要能稳定消行）、并发多连接交互 | 中 |
 | 密码策略 | 最小长度/复杂度、改密/重置、登录失败限速（防在线爆破） | 低~中：看部署场景 |
