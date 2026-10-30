@@ -6,6 +6,7 @@ src/tetris_game
 
 # 运行时日志
 src/log.txt
+src/log.*.txt
 
 # 用户数据（含明文密码，不入库）
 userdata.csv

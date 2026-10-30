@@ -12,12 +12,12 @@ std::atomic<long> ConnectionPool::create_count(0);
 std::atomic<long> ConnectionPool::peak_usage(0);
 std::atomic<long> ConnectionPool::allocation_failures(0);
 
-void ConnectionPool::initialize() {
+void ConnectionPool::initialize(size_t initial_size) {
     std::lock_guard<std::mutex> lock(pool_mutex);  // 线程安全
 
-    logger->info("🔄 初始化连接池，预创建 {} 个User对象...", INITIAL_POOL_SIZE);
+    logger->info("🔄 初始化连接池，预创建 {} 个User对象...", initial_size);
 
-    for (size_t i = 0; i < INITIAL_POOL_SIZE; ++i) {
+    for (size_t i = 0; i < initial_size; ++i) {
         // 创建User对象，fd设为-1表示"未分配状态"
         auto user = std::shared_ptr<User>(new User(-1));
         pool.push(user);

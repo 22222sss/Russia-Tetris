@@ -28,6 +28,11 @@
 sudo apt update && sudo apt install -y build-essential libevent-dev libspdlog-dev libfmt-dev telnet
 cd ~/Russia-Tetris/src && make -j"$(nproc)"
 ./tetris_game          # 监听 0.0.0.0:9999
+
+# 可调项（都是环境变量）：
+TETRIS_PORT=8888 ./tetris_game            # 换端口
+TETRIS_WORKERS=4 ./tetris_game            # 多进程：4 个 worker 抢同一端口（SO_REUSEPORT）
+TETRIS_LOG_LEVEL=debug ./tetris_game      # 打开 debug 日志（会逐条 flush）
 ```
 
 客户端（Windows cmd）：
@@ -87,6 +92,7 @@ bash tests/bench.sh 200000 10000 30 1 4     # 20 万 / 四客户端
 - `User::addUser` 改用 `insert_or_assign`：原 `emplace` 在 fd 复用窗口（死连接尚未被 100ms 清理）会插入失败且返回值被忽略，留下僵尸映射；
 - 新增 `TETRIS_LOG_LEVEL` 环境变量（默认 `warn`）按需打开 debug 日志；
 - 新增 `TETRIS_PORT` 环境变量覆盖监听端口（默认 9999），方便同机跑多实例与跨进程测试；
+- **多进程 worker**：`TETRIS_WORKERS=N`（默认 1）。N>1 时父进程只负责 fork / 转发信号 / 回收；每个 worker 各自建 logger（`log.<pid>.txt`）、连接池（预创建数按 N 均分）、事件循环，并用 `SO_REUSEPORT` 独立 bind 同一端口，内核按连接做负载均衡。worker 之间不共享内存，共享状态只有 `userdata.csv`（flock 保护）。因为每个 worker 仍是单线程，`User` 那套无锁假设**不需要改**；
 - **存储层做成多进程安全**（多核化的前置）：`userdata.csv` 的读-改-写放进 `flock` 临界区（跨进程互斥、同线程可重入），写整表时仍是"临时文件 + rename"；缓存改为按文件 `mtime`/`size` 失效，否则别的进程注册的账号在本进程看不到。锁文件是 `userdata.csv.lock`；
 - **修复发送路径丢字节**：`output()` 原来只判断 `send` 返回 -1/0，"部分写"和 EAGAIN 都被当成成功，高负载或慢客户端下会静默丢数据。现在每个 `User` 带发送缓冲（`sendbuf` + `sendmutex` + `pendingoutput`），`flushUserOutput()` 写多少算多少，剩下的由 100ms 定时器（`EventLoop::unregister_Event_User`）补发；缓冲超过 1 MB 视为死连接并关闭；
 - `showRecentScores` 现在能识别 `Read_recent_grades` 的哨兵值 `"1"`（否则新账号点"我最近的成绩"会看到一个孤零零的 `1`）；
@@ -120,7 +126,7 @@ bash tests/bench.sh 200000 10000 30 1 4     # 20 万 / 四客户端
 |---|---|---|
 | 质量工程 | ✅ 已覆盖：注册/登录/排行榜（最近成绩、全服 top）/选难度/进游戏/按键/游戏结束/错误密码/快速重连，并接入 CI | 已建立回归保护 |
 | 密码安全 | `userdata.csv` 明文 → 加盐哈希 + 迁移 | 中：部署前提 |
-| 服务端多核化 | 前置已完成：存储层多进程安全（flock + 缓存失效）。下一步：`main()` fork N 个 worker + `SO_REUSEPORT` 绑同端口，每个 worker 独立 event loop（现有单线程代码不用改） | 高：README 里点名的瓶颈 |
+| 服务端多核化 | ✅ 已实现多进程 worker（`TETRIS_WORKERS=N` + `SO_REUSEPORT`，存储层 flock 保护）。**待办**：用 `bench.yml` 实测 1/2/4 worker 的扩展性并补进 README | 高：README 里点名的瓶颈 |
 | 远程压测 | 用 `BENCH_REMOTE_CLIENTS` 跑多机，目标 30 万 | 中：需多台机器 |
 
 ## 9. 给新会话的起步提示

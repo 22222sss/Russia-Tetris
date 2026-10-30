@@ -112,6 +112,48 @@ jobs:
           fi
           exit "$RC"
 
+      - name: Multi-worker test (2 workers, SO_REUSEPORT)
+        working-directory: src
+        run: |
+          set +e
+          rm -f userdata.csv userdata.csv.lock log*.txt
+
+          TETRIS_WORKERS=2 TETRIS_PORT=10003 ./tetris_game > /tmp/mw.log 2>&1 &
+          echo $! > /tmp/mw.pid
+
+          for i in $(seq 1 120); do
+            if (exec 3<>/dev/tcp/127.0.0.1/10003) 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          sleep 2
+
+          # 两个 worker 都必须活着：若 SO_REUSEPORT 失效，第二个会 bind 失败退出，
+          # 而第一个仍能服务，光跑集成测试是发现不了的。
+          alive=$(pgrep -P "$(cat /tmp/mw.pid)" | wc -l)
+          if [ "$alive" -ne 2 ]; then
+            echo "::error::多 worker 启动失败：存活 worker = $alive（期望 2）"
+            echo "---- mw.log (tail) ----"
+            tail -30 /tmp/mw.log
+            kill "$(cat /tmp/mw.pid)" 2>/dev/null
+            exit 1
+          fi
+
+          # 连接会被内核随机分到某个 worker，所以这个测试同时验证了跨 worker 的数据一致性
+          python3 ../tests/integration_test.py --port 10003
+          RC=$?
+
+          kill "$(cat /tmp/mw.pid)" 2>/dev/null
+          wait "$(cat /tmp/mw.pid)" 2>/dev/null
+          sleep 1
+
+          if [ "$RC" -ne 0 ]; then
+            detail=$(grep -ahE 'Error|error|warn' log.*.txt 2>/dev/null | tail -20 | tr '\n' '|' | cut -c1-1200)
+            echo "::error::多 worker 集成测试失败，worker 日志: $detail"
+          fi
+          exit "$RC"
+
       - name: Smoke test (200 connections)
         working-directory: src
         run: |

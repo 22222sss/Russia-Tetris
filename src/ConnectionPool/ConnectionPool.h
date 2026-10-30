@@ -14,7 +14,6 @@ private:
 
     // 配置参数 - 增加到支持10万连接
     static const constexpr size_t MAX_POOL_SIZE = 100000;          // 最大池大小
-    static const constexpr size_t INITIAL_POOL_SIZE = 50000;       // 初始预创建数量
 
     //INITIAL_POOL_SIZE 和 MAX_POOL_SIZE 是静态常量成员，需要在源文件中定义
     //将静态常量成员改为 constexpr 或 inline才能直接定义
@@ -28,8 +27,12 @@ private:
     ~ConnectionPool() = delete;
 
 public:
+    // 单进程默认预创建数量。多 worker 部署时由 main 按 worker 数均分后传入
+    // initialize()，否则 N 个进程会各自预创建这么多，内存直接乘 N。
+    static const constexpr size_t INITIAL_POOL_SIZE = 50000;
+
     // 初始化连接池 - 预创建对象
-    static void initialize();
+    static void initialize(size_t initial_size = INITIAL_POOL_SIZE);
 
     // 从池中获取一个User对象
     static std::shared_ptr<User> acquire(int fd);
