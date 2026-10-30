@@ -66,6 +66,7 @@ cd src && make -j"$(nproc)"
 | `TETRIS_PORT` | 9999 | 换监听端口（同机跑多实例、跨进程测试用） |
 | `TETRIS_WORKERS` | 1 | 多进程 worker 数；>1 时用 `SO_REUSEPORT` 抢同一端口 |
 | `TETRIS_REUSEPORT` | 跟随 worker 数 | 强制开/关 `SO_REUSEPORT`（做对照实验用） |
+| `TETRIS_HASH_THREADS` | 2 | 密码校验（PBKDF2）线程数；`0`/`1` 关闭线程池、退回文件线程串行（对照实验用） |
 | `TETRIS_LOG_LEVEL` | warn | `debug`/`info`；非默认级别会逐条 flush |
 
 注意：改了**头文件**之后 `make` 现在会自动重编依赖它的源文件（`-MMD -MP`）。

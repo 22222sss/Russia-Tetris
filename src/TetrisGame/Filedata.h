@@ -27,8 +27,25 @@ private:
 	static std::atomic<long> cacheHits;                     // 命中统计
 	static std::atomic<long> cacheMisses;                   // 未命中统计
 
+	// 密码校验线程池：PBKDF2 是纯 CPU 计算，可以并行；默认 2 线程。
+	// TETRIS_HASH_THREADS=0/1 可关掉（校验退回文件线程串行执行，用于对照实验）。
+	// 线程只能在 fork 之后创建（initializeAsyncSystem 里），否则 worker 进程里没有这些线程。
+	static std::vector<std::thread> hashThreads;
+	static std::queue<std::function<void()>> hashQueue;
+	static std::mutex hashMutex;
+	static std::condition_variable hashCond;
+	static std::atomic<bool> hashStop;
+	static std::atomic<bool> hashPoolReady;
+
 	// 异步写入线程函数
 	static void asyncWriteWorker();
+
+	static int hashThreadCount();
+	static void ensureHashPool();
+	static void stopHashPool();
+	static void hashWorker();
+	// 有池就投递到池，没有就同步执行（同一份任务代码）
+	static void runHashTask(std::function<void()> task);
 
 	// 缓存管理
 	static void addToCache(const std::shared_ptr<PlayerInfo>& player);

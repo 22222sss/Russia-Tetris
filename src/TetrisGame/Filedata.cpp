@@ -113,6 +113,107 @@ std::mutex Filedata::cacheMutex;
 std::atomic<long> Filedata::cacheHits(0);
 std::atomic<long> Filedata::cacheMisses(0);
 
+std::vector<std::thread> Filedata::hashThreads;
+std::queue<std::function<void()>> Filedata::hashQueue;
+std::mutex Filedata::hashMutex;
+std::condition_variable Filedata::hashCond;
+std::atomic<bool> Filedata::hashStop(false);
+std::atomic<bool> Filedata::hashPoolReady(false);
+
+// 密码校验线程数：默认 2。0/1 表示不开池（校验退回文件线程）。
+int Filedata::hashThreadCount() {
+    static const int kDefault = 2;
+    const char* raw = std::getenv("TETRIS_HASH_THREADS");
+    if (!raw || !*raw) {
+        return kDefault;
+    }
+    int value = std::atoi(raw);
+    if (value < 0 || value > 32) {
+        logger->warn("TETRIS_HASH_THREADS={} 不合法（0~32），改用默认值 {}", raw, kDefault);
+        return kDefault;
+    }
+    return value;
+}
+
+void Filedata::hashWorker() {
+    while (true) {
+        std::function<void()> task;
+        {
+            std::unique_lock<std::mutex> lock(hashMutex);
+            hashCond.wait(lock, [] {
+                return hashStop.load() || !hashQueue.empty();
+            });
+            if (hashStop.load() && hashQueue.empty()) {
+                return;
+            }
+            task = hashQueue.front();
+            hashQueue.pop();
+        }
+
+        if (!task) {
+            continue;
+        }
+        try {
+            task();
+        }
+        catch (const std::exception& e) {
+            logger->error("密码校验任务执行失败: {}", e.what());
+        }
+    }
+}
+
+void Filedata::ensureHashPool() {
+    if (hashPoolReady.load()) {
+        return;
+    }
+
+    const int count = hashThreadCount();
+    if (count <= 1) {
+        logger->info("密码校验线程池未启用（TETRIS_HASH_THREADS={}），校验在文件线程串行执行", count);
+        return;
+    }
+
+    hashStop = false;
+    for (int i = 0; i < count; ++i) {
+        hashThreads.emplace_back(hashWorker);
+    }
+    hashPoolReady = true;
+    logger->info("密码校验线程池已启动：{} 线程", count);
+}
+
+void Filedata::stopHashPool() {
+    if (!hashPoolReady.exchange(false)) {
+        return;
+    }
+
+    hashStop = true;
+    hashCond.notify_all();
+    for (auto& thread : hashThreads) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+    hashThreads.clear();
+
+    // 正常情况下 worker 退出前已把队列处理完；这里只防御性清理
+    std::lock_guard<std::mutex> lock(hashMutex);
+    std::queue<std::function<void()>> empty;
+    hashQueue.swap(empty);
+}
+
+void Filedata::runHashTask(std::function<void()> task) {
+    if (!hashPoolReady.load()) {
+        task();
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(hashMutex);
+        hashQueue.push(task);
+    }
+    hashCond.notify_one();
+}
+
 // 初始化异步系统
 bool Filedata::initializeAsyncSystem() {
     stopAsyncThread = false;
@@ -129,10 +230,17 @@ bool Filedata::initializeAsyncSystem() {
     }
 
     logger->info("异步文件系统初始化完成");
+
+    // 密码校验线程池：必须在 fork 之后创建（本函数在 worker 进程里执行）
+    ensureHashPool();
     return true;
 }
 
 void Filedata::shutdownAsyncSystem() {
+    // 先停哈希线程：它们只做 CPU 计算，可能还会往写队列投递迁移任务，
+    // 必须在文件线程退出前全部 join，保证迁移任务都已入队。
+    stopHashPool();
+
     stopAsyncThread = true;
     queueCondition.notify_all();
 
@@ -399,29 +507,61 @@ void Filedata::loginAsync(const std::string& username, const std::string& passwo
     std::function<void(bool success)> callback) {
     // 参数全部按值捕获：任务在异步线程上跑，不能再去读 User（连接可能已断、对象已被复用）。
     auto task = [username, password, callback]() {
-        auto report = [callback](bool ok) {
-            // 回到事件循环线程再动 User / socket（与其它异步回调保持同一约定）
+        // 回到事件循环线程再动 User / socket（与其它异步回调保持同一约定）
+        const auto finish = [callback](bool ok) {
             EventLoop::post([callback, ok]() { callback(ok); });
             };
 
+        string stored;
         try {
-            string stored;
             if (!lookupCredential(username, stored)) {
-                report(false);
+                finish(false);
                 return;
             }
+        }
+        catch (const std::exception& e) {
+            logger->error("登录校验异常: 用户={}, 错误={}", username, e.what());
+            finish(false);
+            return;
+        }
 
+        // PBKDF2 是纯 CPU 计算：交给哈希线程池并行；池未启用时（0/1 线程）在这里同步执行。
+        runHashTask([username, password, stored, finish]() {
             bool needsRehash = false;
-            if (!PasswordHash::verify(password, stored, &needsRehash)) {
-                report(false);
+            bool ok = false;
+            try {
+                ok = PasswordHash::verify(password, stored, &needsRehash);
+            }
+            catch (const std::exception& e) {
+                logger->error("密码校验异常: 用户={}, 错误={}", username, e.what());
+                finish(false);
                 return;
             }
 
-            if (needsRehash) {
-                // 旧版明文（或参数落后的哈希）：登录成功后原地迁移成当前格式。
-                // 迁移失败不影响本次登录 —— 用户已经证明知道密码。
-                try {
-                    const string upgraded = PasswordHash::hash(password);
+            if (!ok) {
+                finish(false);
+                return;
+            }
+            if (!needsRehash) {
+                finish(true);
+                return;
+            }
+
+            // 旧版明文（或参数落后的哈希）：迁移成当前格式。
+            // 新哈希继续在当前线程算；落盘必须回单写线程（写队列），否则会与其它文件操作并发。
+            string upgraded;
+            try {
+                upgraded = PasswordHash::hash(password);
+            }
+            catch (const std::exception& e) {
+                logger->error("迁移密码时生成哈希失败，保留旧值: 用户={}, 错误={}", username, e.what());
+                finish(true);   // 迁移失败不影响本次登录
+                return;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(queueMutex);
+                writeQueue.push([username, upgraded, finish]() {
                     DataFileLock fileLock(true);
                     if (rewriteStoredCredential(username, upgraded)) {
                         updateCredentialInMemory(username, upgraded);
@@ -430,18 +570,11 @@ void Filedata::loginAsync(const std::string& username, const std::string& passwo
                     else {
                         logger->warn("账号密码迁移失败，保留旧值: {}", username);
                     }
-                }
-                catch (const std::exception& e) {
-                    logger->error("账号密码迁移异常: 用户={}, 错误={}", username, e.what());
-                }
+                    finish(true);
+                    });
             }
-
-            report(true);
-        }
-        catch (const std::exception& e) {
-            logger->error("登录校验异常: 用户={}, 错误={}", username, e.what());
-            report(false);
-        }
+            queueCondition.notify_one();
+            });
         };
 
     {
