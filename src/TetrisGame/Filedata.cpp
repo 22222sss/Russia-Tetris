@@ -362,6 +362,39 @@ void Filedata::updateCredentialInMemory(const std::string& username, const std::
     }
 }
 
+// 登录只需要"某个用户的凭据"，不需要整张玩家表。
+// 原实现每次登录都调 loadPlayerData()：即使缓存命中，也会清空并重新填充
+// PlayerInfo::players（O(账号数) 次 shared_ptr 拷贝，还占着文件锁和 gLoadMutex）。
+// 账号越多、并发登录越多，这笔开销越明显，而它对登录结果毫无用处。
+bool Filedata::lookupCredential(const std::string& username, std::string& credential) {
+    // 共享锁：读缓存期间别让别的进程改文件（缓存有效性判断 + 读取必须是同一时刻的）
+    DataFileLock fileLock(false);
+
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        if (!playerCache.empty() && cacheMatchesFileState()) {
+            auto it = playerCache.find(username);
+            if (it == playerCache.end() || !it->second) {
+                return false;   // 文件状态没变，缓存里没有 → 这个账号不存在
+            }
+            credential = it->second->getPassword();
+            return true;
+        }
+    }
+
+    // 缓存不可用（首次登录 / 别的进程改过文件）：完整加载一次再查
+    if (!loadPlayerData()) {
+        return false;
+    }
+
+    auto player = PlayerInfo::findPlayer(username);
+    if (!player) {
+        return false;
+    }
+    credential = player->getPassword();
+    return true;
+}
+
 void Filedata::loginAsync(const std::string& username, const std::string& password,
     std::function<void(bool success)> callback) {
     // 参数全部按值捕获：任务在异步线程上跑，不能再去读 User（连接可能已断、对象已被复用）。
@@ -373,21 +406,9 @@ void Filedata::loginAsync(const std::string& username, const std::string& passwo
 
         try {
             string stored;
-            {
-                // 共享锁：读一份最新的账号表（别的进程可能刚注册/迁移过）。
-                // 锁内只做内存查找，PBKDF2 放到锁外算，避免长时间占着文件锁。
-                DataFileLock fileLock(false);
-                if (!loadPlayerData()) {
-                    logger->error("登录校验失败：加载玩家数据失败");
-                    report(false);
-                    return;
-                }
-                auto player = PlayerInfo::findPlayer(username);
-                if (!player) {
-                    report(false);
-                    return;
-                }
-                stored = player->getPassword();
+            if (!lookupCredential(username, stored)) {
+                report(false);
+                return;
             }
 
             bool needsRehash = false;

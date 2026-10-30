@@ -39,6 +39,8 @@ private:
 	static bool rewriteStoredCredential(const std::string& username, const std::string& credential);
 	// 迁移后同步内存里的明文/旧哈希，避免本进程后续登录仍按旧值校验
 	static void updateCredentialInMemory(const std::string& username, const std::string& credential);
+	// 只查一个用户的凭据：缓存有效时 O(1)，不再为每次登录重建整个 PlayerInfo
+	static bool lookupCredential(const std::string& username, std::string& credential);
 
 public:
 	// 初始化异步写入系统
