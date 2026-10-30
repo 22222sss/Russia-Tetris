@@ -57,12 +57,27 @@ jobs:
           HOLD="${{ inputs.hold || '30' }}"
           READ="${{ inputs.read_check || '1' }}"
           CLIENTS="${{ inputs.clients || '2' }}"
-          WORKERS="${{ inputs.workers || '1,2,4' }}"
-          for w in ${WORKERS//,/ }; do
-            echo "::notice::开始压测: workers=$w target=$TARGET concurrency=$CONC clients=$CLIENTS"
-            BENCH_WORKERS="$w" bash tests/bench.sh "$TARGET" "$CONC" "$HOLD" "$READ" "$CLIENTS" \
-              || echo "::warning::workers=$w 这一轮压测返回非 0（结果可能不完整）"
-          done
+          WORKERS="${{ inputs.workers || '' }}"
+
+          run_one() {
+            local w="$1" r="$2"
+            echo "::notice::开始压测: workers=$w reuseport=${r:-auto} target=$TARGET clients=$CLIENTS"
+            BENCH_WORKERS="$w" BENCH_REUSEPORT="$r" \
+              bash tests/bench.sh "$TARGET" "$CONC" "$HOLD" "$READ" "$CLIENTS" \
+              || echo "::warning::workers=$w reuseport=${r:-auto} 这一轮返回非 0（结果可能不完整）"
+          }
+
+          if [ -z "$WORKERS" ]; then
+            # push 到 bench-run 触发时跑对照实验：
+            # 单 worker 关/开 SO_REUSEPORT 各一次，隔离"选项本身"的影响；再加 4 worker 看扩展性
+            run_one 1 0
+            run_one 1 1
+            run_one 4 1
+          else
+            for w in ${WORKERS//,/ }; do
+              if [ "$w" -gt 1 ]; then run_one "$w" 1; else run_one "$w" ""; fi
+            done
+          fi
 
       - name: Publish key metrics as annotations
         if: always()
@@ -77,6 +92,8 @@ jobs:
           for d in $dirs; do
             w=$(grep -m1 '^workers' "${d}env.txt" 2>/dev/null | tr -d ' ' | cut -d: -f2)
             w=${w:-?}
+            rp=$(grep -m1 '^reuseport' "${d}env.txt" 2>/dev/null | tr -d ' ' | cut -d: -f2)
+            rp=${rp:-auto}
             if [ -f "${d}summary.md" ] && grep -q "成功建立" "${d}summary.md"; then
               summary=""
               for k in "成功建立" "失败" "失败原因" "收到欢迎数据" "总耗时" "建立速率" "服务端内存" "服务端 fd" "服务端 CPU"; do
@@ -85,7 +102,8 @@ jobs:
                   summary="${summary}$(echo "$line" | sed 's/^| *//; s/ *|$//') ; "
                 fi
               done
-              echo "::notice::[workers=$w] $summary"
+              envline=$(grep -hE '^(somaxconn|syn_backlog|port_range|tw_reuse)' "${d}env.txt" 2>/dev/null | tr '\n' ' ' || true)
+              echo "::notice::[workers=$w reuseport=$rp] $summary | $envline"
             else
               echo "::notice::[workers=$w] 未生成 summary.md，附 result.txt 尾部: $(tail -6 "${d}result.txt" 2>/dev/null | tr '\n' '|' | cut -c1-900)"
             fi

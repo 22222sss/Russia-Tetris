@@ -58,7 +58,7 @@ static int env_int(const char* name, int fallback, int lo, int hi) {
 
 // 一个 worker 的完整生命周期：日志 -> 连接池 -> 异步文件线程 -> 监听 socket -> 事件循环。
 // 多 worker 时每个进程各跑一份，互不共享内存；共享的只有 userdata.csv（靠 flock 保护）。
-static int run_worker(int listen_port, int workers, size_t pool_size) {
+static int run_worker(int listen_port, int workers, size_t pool_size, int reuseport) {
     logger = create_logger(workers > 1);
 
     // 系统优化必须在 logger 就绪之后做（SystemOptimizer 内部会写日志）。
@@ -96,7 +96,7 @@ static int run_worker(int listen_port, int workers, size_t pool_size) {
     }
 
 #ifdef SO_REUSEPORT
-    if (workers > 1) {
+    if (reuseport) {
         // 多 worker 的核心：各进程独立 bind 同一端口，内核按连接做负载均衡
         int on = 1;
         if (setsockopt(serverSocket, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) < 0) {
@@ -203,10 +203,15 @@ int main()
     int listen_port = env_int("TETRIS_PORT", DEFAULT_PORT, 1, 65535);
     int workers = env_int("TETRIS_WORKERS", 1, 1, (int)(sizeof(g_children) / sizeof(g_children[0])));
 
+    // 是否给监听 socket 开 SO_REUSEPORT。默认跟随 worker 数，
+    // 但允许强制打开/关闭 —— 压测时要能把"多进程"和"这个 socket 选项本身"
+    // 拆开定位（单 worker + 开 reuseport 就能看出选项有没有代价）。
+    int reuseport = env_int("TETRIS_REUSEPORT", (workers > 1) ? 1 : 0, 0, 1);
+
     // 注意：系统优化放在 run_worker 里做（它要写日志，而 logger 是每进程创建的）
 
     if (workers == 1) {
-        return run_worker(listen_port, 1, ConnectionPool::INITIAL_POOL_SIZE);
+        return run_worker(listen_port, 1, ConnectionPool::INITIAL_POOL_SIZE, reuseport);
     }
 
     // 多 worker：连接池按 worker 数均分，否则 N 个进程各预创建 5 万个 User，内存直接乘 N
@@ -217,6 +222,7 @@ int main()
 
     std::cout << "\n多进程模式：worker 数 = " << workers
               << "，端口 = " << listen_port
+              << "，reuseport = " << reuseport
               << "，每进程预创建 User = " << pool_per_worker << std::endl;
 
     signal(SIGPIPE, SIG_IGN);
@@ -236,7 +242,7 @@ int main()
             // 子进程：信号恢复默认（父进程会转发 SIGTERM 进来）
             signal(SIGINT, SIG_DFL);
             signal(SIGTERM, SIG_DFL);
-            int rc = run_worker(listen_port, workers, pool_per_worker);
+            int rc = run_worker(listen_port, workers, pool_per_worker, reuseport);
             // 用 _exit：不要重复刷新从父进程继承来的 stdio 缓冲
             _exit(rc == 0 ? 0 : 1);
         }

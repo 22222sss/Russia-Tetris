@@ -28,6 +28,9 @@ REMOTE_CLIENTS=${BENCH_REMOTE_CLIENTS:-}
 # worker 进程数（0/1 = 单进程）。多 worker 时服务端是"父进程 + N 个子进程"，
 # 所以采样必须按进程树统计，否则 CPU/RSS 会全读到 0。
 WORKERS=${BENCH_WORKERS:-1}
+# 是否强制开/关监听 socket 的 SO_REUSEPORT。留空则交给服务端按 worker 数决定；
+# 单 worker 下强制开启可用于隔离"多进程"和"这个 socket 选项本身"的影响。
+REUSEPORT=${BENCH_REUSEPORT:-}
 HOST=${BENCH_HOST:-}
 REMOTE_DIR=/tmp/russia-bench
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
@@ -137,11 +140,16 @@ if ! make -C "$SRC" -j"$(nproc)" > "$OUT/build.log" 2>&1; then
 fi
 echo "构建完成: $SRC/tetris_game" | tee -a "$OUT/env.txt"
 echo "workers   : $WORKERS" | tee -a "$OUT/env.txt"
+echo "reuseport : ${REUSEPORT:-auto}" | tee -a "$OUT/env.txt"
 
 log "启动服务端"
 cd "$SRC"
 START_TS=$(date +%s.%N)
-TETRIS_WORKERS=$WORKERS ./tetris_game > "$OUT/server.log" 2>&1 &
+SERVER_ENV="TETRIS_WORKERS=$WORKERS"
+if [ -n "$REUSEPORT" ]; then
+  SERVER_ENV="$SERVER_ENV TETRIS_REUSEPORT=$REUSEPORT"
+fi
+env $SERVER_ENV ./tetris_game > "$OUT/server.log" 2>&1 &
 SRV_PID=$!
 SAMPLER_PID=""
 cleanup() {
