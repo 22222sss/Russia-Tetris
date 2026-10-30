@@ -68,16 +68,21 @@ jobs:
           }
 
           if [ -z "$WORKERS" ]; then
-            # push 到 bench-run 触发的对照实验。
-            # 这次用「先开后关」的逆序，与上一轮「先关后开」互为镜像，
-            # 用来排除 TIME_WAIT 残留 / 运行顺序造成的假象。
-            run_one 1 1
-            run_one 1 0
+            # push 触发：连接建立基准已经测过（README「多进程 worker 实测」），
+            # 本轮只跑游戏负载对比（见下一个 step，那里才是多核该发力的场景）
+            echo "::notice::push 触发：跳过连接建立压测，改跑游戏负载对比"
           else
             for w in ${WORKERS//,/ }; do
               if [ "$w" -gt 1 ]; then run_one "$w" 1; else run_one "$w" ""; fi
             done
           fi
+
+      - name: Gameplay scaling test
+        run: |
+          # 每个连接真实登录、开局、持续按键（左/右，不按下键以免提前 GAME OVER）。
+          # 每次按键服务端都要 strcmp + 整屏重绘，这才是能吃满 CPU 的负载。
+          # 只建连的压测里服务端只占 20%~30% 单核，测不出多核收益。
+          bash tests/play_bench.sh 200 15 0.1 "1 2 4" 10009
 
       - name: Publish key metrics as annotations
         if: always()
