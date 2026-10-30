@@ -127,12 +127,13 @@ int Filedata::hashThreadCount() {
     if (!raw || !*raw) {
         return kDefault;
     }
-    int value = std::atoi(raw);
-    if (value < 0 || value > 32) {
+    char* end = nullptr;
+    long value = std::strtol(raw, &end, 10);
+    if (end == nullptr || *end != '\0' || value < 0 || value > 32) {
         logger->warn("TETRIS_HASH_THREADS={} 不合法（0~32），改用默认值 {}", raw, kDefault);
         return kDefault;
     }
-    return value;
+    return static_cast<int>(value);
 }
 
 void Filedata::hashWorker() {
@@ -174,8 +175,24 @@ void Filedata::ensureHashPool() {
     }
 
     hashStop = false;
-    for (int i = 0; i < count; ++i) {
-        hashThreads.emplace_back(hashWorker);
+    try {
+        for (int i = 0; i < count; ++i) {
+            hashThreads.emplace_back(hashWorker);
+        }
+    }
+    catch (const std::exception& e) {
+        // 线程创建失败（极少见）：把已经建好的收掉，退回"文件线程串行校验"。
+        // 绝不能让带 joinable 线程的 vector 析构（std::terminate）。
+        logger->error("创建密码校验线程失败，退回串行校验: {}", e.what());
+        hashStop = true;
+        hashCond.notify_all();
+        for (auto& thread : hashThreads) {
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
+        hashThreads.clear();
+        return;
     }
     hashPoolReady = true;
     logger->info("密码校验线程池已启动：{} 线程", count);
