@@ -48,7 +48,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential libevent-dev libspdlog-dev libfmt-dev
+            build-essential libevent-dev libspdlog-dev libfmt-dev libssl-dev
 
       - name: Benchmark
         run: |
