@@ -31,6 +31,9 @@ git clone https://github.com/22222sss/Russia-Tetris.git
 cd Russia-Tetris/src && make -j"$(nproc)"
 ```
 
+> 编译默认是 `-O2 -g`（2026-11-01 起）。要复现 `-O0` 时代的数据用 `make clean && make OPT=-O0`；
+> 不同优化级别的数字不要混比——同机 A/B 的做法见 [HANDOVER 4.7](HANDOVER.md)。
+
 先确认网络可达（在本地 WSL 里跑，此时服务端还没起）：
 
 ```bash
