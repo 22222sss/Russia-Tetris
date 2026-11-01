@@ -504,6 +504,79 @@ def test_wrong_password(args, user):
         conn.close()
 
 
+def test_short_password_rejected(args):
+    """注册密码必须满足策略（>= 8 个字符且不能全空白）。
+
+    被拒绝后应留在"输入密码"状态，客户端可以直接重输一个合法密码。
+    """
+    global STAGE
+
+    user = new_account_name() + "sp"
+    short = "short7c"                 # 7 个字符
+    valid = "valid-pw-" + str(random.randint(10000, 99999))
+
+    STAGE = "短密码：连接并进入注册"
+    conn = Conn(args.host, args.port, args.timeout)
+    try:
+        expect(conn, "1. 注册帐号")
+        conn.sendline("1")
+        expect(conn, "请输入用户名")
+        conn.sendline(user)
+        expect(conn, "请输入密码")
+
+        STAGE = "短密码：提交 7 位密码应被拒绝"
+        conn.sendline(short)
+        expect(conn, "密码至少需要 8 个字符")
+
+        STAGE = "短密码：仍在密码输入状态，重输合法密码应注册成功"
+        conn.sendline(valid)
+        expect(conn, "注册成功")
+
+        STAGE = "短密码：等落盘并确认存的是合法密码的哈希"
+        if not wait_for_userdata(args.userdata, user, args.timeout):
+            raise Failure("[%s] 账号 %r 未落盘（超时 %ss）"
+                          % (STAGE, user, args.timeout))
+        stored = wait_for_credential(
+            args.userdata, user,
+            lambda value: credential.is_hashed(value) and credential.verify(valid, value),
+            args.timeout)
+        if not stored:
+            raise Failure("[%s] 落盘凭据不是合法密码的哈希：%r"
+                          % (STAGE, read_credential(args.userdata, user)))
+        if credential.verify(short, stored):
+            raise Failure("[%s] 7 位密码竟然能校验通过" % STAGE)
+    finally:
+        conn.close()
+
+
+def test_unknown_user_login(args):
+    """不存在的账号必须和"密码错误"返回同样的提示（不泄露账号是否存在）。
+
+    响应时间上的差异（未知用户不跑 PBKDF2）由 PasswordHash::verifyDummy 消除，
+    那是时间断言、在 CI 上不稳，所以这里只验证用户可见的提示一致。
+    """
+    global STAGE
+
+    missing = "no-such-user-" + str(random.randint(100000, 999999))
+
+    STAGE = "未知账号：连接"
+    conn = Conn(args.host, args.port, args.timeout)
+    try:
+        expect(conn, "1. 注册帐号")
+        conn.sendline("2")
+        expect(conn, "请输入用户名")
+        conn.sendline(missing)
+        expect(conn, "请输入密码")
+
+        STAGE = "未知账号：提示应与密码错误一致"
+        conn.sendline("whatever-password-" + str(random.randint(1000, 9999)))
+        expect(conn, "登录失败")
+        expect(conn, "用户名或密码错误")
+        expect_not(conn, "3. 开始游戏", window=1.5)
+    finally:
+        conn.close()
+
+
 def test_fast_reconnect(args):
     """快速重连：上一条连接刚关闭时，新连接通常复用同一个 fd。
 
@@ -599,6 +672,8 @@ def main():
         ("密码以加盐哈希落盘", lambda: test_password_hashed_at_rest(args, user, password)),
         ("二次登录", lambda: test_login_again(args, user, password)),
         ("错误密码被拒绝", lambda: test_wrong_password(args, user)),
+        ("注册密码过短被拒绝", lambda: test_short_password_rejected(args)),
+        ("未知账号与错误密码提示一致", lambda: test_unknown_user_login(args)),
         ("旧明文账号登录即迁移", lambda: test_legacy_migration(args)),
         ("快速重连后仍能响应输入", lambda: test_fast_reconnect(args)),
         ("游戏结束流程", lambda: test_game_over(args, user, password)),

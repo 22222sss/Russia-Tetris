@@ -3,6 +3,7 @@
 #include"Common.h"
 #include"Filedata.h"
 #include"PlayerInfo.h"
+#include"PasswordPolicy.h"
 #include"../Utility/Utility.h"
 #include"../UImanage/UImanage.h"
 #include"../EventLoop/EventLoop.h"
@@ -204,6 +205,18 @@ int Server::receive_password_register(shared_ptr<User>& user)
 
     if (password != "")
     {
+        // 注册密码策略：至少 8 个字符、不能全是空白（见 PasswordPolicy.h）。
+        // 只拦注册；老账号登录不检查，避免升级后被自己的短密码锁在门外。
+        if (!PasswordPolicy::check(password))
+        {
+            user->setReceivedata("");
+            if (!UImanage::show_Password_Too_Short_Error(WINDOW_ROW_COUNT / 2 + 3, user))
+            {
+                return -1;
+            }
+            return 0;   // 留在"输入密码"状态，客户端可重输
+        }
+
         user->setPassword(password);
 
         Filedata::saveNewUserDataAsync(user);  // ✅ 异步调用，立即返回

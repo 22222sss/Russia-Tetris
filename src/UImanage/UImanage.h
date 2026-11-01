@@ -37,6 +37,9 @@ public:
 	//展示密码输入为空的界面
 	static bool show_Password_Empty_Error(int i, const shared_ptr<User>& user);
 
+	//展示注册密码太短的界面（密码策略见 TetrisGame/PasswordPolicy.h）
+	static bool show_Password_Too_Short_Error(int i, const shared_ptr<User>& user);
+
 	//展示用户登录成功的界面
 	static bool show_Register_Success(const shared_ptr<User>& user);
 

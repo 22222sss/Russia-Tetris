@@ -532,7 +532,13 @@ void Filedata::loginAsync(const std::string& username, const std::string& passwo
         string stored;
         try {
             if (!lookupCredential(username, stored)) {
-                finish(false);
+                // 账号不存在：也要排一次同样代价的 PBKDF2（随机假凭据）。
+                // 否则"响应很快"本身就等于告诉客户端"这个用户名不存在"，可被用来枚举账号；
+                // 走哈希池而不是在文件线程上直接算，和真实校验的排队语义保持一致。
+                runHashTask([password, finish]() {
+                    PasswordHash::verifyDummy(password);
+                    finish(false);
+                });
                 return;
             }
         }

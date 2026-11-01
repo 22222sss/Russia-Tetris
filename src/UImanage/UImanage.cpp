@@ -79,6 +79,19 @@ bool UImanage::show_Password_Empty_Error(int i, const shared_ptr<User>& user)
     return true;
 }
 
+bool UImanage::show_Password_Too_Short_Error(int i, const shared_ptr<User>& user)
+{
+    string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+    if (!outputText(user, i, 1, COLOR_WHITE, emptyLine))
+        return false;
+
+    // 文案与 PasswordPolicy::kMinLength 一致（8）
+    if (!outputText(user, i, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE,
+                    "密码至少需要 8 个字符（不能全是空格），请重新输入密码："))
+        return false;
+    return true;
+}
+
 bool UImanage::show_Register_Success(const shared_ptr<User>& user)
 {
     if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "注册成功！"))

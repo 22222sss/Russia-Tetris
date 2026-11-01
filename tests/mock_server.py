@@ -34,6 +34,15 @@ DIFF = ("\x1b[2J\x1b[H\x1b[12;14H\x1b[37m1. 简单模式"
 GAME_ON = "\x1b[2J\x1b[H\x1b[2;41H\x1b[37mNext:\x1b[14;42H\x1b[37mScore: "
 OVER = "\x1b[12;14H\x1b[37mGAME OVER\r\n\x1b[15;14H\x1b[37mStart Again ? (y/n):"
 
+def password_policy_ok(password):
+    """与 src/TetrisGame/PasswordPolicy.h 保持一致（注册密码策略）。
+
+    Python 的 len() 正好是 UTF-8 码点数，和 C++ 侧的 utf8Length 等价。
+    只约束注册：老账号登录不受限。
+    """
+    return len(password) >= 8 and password.strip(" \t") != ""
+
+
 def read_users():
     """从 CSV 读账号（不用内存字典）：多个 mock 实例共享同一份文件时，
     行为和真服务端一致，才能用来验证跨进程测试脚本。"""
@@ -141,6 +150,12 @@ def serve(conn):
                         state = "reg_pwd"
                         pending_user = cmd
                 elif state == "reg_pwd":
+                    # 与真服务端一致：密码不满足策略时提示并留在密码输入状态，
+                    # 否则集成测试里的"短密码被拒"分支在本地 mock 上跑不通。
+                    if not password_policy_ok(cmd):
+                        conn.sendall("\x1b[12;14H\x1b[37m密码至少需要 8 个字符（不能全是空格），"
+                                     "请重新输入密码：".encode())
+                        continue
                     write_csv(pending_user, cmd)
                     conn.sendall("\x1b[16;14H\x1b[37m注册成功！\r\n"
                                  "\x1b[17;14H\x1b[37m请按3返回上级菜单：".encode())

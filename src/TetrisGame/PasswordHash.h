@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #ifndef PasswordHash_H
 #define PasswordHash_H
 
@@ -34,6 +34,13 @@ public:
     // needsRehash：命中但存储格式需要升级（旧明文，或迭代次数/盐长度与当前参数不同）时为 true。
     static bool verify(const std::string& password, const std::string& stored,
                        bool* needsRehash = nullptr);
+
+    // 用一条"谁也不知道密码"的随机假凭据做一次完整校验，返回值恒为 false。
+    //
+    // 用途：登录时账号不存在也要付出和真实校验相同的 PBKDF2 代价，
+    // 否则"响应很快"本身就等于告诉客户端"这个用户名不存在"，可被用来枚举账号。
+    // 假凭据在首次调用时用 RAND_bytes 生成一次（线程安全），参数与真实凭据一致。
+    static bool verifyDummy(const std::string& password);
 };
 
 #endif

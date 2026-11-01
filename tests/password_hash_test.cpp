@@ -9,6 +9,7 @@
 //       ../tests/password_hash_test.cpp -lcrypto -pthread -o /tmp/ph_test && /tmp/ph_test
 
 #include "TetrisGame/PasswordHash.h"
+#include "TetrisGame/PasswordPolicy.h"
 
 #include <chrono>
 #include <cstdio>
@@ -79,7 +80,42 @@ int main() {
                                       "a98329702f7f64758b28b1e5af5a8f07920e2bd97bc49239d5ab8f81ae040202"),
           "盐过短被拒绝");
 
-    // 6) 顺带给出实际耗时（CI 注解里能看到；也用于判断迭代次数是否合适）
+    // 6) verifyDummy：账号不存在时也要付出等价代价（消除"响应快=账号不存在"的时序侧信道）
+    PasswordHash::verifyDummy("warmup");   // 第一次调用会额外生成随机假凭据，先预热
+    check(!PasswordHash::verifyDummy("any-password-123"), "verifyDummy 恒返回 false");
+    check(!PasswordHash::verifyDummy(""), "verifyDummy 对空密码也返回 false");
+
+    // 假校验不能是空操作：耗时应与真实校验同量级。每边跑 3 次取最小值，
+    // 减少共享 runner 上被抢占带来的抖动；上下界放宽到 0.3x~3x，只抓
+    // "根本没跑 PBKDF2"这类退化，不追求精确计时。
+    long long realUs = -1;
+    long long dummyUs = -1;
+    for (int i = 0; i < 3; ++i) {
+        const auto realStart = std::chrono::steady_clock::now();
+        PasswordHash::hash("timing-baseline");
+        const long long realRound = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - realStart).count();
+        if (realUs < 0 || realRound < realUs) realUs = realRound;
+
+        const auto dummyStart = std::chrono::steady_clock::now();
+        PasswordHash::verifyDummy("timing-baseline");
+        const long long dummyRound = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - dummyStart).count();
+        if (dummyUs < 0 || dummyRound < dummyUs) dummyUs = dummyRound;
+    }
+    check(dummyUs * 10 >= realUs * 3 && dummyUs <= realUs * 3,
+          "verifyDummy 耗时与真实校验同量级");
+    std::printf("timing: verifyDummy=%lldus, hash=%lldus (best of 3)\n", dummyUs, realUs);
+
+    // 7) 注册密码策略（按 UTF-8 码点计数；只拦"太短"和"全空白"）
+    check(PasswordPolicy::check("12345678"), "8 位 ASCII 密码通过策略");
+    check(!PasswordPolicy::check("1234567"), "7 位 ASCII 密码被拒绝");
+    check(!PasswordPolicy::check("        "), "全空格密码被拒绝");
+    check(PasswordPolicy::check("密码密码密码密码"), "8 个汉字（24 字节）通过策略");
+    check(!PasswordPolicy::check("密码密码"), "2 个汉字（6 字节）被拒绝");
+    check(PasswordPolicy::check("  abcdefgh  "), "首尾带空格的 8 字符密码通过（只拦全空白）");
+
+    // 8) 顺带给出实际耗时（CI 注解里能看到；也用于判断迭代次数是否合适）
     const auto started = std::chrono::steady_clock::now();
     const int rounds = 3;
     for (int i = 0; i < rounds; ++i) {

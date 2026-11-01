@@ -1,9 +1,10 @@
-﻿#include "PasswordHash.h"
+#include "PasswordHash.h"
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -168,4 +169,46 @@ bool PasswordHash::verify(const std::string& password, const std::string& stored
     }
     if (needsRehash) *needsRehash = true;
     return true;
+}
+
+namespace {
+
+std::once_flag gDummyOnce;
+std::string gDummyCredential;
+
+// 生成一条"谁也不知道密码"的假凭据：用 32 字节随机材料当密码哈希一次。
+// 参数与真实凭据完全一致，所以 verifyDummy 的耗时和真实校验等价。
+std::string buildDummyCredential() {
+    try {
+        unsigned char material[PasswordHash::kHashBytes];
+        std::string seed;
+        if (RAND_bytes(material, static_cast<int>(sizeof(material))) == 1) {
+            seed = toHex(material, sizeof(material));
+        } else {
+            seed = "dummy-credential-fallback";
+        }
+        return PasswordHash::hash(seed);
+    }
+    catch (const std::exception&) {
+        return std::string();
+    }
+}
+
+}  // namespace
+
+bool PasswordHash::verifyDummy(const std::string& password) {
+    std::call_once(gDummyOnce, [] { gDummyCredential = buildDummyCredential(); });
+
+    if (!gDummyCredential.empty()) {
+        bool ignored = false;
+        verify(password, gDummyCredential, &ignored);   // 随机凭据不可能匹配，结果丢掉
+        return false;
+    }
+
+    // 极端情况：RAND_bytes/PBKDF2 都失败、假凭据没建起来。
+    // 仍然按当前参数跑一次派生，保证调用方拿到的耗时不会明显变短。
+    std::vector<unsigned char> salt(kSaltBytes, 0);
+    std::vector<unsigned char> digest(kHashBytes);
+    derive(password, salt.data(), salt.size(), kIterations, digest.data(), digest.size());
+    return false;
 }
