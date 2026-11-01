@@ -117,6 +117,11 @@ async def run_player(idx, args, stats):
     name = USER_FMT % idx
     pwd = PWD_FMT % idx
 
+    # 每个玩家的"按键窗口"：从登录+开局完成到停止按键。
+    # 上层用它把登录阶段（PBKDF2，不受 -O2 影响）从 CPU 统计里剔掉。
+    my_keys = 0
+    started = ended = None
+
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(args.host, args.port), timeout=args.connect_timeout)
@@ -131,6 +136,7 @@ async def run_player(idx, args, stats):
             stats["errors"] += 1
             return
         stats["ready"] += 1
+        started = time.time()
 
         stop = asyncio.Event()
         drain_task = asyncio.create_task(drain(reader, stats, stop))
@@ -140,14 +146,22 @@ async def run_player(idx, args, stats):
         while time.monotonic() < end:
             writer.write(KEY_LEFT if (i & 1) == 0 else KEY_RIGHT)
             i += 1
+            my_keys += 1
             stats["keys"] += 1
             await asyncio.sleep(args.key_delay)
+        ended = time.time()
 
         stop.set()
         drain_task.cancel()
     except Exception:
         stats["errors"] += 1
     finally:
+        if started is not None:
+            stats["per_player"].append({
+                "keys": my_keys,
+                "start": round(started, 3),
+                "end": round(ended if ended is not None else time.time(), 3),
+            })
         try:
             writer.close()
         except Exception:
@@ -175,11 +189,30 @@ def seed_users(count, path):
 
 
 async def run_all(args):
-    stats = {"ready": 0, "keys": 0, "bytes_rx": 0, "errors": 0}
+    stats = {"ready": 0, "keys": 0, "bytes_rx": 0, "errors": 0, "per_player": []}
 
     started = time.monotonic()
     await asyncio.gather(*[run_player(i, args, stats) for i in range(args.players)])
     elapsed = time.monotonic() - started
+
+    # 游戏窗口 = 所有就绪玩家都在按键的交集区间：
+    #   起点取最晚开始按键的那个，终点取最早停下的那个。
+    # 同时算出窗口内的聚合按键速率（各玩家自己的速率相加），
+    # 供压测汇总计算"每次按键多少 CPU 时间"（与登录阶段无关的口径）。
+    per_player = stats["per_player"]
+    game_window = {}
+    window_rate = None
+    if per_player:
+        start = max(p["start"] for p in per_player)
+        end = min(p["end"] for p in per_player)
+        if end > start:
+            game_window = {"start": start, "end": end,
+                           "seconds": round(end - start, 3)}
+        rates = [p["keys"] / (p["end"] - p["start"])
+                 for p in per_player
+                 if p["end"] > p["start"] and p["keys"] > 0]
+        if rates:
+            window_rate = round(sum(rates), 1)
 
     result = {
         "players": args.players,
@@ -190,6 +223,8 @@ async def run_all(args):
         "elapsed_seconds": round(elapsed, 3),
         "keys_per_second": round(stats["keys"] / elapsed, 1) if elapsed else 0,
         "rx_kb_per_second": round(stats["bytes_rx"] / 1024.0 / elapsed, 1) if elapsed else 0,
+        "game_window": game_window,
+        "window_keys_per_second": window_rate,
         "config": {
             "host": args.host, "port": args.port,
             "seconds": args.seconds, "key_delay": args.key_delay,

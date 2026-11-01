@@ -172,6 +172,8 @@ if ! make -C "$SRC" -j"$(nproc)" > "$OUT/build.log" 2>&1; then
   exit 1
 fi
 echo "构建完成: $SRC/tetris_game" | tee -a "$OUT/env.txt"
+# 优化级别必须落进结果目录：-O0 与 -O2 的数字不能混比（见 docs/HANDOVER.md）
+echo "优化级别  : $(make -s -C "$SRC" print-opt)" | tee -a "$OUT/env.txt"
 echo "workers   : $WORKERS" | tee -a "$OUT/env.txt"
 echo "reuseport : ${REUSEPORT:-auto}" | tee -a "$OUT/env.txt"
 

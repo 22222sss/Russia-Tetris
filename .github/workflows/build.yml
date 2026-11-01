@@ -27,8 +27,32 @@ jobs:
       - name: Build
         working-directory: src
         run: |
-          make -j"$(nproc)"
+          # pipefail：make 失败时 tee 不能把退出码吞掉
+          set -o pipefail
+          make -j"$(nproc)" 2>&1 | tee /tmp/build.log
           file tetris_game
+          # -O2 可能带出 -O0 时代看不到的告警（未初始化/严格别名等）。
+          # 日志正文读不到，所以把前几条回传成注解，便于判断是否是真问题。
+          warn=$(grep -c 'warning:' /tmp/build.log || true)
+          echo "::notice::构建通过，优化级别 $(make -s print-opt)，编译告警 ${warn} 条"
+          if [ "${warn:-0}" -gt 0 ]; then
+            echo "::warning::编译告警 ${warn} 条: $(grep 'warning:' /tmp/build.log | head -6 | tr '\n' '|' | cut -c1-1200)"
+          fi
+
+      - name: Verify build optimization level
+        working-directory: src
+        run: |
+          # 全部性能数据都依赖优化级别（见 docs/HANDOVER.md 4.7）。
+          # 万一 makefile 被改回 -O0，这里直接失败，避免又产出一份不可比的数据。
+          opt=$(make -s print-opt)
+          case "$opt" in
+            *-O2*|*-O3*|*-Ofast*|*-Os*) ;;
+            *)
+              echo "::error::构建优化级别不是 -O2/-O3/-Os（当前: ${opt:-空}），性能数据将不可比"
+              exit 1
+              ;;
+          esac
+          echo "::notice::构建优化级别: $opt"
 
       - name: Test scripts syntax
         run: |

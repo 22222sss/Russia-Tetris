@@ -77,6 +77,41 @@ jobs:
             done
           fi
 
+      - name: Build -O0 and -O2 binaries
+        working-directory: src
+        run: |
+          # 同一台 runner 上编出两份二进制，随后交错跑 A/B/A/B。
+          # 不同 runner 之间的 CPU 波动可达 ±40%，跨 run 比 -O0/-O2 会被噪声淹没。
+          set -e
+          OPT_DIR="$GITHUB_WORKSPACE/bench-results/opt"
+          mkdir -p "$OPT_DIR"
+          for opt in O0 O2; do
+            make clean > /dev/null
+            if ! make -j"$(nproc)" OPT=-$opt > "$OPT_DIR/build-$opt.log" 2>&1; then
+              echo "::error::-O$opt 构建失败: $(tail -25 "$OPT_DIR/build-$opt.log" | tr '\n' '|' | cut -c1-1500)"
+              exit 1
+            fi
+            cp tetris_game "$OPT_DIR/tetris_game_$opt"
+            echo "已构建 -$opt: $(stat -c%s "$OPT_DIR/tetris_game_$opt") bytes"
+          done
+          echo "::notice::A/B 二进制就绪：-O0 $(stat -c%s "$OPT_DIR/tetris_game_O0") bytes / -O2 $(stat -c%s "$OPT_DIR/tetris_game_O2") bytes"
+
+      - name: Gameplay A/B -O0 vs -O2 (same runner, interleaved)
+        working-directory: src
+        run: |
+          # 交错跑两轮 A/B：任何随时间漂移的 runner 状态（缓存/降频/邻居负载）
+          # 对两个级别的影响都各占一半，比"先跑完 O0 再跑 O2"可靠。
+          # 键位参数与 Gameplay scaling test 完全一致，方便与历史数据对照。
+          OPT_DIR="$GITHUB_WORKSPACE/bench-results/opt"
+          for round in 1 2; do
+            for opt in O0 O2; do
+              echo "---- 第 $round 轮 / -$opt ----"
+              BENCH_BIN="$OPT_DIR/tetris_game_$opt" \
+              BENCH_LABEL="workers=1 opt=$opt round=$round" \
+                bash ../tests/play_bench.sh 200 20 0.02 "1" 10009
+            done
+          done
+
       - name: Gameplay scaling test
         run: |
           # 每个连接真实登录、开局、持续按键（左/右，不按下键以免提前 GAME OVER）。
@@ -92,7 +127,7 @@ jobs:
         run: |
           # 注意：每个 step 的 notice/error/warning 各最多 10 条，
           # 所以每轮压测只发"一条"汇总，而不是一条一个指标。
-          dirs=$(ls -1d bench-results/*/ 2>/dev/null | tail -3)
+          dirs=$(ls -1d bench-results/*/ 2>/dev/null | grep -v '/opt/' | tail -3)
           if [ -z "$dirs" ]; then
             echo "::warning::bench-results 目录不存在"
             exit 0
