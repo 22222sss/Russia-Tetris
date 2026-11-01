@@ -129,7 +129,7 @@ jobs:
           # 所以每轮压测只发"一条"汇总，而不是一条一个指标。
           dirs=$(ls -1d bench-results/*/ 2>/dev/null | grep -v '/opt/' | tail -3)
           if [ -z "$dirs" ]; then
-            echo "::warning::bench-results 目录不存在"
+            echo "::notice::没有连接压测结果目录（push 触发时正常：游戏负载数据在 play_bench 的 notice 里）"
             exit 0
           fi
           for d in $dirs; do

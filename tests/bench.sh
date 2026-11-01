@@ -31,6 +31,9 @@ REMOTE_CLIENTS=${BENCH_REMOTE_CLIENTS:-}
 # worker 进程数（0/1 = 单进程）。多 worker 时服务端是"父进程 + N 个子进程"，
 # 所以采样必须按进程树统计，否则 CPU/RSS 会全读到 0。
 WORKERS=${BENCH_WORKERS:-1}
+# 优化级别（默认跟随 makefile 的 -O2）：做连接建立的 A/B 时显式给 -O0/-O2，
+# 例如 BENCH_OPT=-O0 bash tests/bench.sh 100000 5000 30 1 2
+BENCH_OPT=${BENCH_OPT:-}
 # 是否强制开/关监听 socket 的 SO_REUSEPORT。留空则交给服务端按 worker 数决定；
 # 单 worker 下强制开启可用于隔离"多进程"和"这个 socket 选项本身"的影响。
 REUSEPORT=${BENCH_REUSEPORT:-}
@@ -166,14 +169,14 @@ echo "port_range : $(cat /proc/sys/net/ipv4/ip_local_port_range 2>/dev/null | tr
 echo "tw_reuse   : $(cat /proc/sys/net/ipv4/tcp_tw_reuse 2>/dev/null)" | tee -a "$OUT/env.txt"
 
 log "构建"
-if ! make -C "$SRC" -j"$(nproc)" > "$OUT/build.log" 2>&1; then
+if ! make -C "$SRC" -j"$(nproc)" ${BENCH_OPT:+OPT=$BENCH_OPT} > "$OUT/build.log" 2>&1; then
   echo "构建失败，最后 40 行日志："
   tail -40 "$OUT/build.log"
   exit 1
 fi
 echo "构建完成: $SRC/tetris_game" | tee -a "$OUT/env.txt"
 # 优化级别必须落进结果目录：-O0 与 -O2 的数字不能混比（见 docs/HANDOVER.md）
-echo "优化级别  : $(make -s -C "$SRC" print-opt)" | tee -a "$OUT/env.txt"
+echo "优化级别  : ${BENCH_OPT:-$(make -s -C "$SRC" print-opt)}" | tee -a "$OUT/env.txt"
 echo "workers   : $WORKERS" | tee -a "$OUT/env.txt"
 echo "reuseport : ${REUSEPORT:-auto}" | tee -a "$OUT/env.txt"
 
