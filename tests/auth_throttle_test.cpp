@@ -84,8 +84,10 @@ int main() {
     check(capOk, "延迟封顶在 30 秒");
 
     // 4) 窗口内的尝试只被拒绝，不延长窗口
-    const auto first = AuthThrottle::check(user, at(now + 1));
-    const auto second = AuthThrottle::check(user, at(now + 1));
+    // 上面的循环正好走到"封顶等待结束"的时刻，先再失败一次制造一个新的 30s 窗口
+    AuthThrottle::onFailure(user, at(now));
+    const auto first = AuthThrottle::check(user, at(now + 1000));
+    const auto second = AuthThrottle::check(user, at(now + 1000));
     check(first.throttled && second.retryAfterSeconds == first.retryAfterSeconds,
           "窗口内重复尝试不会延长等待时间");
     check(!AuthThrottle::check(user, at(now + 30000)).throttled, "封顶等待结束后放行");
