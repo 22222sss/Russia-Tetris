@@ -219,7 +219,9 @@ void Filedata::stopHashPool() {
 }
 
 std::size_t Filedata::hashQueueLimit() {
-    static const std::size_t kDefault = 64;
+    // 1024 是"正常突发"和"攻击堆积"之间的折中：CI 基准 128 并发登录不该被拒，
+    // 而随机用户名喷洒最多也只能堆 1024 个任务（约 2 线程 × 15 秒的排队）。
+    static const std::size_t kDefault = 1024;
     static const std::size_t kLimit = [] {
         const char* raw = std::getenv("TETRIS_AUTH_QUEUE_LIMIT");
         if (raw == nullptr || *raw == '\0') {

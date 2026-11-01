@@ -47,8 +47,10 @@ private:
 	// 有池就投递到池，没有就同步执行（同一份任务代码）。
 	// 返回 false 表示池里待处理任务已到上限、本次没有执行（上层回"系统繁忙"）。
 	static bool runHashTask(std::function<void()> task);
-	// 哈希队列待处理上限（TETRIS_AUTH_QUEUE_LIMIT，默认 64）：
+	// 哈希队列待处理上限（TETRIS_AUTH_QUEUE_LIMIT，默认 1024）：
 	// PBKDF2 很慢，无界排队会让登录风暴把内存和延迟一起拖爆。
+	// 1024 约等于"2 线程 × 15 秒"的最坏排队，远高于正常突发（CI 的 128 并发登录），
+	// 又能挡住随机用户名喷洒的无界堆积。
 	static std::size_t hashQueueLimit();
 
 	// 缓存管理
