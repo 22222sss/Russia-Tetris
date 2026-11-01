@@ -28,6 +28,25 @@ bool output(const shared_ptr<User>& user, string s);
 // 由 100ms 定时器下次再试（见 EventLoop::unregister_Event_User）
 bool flushUserOutput(const shared_ptr<User>& user);
 
+// 输出批量：把"处理一条连接的一次事件"里的多次 output() 合并成一次 send。
+//
+// 一次按键的重绘会调用十几到二十次 outputText（每个方块格子一次），原来每次
+// outputText 都直接 send，等于一次按键几十个 syscall。用 RAII 在事件处理外面
+// 包一层，所有输出先入 User 的发送缓冲，析构时统一 flush。
+//
+// 只在事件循环线程使用；嵌套构造会累加深度，最外层析构才真正发送。
+class OutputBatch {
+public:
+    explicit OutputBatch(const std::shared_ptr<User>& user);
+    ~OutputBatch();
+
+    OutputBatch(const OutputBatch&) = delete;
+    OutputBatch& operator=(const OutputBatch&) = delete;
+
+private:
+    std::shared_ptr<User> user_;
+};
+
 bool moveTo(const shared_ptr<User>& user, int row, int col);
 
 bool ChangeCurrentColor(const shared_ptr<User>& user, int n);

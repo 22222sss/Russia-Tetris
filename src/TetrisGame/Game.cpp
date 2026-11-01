@@ -753,6 +753,8 @@ void Game::processTimerEvent(int timerfd, short events, void* arg)
     // 锁内遍历，避免复制整个 users map（原 getAllUsers 按值返回，10 万连接时开销巨大）
     User::forEachUser([](int fd, std::shared_ptr<User>& user) {
         if (user->getStatus() == STATUS_PLAYING) {
+            // 一次重力下落要重绘十几到二十个格子，合并成一次 send
+            OutputBatch batch(user);
             handleTimedUserLogic(user);
         }
     });

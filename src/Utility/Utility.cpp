@@ -2,6 +2,12 @@
 
 extern shared_ptr<spdlog::logger> logger;
 
+namespace {
+// >0 表示当前在 OutputBatch 里：output() 只写缓冲，由最外层析构统一 flush。
+// 事件循环是单线程的，用 thread_local 即可（异步回调也已经 post 回循环线程）。
+thread_local int gOutputBatchDepth = 0;
+}
+
 bool output(const shared_ptr<User>& user, string s)
 {
     // 直接发送 UTF-8 文本（现代终端均支持 UTF-8，无需每次 output 做 GBK 转换）
@@ -14,7 +20,27 @@ bool output(const shared_ptr<User>& user, string s)
         user->getSendBuffer() += s;
         user->setPendingOutput(true);
     }
+
+    // 批量模式：先攒着，等 OutputBatch 析构时一次 send 发出去
+    if (gOutputBatchDepth > 0) {
+        return true;
+    }
     return flushUserOutput(user);
+}
+
+OutputBatch::OutputBatch(const shared_ptr<User>& user) : user_(user) {
+    ++gOutputBatchDepth;
+}
+
+OutputBatch::~OutputBatch() {
+    --gOutputBatchDepth;
+    if (gOutputBatchDepth > 0) {
+        return;   // 嵌套的内层不发送，交给最外层
+    }
+    // 连接已经出错关闭时不再 send：fd 可能已被 close，重复 close 会误伤复用的 fd
+    if (user_ && user_->getFd() >= 0 && user_->getStatus() != STATUS_OVER_QUIT) {
+        flushUserOutput(user_);
+    }
 }
 
 bool flushUserOutput(const shared_ptr<User>& user)

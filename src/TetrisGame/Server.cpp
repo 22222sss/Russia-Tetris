@@ -618,6 +618,10 @@ void Server::handleClientData(int clientSocket, short events, void* arg)
         return;
     }
 
+    // 一次事件处理里可能有十几次 outputText（一次按键的重绘），
+    // 先全部攒进发送缓冲，函数结束时合并成一次 send，减少 syscall。
+    OutputBatch batch(user);
+
     // 处理已连接客户端的数据接收事件
     if (user->getStatus() == STATUS_PLAYING)
     {
