@@ -4,6 +4,7 @@
 #include"Filedata.h"
 #include"PlayerInfo.h"
 #include"PasswordPolicy.h"
+#include"AuthThrottle.h"
 #include"../Utility/Utility.h"
 #include"../UImanage/UImanage.h"
 #include"../EventLoop/EventLoop.h"
@@ -302,14 +303,29 @@ int Server::receive_password_load(shared_ptr<User>& user)
 
     if (password != "")
     {
+        // 失败退避：同一用户名连续失败太多次时，本次直接拒绝（不跑 PBKDF2）。
+        // 窗口内的尝试只被拒绝、不延长窗口——否则会被拿来把别人的账号锁死。
+        const auto throttle = AuthThrottle::check(user->getUsername(),
+                                                  std::chrono::steady_clock::now());
+        if (throttle.throttled)
+        {
+            user->setReceivedata("");
+            if (!UImanage::show_Login_Throttled(throttle.retryAfterSeconds, user))
+            {
+                return -1;
+            }
+            return 2;   // 保持"输入密码"状态，客户端按提示等待后可重试
+        }
+
         user->setPassword(password);
 
         // PBKDF2 是有意设计得慢的（当前约 50ms/次）。如果在事件循环线程上算，
         // 一个登录就会卡住所有连接（包括正在游戏的玩家），所以交给异步线程。
         user->setStatus(STATUS_VERIFYING_PASSWORD);
 
-        Filedata::loginAsync(user->getUsername(), password,
-            [user](bool success)
+        const string loginUsername = user->getUsername();
+        Filedata::loginAsync(loginUsername, password,
+            [user, loginUsername](Filedata::LoginResult result)
             {
                 // 校验期间连接可能已断开（甚至 fd 已被回收复用），
                 // 状态一变就不能再往"这条连接"上渲染。与其它异步回调同一约定。
@@ -320,21 +336,34 @@ int Server::receive_password_load(shared_ptr<User>& user)
                     return;
                 }
 
-                if (!success)
+                if (result == Filedata::LoginResult::Busy)
                 {
+                    // 本次根本没校验：不能算失败（否则"系统繁忙"会污染退避计数）
+                    user->setStatus(STATUS_RECEIVE_PASSWORD_LOAD);
+                    user->setReceivedata("");
+                    UImanage::show_Server_Busy(user);
+                    logger->warn("登录被限流（哈希队列已满）: {}", loginUsername);
+                    return;
+                }
+
+                if (result == Filedata::LoginResult::BadCredentials)
+                {
+                    AuthThrottle::onFailure(loginUsername, std::chrono::steady_clock::now());
                     UImanage::show_Login_Failure(user);
                     user->setStatus(STATUS_REGISTER_OR_LOAD_OVER);
                     user->setReceivedata("");
-                    logger->info("用户登录失败: {}", user->getUsername());
+                    logger->info("用户登录失败: {}", loginUsername);
                     return;
                 }
+
+                AuthThrottle::onSuccess(loginUsername);
 
                 // loginAsync 已经重新加载过账号表（校验就是用最新的那份），
                 // 这里直接进主菜单；选难度时还会再刷新一次成绩数据。
                 UImanage::showLoadMenu(user);
                 user->setStatus(STATUS_LOGIN);
                 user->setReceivedata("");
-                logger->info("用户登录成功: {}", user->getUsername());
+                logger->info("用户登录成功: {}", loginUsername);
             });
 
         return 1;

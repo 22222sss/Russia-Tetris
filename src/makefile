@@ -18,6 +18,7 @@ SOURCES = \
     TetrisGame/Filedata.cpp \
     TetrisGame/Game.cpp \
     TetrisGame/PasswordHash.cpp \
+    TetrisGame/AuthThrottle.cpp \
     TetrisGame/PlayerInfo.cpp \
     TetrisGame/Server.cpp \
     TetrisGame/User.cpp \

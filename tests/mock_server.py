@@ -6,10 +6,12 @@
 遇到旧版明文账号则"登录成功后就地迁移"（见 migrate_credential），
 否则集成测试里针对哈希/迁移的断言在 mock 上跑不通，就失去本地预检的意义。
 """
+import math
 import os
 import socket
 import sys
 import threading
+import time
 
 import credential
 
@@ -41,6 +43,72 @@ def password_policy_ok(password):
     只约束注册：老账号登录不受限。
     """
     return len(password) >= 8 and password.strip(" \t") != ""
+
+
+# ---------------------------------------------------------------------------
+# 登录失败退避：与 src/TetrisGame/AuthThrottle.cpp 对齐。
+# 真服务端的状态只在事件循环线程访问、不用加锁；mock 是多线程的，这里用一把锁。
+# ---------------------------------------------------------------------------
+_throttle_lock = threading.Lock()
+_throttle_entries = {}   # username -> (failures, last_failure, next_allowed)，时间是 monotonic
+
+
+def _auth_env_int(name, default):
+    try:
+        value = int(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
+
+def _auth_config():
+    return (
+        _auth_env_int("TETRIS_AUTH_FREE_ATTEMPTS", 5),
+        _auth_env_int("TETRIS_AUTH_BASE_DELAY_MS", 1000),
+        _auth_env_int("TETRIS_AUTH_MAX_DELAY_MS", 30000),
+        _auth_env_int("TETRIS_AUTH_ENTRY_TTL_MS", 15 * 60 * 1000),
+    )
+
+
+def _auth_delay_ms(failures):
+    free, base, max_delay, _ttl = _auth_config()
+    if failures <= free:
+        return 0
+    exponent = min(failures - free - 1, 30)
+    return min(base << exponent, max_delay)
+
+
+def throttle_wait(username):
+    """返回还要等几秒；0 表示不节流。"""
+    now = time.monotonic()
+    with _throttle_lock:
+        entry = _throttle_entries.get(username)
+        if entry is None:
+            return 0
+        _failures, last_failure, next_allowed = entry
+        ttl = _auth_config()[3] / 1000.0
+        if now - last_failure >= ttl:
+            _throttle_entries.pop(username, None)
+            return 0
+        if now >= next_allowed:
+            return 0
+        return max(1, int(math.ceil(next_allowed - now)))
+
+
+def throttle_failure(username):
+    now = time.monotonic()
+    ttl = _auth_config()[3] / 1000.0
+    with _throttle_lock:
+        failures, last_failure, _next = _throttle_entries.get(username, (0, 0.0, 0.0))
+        if now - last_failure >= ttl:
+            failures = 0
+        failures += 1
+        _throttle_entries[username] = (failures, now, now + _auth_delay_ms(failures) / 1000.0)
+
+
+def throttle_success(username):
+    with _throttle_lock:
+        _throttle_entries.pop(username, None)
 
 
 def read_users():
@@ -168,8 +236,14 @@ def serve(conn):
                     conn.sendall("\x1b[15;14H\x1b[37m请输入密码：".encode())
                     state = "login_pwd"
                 elif state == "login_pwd":
+                    wait = throttle_wait(pending_user)
+                    if wait > 0:
+                        conn.sendall(("\x1b[12;14H\x1b[37m登录尝试过于频繁，请 %d 秒后再试：\r\n"
+                                      "\x1b[14;14H\x1b[37m请输入密码：" % wait).encode())
+                        continue        # 保持"输入密码"状态，等够时间可重试
                     stored = read_users().get(pending_user)
                     if stored is not None and credential.verify(cmd, stored):
+                        throttle_success(pending_user)
                         # 旧版明文账号：登录成功后迁移（与真服务端一致）
                         if not credential.is_hashed(stored):
                             migrate_credential(pending_user, cmd)
@@ -177,6 +251,7 @@ def serve(conn):
                         conn.sendall(LOAD_MENU.encode())
                         state = "load_menu"
                     else:
+                        throttle_failure(pending_user)
                         conn.sendall("登录失败，用户名或密码错误。\r\n按3返回上级菜单:".encode())
                         state = "after_fail"
                 elif state == "after_fail":

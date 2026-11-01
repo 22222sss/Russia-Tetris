@@ -46,6 +46,12 @@ public:
 	//展示用户登录失败的界面
 	static bool show_Login_Failure(const shared_ptr<User>& user);
 
+	//展示"登录尝试过于频繁，请 N 秒后再试"（失败退避，见 TetrisGame/AuthThrottle.h）
+	static bool show_Login_Throttled(int retryAfterSeconds, const shared_ptr<User>& user);
+
+	//展示"服务繁忙"（哈希队列已满，本次没有校验）
+	static bool show_Server_Busy(const shared_ptr<User>& user);
+
 	//展示登录界面
 	static bool showLoadMenu(const shared_ptr<User>& user);
 

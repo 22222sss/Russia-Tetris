@@ -185,6 +185,18 @@ def expect_not(conn, needle, window=1.5):
         raise Failure("[%s] 不应出现 %r；最近输出：%r" % (STAGE, needle, conn.tail()))
 
 
+def wait_for_any(conn, needles, timeout):
+    """等待多个文本片段中任意一个出现，返回命中的片段（超时返回 None）。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for needle in needles:
+            if conn.contains(needle):
+                conn.wait_for(needle, 0.1)   # 推进 mark，后续断言从命中点之后开始
+                return needle
+        conn.drain(0.05)
+    return None
+
+
 # --------------------------------------------------------------------------
 # 各测试阶段
 # --------------------------------------------------------------------------
@@ -577,6 +589,74 @@ def test_unknown_user_login(args):
         conn.close()
 
 
+def test_login_throttled(args):
+    """连续失败触发退避：窗口内即使密码正确也被拒绝，等够时间后放行。
+
+    所有步骤都在**同一条连接**上完成：多 worker 时 SO_REUSEPORT 会把不同连接分给
+    不同进程，而退避计数是每进程的；同一连接始终由同一个 worker 处理，断言才稳定。
+    """
+    global STAGE
+
+    user = new_account_name() + "th"
+    valid = "valid-pw-" + str(random.randint(10000, 99999))
+    wrong = "wrong-pw-" + str(random.randint(10000, 99999))
+
+    STAGE = "退避：连接并注册测试账号"
+    conn = Conn(args.host, args.port, args.timeout)
+    try:
+        expect(conn, "1. 注册帐号")
+        conn.sendline("1")
+        expect(conn, "请输入用户名")
+        conn.sendline(user)
+        expect(conn, "请输入密码")
+        conn.sendline(valid)
+        expect(conn, "注册成功")
+        if not wait_for_userdata(args.userdata, user, args.timeout):
+            raise Failure("[%s] 账号 %r 未落盘（超时 %ss）" % (STAGE, user, args.timeout))
+        conn.sendline("3")
+        expect(conn, "2. 登录")
+
+        # 反复用错误密码尝试，直到出现退避提示（默认 5 次免延迟，这里留足余量）
+        throttled = False
+        for attempt in range(1, 11):
+            STAGE = "退避：第 %d 次失败尝试" % attempt
+            conn.sendline("2")
+            expect(conn, "请输入用户名")
+            conn.sendline(user)
+            expect(conn, "请输入密码")
+            conn.sendline(wrong)
+
+            hit = wait_for_any(conn, ("登录尝试过于频繁", "登录失败"), args.timeout)
+            if hit is None:
+                raise Failure("[%s] 既没有失败提示也没有退避提示" % STAGE)
+            if hit == "登录尝试过于频繁":
+                throttled = True
+                break
+            conn.sendline("3")          # 普通失败：回主菜单再试
+            expect(conn, "2. 登录")
+
+        if not throttled:
+            raise Failure("[%s] 连续 10 次失败后仍未触发退避" % STAGE)
+
+        STAGE = "退避：窗口内用正确密码重试也应被拒绝"
+        conn.sendline(valid)
+        expect(conn, "登录尝试过于频繁")
+        expect_not(conn, "3. 开始游戏", window=1.0)
+
+        text = conn.raw.decode("utf-8", "replace")
+        waits = re.findall(r"请 (\d+) 秒后再试", text)
+        if not waits:
+            raise Failure("[%s] 退避提示里没有等待秒数；最近输出：%r" % (STAGE, conn.tail()))
+        wait_seconds = int(waits[-1])
+
+        STAGE = "退避：等待 %d 秒后应能正常登录" % wait_seconds
+        time.sleep(wait_seconds + 0.5)
+        conn.sendline(valid)
+        expect(conn, "3. 开始游戏", timeout=args.timeout)
+    finally:
+        conn.close()
+
+
 def test_fast_reconnect(args):
     """快速重连：上一条连接刚关闭时，新连接通常复用同一个 fd。
 
@@ -674,6 +754,7 @@ def main():
         ("错误密码被拒绝", lambda: test_wrong_password(args, user)),
         ("注册密码过短被拒绝", lambda: test_short_password_rejected(args)),
         ("未知账号与错误密码提示一致", lambda: test_unknown_user_login(args)),
+        ("失败退避与等待后放行", lambda: test_login_throttled(args)),
         ("旧明文账号登录即迁移", lambda: test_legacy_migration(args)),
         ("快速重连后仍能响应输入", lambda: test_fast_reconnect(args)),
         ("游戏结束流程", lambda: test_game_over(args, user, password)),

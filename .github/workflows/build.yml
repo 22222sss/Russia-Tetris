@@ -93,6 +93,28 @@ jobs:
           fi
           echo "::notice::密码哈希自检通过: $(echo "$out" | tr '\n' '|' | cut -c1-600)"
 
+      - name: Auth throttle self-test
+        working-directory: src
+        run: |
+          # 退避是纯状态机（测试里注入时间），把边界（指数增长/封顶/成功清零/
+          # 窗口内不延长/过期/条目上限）全枚举出来，不用起服务端。
+          if ! g++ -std=c++17 -Wall -Wextra -I. TetrisGame/AuthThrottle.cpp \
+                ../tests/auth_throttle_test.cpp -pthread -o /tmp/at_test \
+                2> /tmp/at_build.txt; then
+            echo "::error::退避自检编译失败: $(tr '\n' '|' < /tmp/at_build.txt | cut -c1-1200)"
+            exit 1
+          fi
+
+          set +e
+          out=$(/tmp/at_test 2>&1)
+          rc=$?
+          echo "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::退避自检失败: $(echo "$out" | tr '\n' '|' | cut -c1-1500)"
+            exit 1
+          fi
+          echo "::notice::登录退避自检通过: $(echo "$out" | tr '\n' '|' | cut -c1-800)"
+
       - name: Protocol integration test
         working-directory: src
         run: |

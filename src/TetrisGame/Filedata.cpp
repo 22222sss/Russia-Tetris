@@ -218,17 +218,41 @@ void Filedata::stopHashPool() {
     hashQueue.swap(empty);
 }
 
-void Filedata::runHashTask(std::function<void()> task) {
+std::size_t Filedata::hashQueueLimit() {
+    static const std::size_t kDefault = 64;
+    static const std::size_t kLimit = [] {
+        const char* raw = std::getenv("TETRIS_AUTH_QUEUE_LIMIT");
+        if (raw == nullptr || *raw == '\0') {
+            return kDefault;
+        }
+        char* end = nullptr;
+        const long value = std::strtol(raw, &end, 10);
+        if (end == nullptr || *end != '\0' || value < 1 || value > 100000) {
+            return kDefault;
+        }
+        return static_cast<std::size_t>(value);
+    }();
+    return kLimit;
+}
+
+bool Filedata::runHashTask(std::function<void()> task) {
     if (!hashPoolReady.load()) {
+        // 池未启用（TETRIS_HASH_THREADS=0/1）：在文件线程上串行执行，等价于旧行为
         task();
-        return;
+        return true;
     }
 
     {
         std::lock_guard<std::mutex> lock(hashMutex);
+        // 队列有界：PBKDF2 很慢，无界排队会让登录风暴把内存和延迟一起拖爆。
+        // 满了直接拒绝本次校验（上层回"系统繁忙"），由客户端稍后重试。
+        if (hashQueue.size() >= hashQueueLimit()) {
+            return false;
+        }
         hashQueue.push(task);
     }
     hashCond.notify_one();
+    return true;
 }
 
 // 初始化异步系统
@@ -521,12 +545,12 @@ bool Filedata::lookupCredential(const std::string& username, std::string& creden
 }
 
 void Filedata::loginAsync(const std::string& username, const std::string& password,
-    std::function<void(bool success)> callback) {
+    std::function<void(LoginResult)> callback) {
     // 参数全部按值捕获：任务在异步线程上跑，不能再去读 User（连接可能已断、对象已被复用）。
     auto task = [username, password, callback]() {
         // 回到事件循环线程再动 User / socket（与其它异步回调保持同一约定）
-        const auto finish = [callback](bool ok) {
-            EventLoop::post([callback, ok]() { callback(ok); });
+        const auto finish = [callback](LoginResult result) {
+            EventLoop::post([callback, result]() { callback(result); });
             };
 
         string stored;
@@ -535,70 +559,76 @@ void Filedata::loginAsync(const std::string& username, const std::string& passwo
                 // 账号不存在：也要排一次同样代价的 PBKDF2（随机假凭据）。
                 // 否则"响应很快"本身就等于告诉客户端"这个用户名不存在"，可被用来枚举账号；
                 // 走哈希池而不是在文件线程上直接算，和真实校验的排队语义保持一致。
-                runHashTask([password, finish]() {
-                    PasswordHash::verifyDummy(password);
-                    finish(false);
-                });
+                if (!runHashTask([password, finish]() {
+                        PasswordHash::verifyDummy(password);
+                        finish(LoginResult::BadCredentials);
+                    })) {
+                    finish(LoginResult::Busy);
+                }
                 return;
             }
         }
         catch (const std::exception& e) {
             logger->error("登录校验异常: 用户={}, 错误={}", username, e.what());
-            finish(false);
+            finish(LoginResult::BadCredentials);
             return;
         }
 
         // PBKDF2 是纯 CPU 计算：交给哈希线程池并行；池未启用时（0/1 线程）在这里同步执行。
-        runHashTask([username, password, stored, finish]() {
-            bool needsRehash = false;
-            bool ok = false;
-            try {
-                ok = PasswordHash::verify(password, stored, &needsRehash);
-            }
-            catch (const std::exception& e) {
-                logger->error("密码校验异常: 用户={}, 错误={}", username, e.what());
-                finish(false);
-                return;
-            }
+        // 队列满时 runHashTask 返回 false：本次根本没校验，回 Busy，不能算成密码错误
+        // （否则失败次数会被"系统繁忙"污染，退避会误伤正常用户）。
+        if (!runHashTask([username, password, stored, finish]() {
+                bool needsRehash = false;
+                bool ok = false;
+                try {
+                    ok = PasswordHash::verify(password, stored, &needsRehash);
+                }
+                catch (const std::exception& e) {
+                    logger->error("密码校验异常: 用户={}, 错误={}", username, e.what());
+                    finish(LoginResult::BadCredentials);
+                    return;
+                }
 
-            if (!ok) {
-                finish(false);
-                return;
-            }
-            if (!needsRehash) {
-                finish(true);
-                return;
-            }
+                if (!ok) {
+                    finish(LoginResult::BadCredentials);
+                    return;
+                }
+                if (!needsRehash) {
+                    finish(LoginResult::Ok);
+                    return;
+                }
 
-            // 旧版明文（或参数落后的哈希）：迁移成当前格式。
-            // 新哈希继续在当前线程算；落盘必须回单写线程（写队列），否则会与其它文件操作并发。
-            string upgraded;
-            try {
-                upgraded = PasswordHash::hash(password);
-            }
-            catch (const std::exception& e) {
-                logger->error("迁移密码时生成哈希失败，保留旧值: 用户={}, 错误={}", username, e.what());
-                finish(true);   // 迁移失败不影响本次登录
-                return;
-            }
+                // 旧版明文（或参数落后的哈希）：迁移成当前格式。
+                // 新哈希继续在当前线程算；落盘必须回单写线程（写队列），否则会与其它文件操作并发。
+                string upgraded;
+                try {
+                    upgraded = PasswordHash::hash(password);
+                }
+                catch (const std::exception& e) {
+                    logger->error("迁移密码时生成哈希失败，保留旧值: 用户={}, 错误={}", username, e.what());
+                    finish(LoginResult::Ok);   // 迁移失败不影响本次登录
+                    return;
+                }
 
-            {
-                std::lock_guard<std::mutex> lock(queueMutex);
-                writeQueue.push([username, upgraded, finish]() {
-                    DataFileLock fileLock(true);
-                    if (rewriteStoredCredential(username, upgraded)) {
-                        updateCredentialInMemory(username, upgraded);
-                        logger->info("账号密码已迁移为加盐哈希: {}", username);
-                    }
-                    else {
-                        logger->warn("账号密码迁移失败，保留旧值: {}", username);
-                    }
-                    finish(true);
-                    });
-            }
-            queueCondition.notify_one();
-            });
-        };
+                {
+                    std::lock_guard<std::mutex> lock(queueMutex);
+                    writeQueue.push([username, upgraded, finish]() {
+                        DataFileLock fileLock(true);
+                        if (rewriteStoredCredential(username, upgraded)) {
+                            updateCredentialInMemory(username, upgraded);
+                            logger->info("账号密码已迁移为加盐哈希: {}", username);
+                        }
+                        else {
+                            logger->warn("账号密码迁移失败，保留旧值: {}", username);
+                        }
+                        finish(LoginResult::Ok);
+                        });
+                }
+                queueCondition.notify_one();
+            })) {
+            finish(LoginResult::Busy);
+        }
+    };
 
     {
         std::lock_guard<std::mutex> lock(queueMutex);

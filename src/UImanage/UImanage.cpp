@@ -112,6 +112,28 @@ bool UImanage::show_Login_Failure(const shared_ptr<User>& user)
     return true;
 }
 
+bool UImanage::show_Login_Throttled(int retryAfterSeconds, const shared_ptr<User>& user)
+{
+    const string message = "登录尝试过于频繁，请 " + to_string(retryAfterSeconds) + " 秒后再试：";
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, message))
+        return false;
+
+    // 保持在"输入密码"状态，客户端等够时间后可以直接重输
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 5, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请输入密码："))
+        return false;
+    return true;
+}
+
+bool UImanage::show_Server_Busy(const shared_ptr<User>& user)
+{
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "服务繁忙，请稍后重试："))
+        return false;
+
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 5, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请输入密码："))
+        return false;
+    return true;
+}
+
 bool UImanage::showLoadMenu(const shared_ptr<User>& user)
 {
     if (!UImanage::clear(user))

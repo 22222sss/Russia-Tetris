@@ -44,8 +44,12 @@ private:
 	static void ensureHashPool();
 	static void stopHashPool();
 	static void hashWorker();
-	// 有池就投递到池，没有就同步执行（同一份任务代码）
-	static void runHashTask(std::function<void()> task);
+	// 有池就投递到池，没有就同步执行（同一份任务代码）。
+	// 返回 false 表示池里待处理任务已到上限、本次没有执行（上层回"系统繁忙"）。
+	static bool runHashTask(std::function<void()> task);
+	// 哈希队列待处理上限（TETRIS_AUTH_QUEUE_LIMIT，默认 64）：
+	// PBKDF2 很慢，无界排队会让登录风暴把内存和延迟一起拖爆。
+	static std::size_t hashQueueLimit();
 
 	// 缓存管理
 	static void addToCache(const std::shared_ptr<PlayerInfo>& player);
@@ -60,6 +64,14 @@ private:
 	static bool lookupCredential(const std::string& username, std::string& credential);
 
 public:
+	// 登录校验结果：Busy 表示服务端哈希队列已满、本次根本没校验（不能算"密码错误"，
+	// 否则失败次数会被系统繁忙污染，退避会误伤正常用户）。
+	enum class LoginResult {
+		Ok,
+		BadCredentials,
+		Busy
+	};
+
 	// 初始化异步写入系统
 	static bool initializeAsyncSystem();
 	static void shutdownAsyncSystem();
@@ -84,9 +96,9 @@ public:
 
 	// 校验密码（异步，PBKDF2 有意较慢，不能占事件循环线程）。
 	// 校验通过且存储的是旧版明文/旧参数哈希时，顺手迁移成当前格式。
-	// callback 在事件循环线程上执行，参数为是否通过。
+	// callback 在事件循环线程上执行，参数是本次校验结果（Ok/BadCredentials/Busy）。
 	static void loginAsync(const std::string& username, const std::string& password,
-		std::function<void(bool success)> callback);
+		std::function<void(LoginResult)> callback);
 
 	// 🔥 新增：异步读取方法（带callback）
 	static void readRecentGradesAsync(const shared_ptr<User>& user,std::function<void(bool success, vector<string> result)> callback);
