@@ -248,7 +248,7 @@ int User::getData(int i, int j) const
 
 void User::setData(int i, int j, int value)
 {
-    this->data[i][j] = value;
+    this->data[i][j] = static_cast<int8_t>(value);
 }
 
 // Getter and setter functions for color
@@ -260,7 +260,7 @@ int User::getColor(int i, int j) const
 
 void User::setColor(int i, int j, int value)
 {
-    this->color[i][j] = value;
+    this->color[i][j] = static_cast<int8_t>(value);
 }
 
 // Getter and setter functions for username

@@ -4,6 +4,7 @@
 
 #include"../Common/Common.h"
 #include <functional>
+#include <cstdint>
 
 class User
 {
@@ -158,8 +159,13 @@ private:
     int nextForm;
     int row;
     int col;
-    int data[WINDOW_ROW_COUNT][WINDOW_COL_COUNT + 10];
-    int color[WINDOW_ROW_COUNT][WINDOW_COL_COUNT + 10];
+    // 棋盘只存两种值：data = 0/1（有无方块），color = -1（空）/ 0~6（方块颜色）。
+    // 用 int 时这两个数组占 24*30*4*2 = 5760 字节，是 sizeof(User) 的 91%；
+    // 10 万连接光用户对象就要 ~630MB。改用 int8_t（有符号！color 的 -1 是哨兵，
+    // 无符号会变成 255）后棋盘只占 1440 字节，10 万连接降到 ~200MB。
+    // 取值由 Game.cpp 保证在上述范围，热路径上不做额外边界检查。
+    int8_t data[WINDOW_ROW_COUNT][WINDOW_COL_COUNT + 10];
+    int8_t color[WINDOW_ROW_COUNT][WINDOW_COL_COUNT + 10];
 
     string username;
     string password;
@@ -189,6 +195,10 @@ private:
     static std::map<int, std::shared_ptr<User>> users;
     static std::mutex users_mutex; // 添加互斥锁
 };
+
+// 每个连接一个 User，10 万连接时每多 1KB 就是 100MB。棋盘改成 int8_t 后约 2KB；
+// 这条断言防止以后有人把 data/color 改回 int 或往结构体里塞大字段而悄悄涨回去。
+static_assert(sizeof(User) <= 2048, "User 结构体溢出了 2KB 预算（10 万连接约 200MB）");
 
 
 

@@ -19,6 +19,10 @@
 #   * 会尝试把 ulimit -n 提到 40 万，并在有 root/sudo 时调整内核参数
 #   * 服务端在 src/ 下启动，userdata.csv / log.txt 自动生成（已 gitignore）
 #   * 结果写入 bench-results/<时间戳>/，包含 result.json、result.txt、server.log、summary.md
+#
+# 同机 A/B 用的环境变量:
+#   BENCH_OPT=-O0     指定编译优化级别（默认跟随 makefile 的 -O2）
+#   BENCH_BIN=/abs/x  跳过 make，直接跑这个二进制（配合两份预编译产物做对比）
 set -euo pipefail
 
 TARGET=${1:-100000}
@@ -168,15 +172,27 @@ echo "syn_backlog: $(cat /proc/sys/net/ipv4/tcp_max_syn_backlog 2>/dev/null)" | 
 echo "port_range : $(cat /proc/sys/net/ipv4/ip_local_port_range 2>/dev/null | tr '\t' '-')" | tee -a "$OUT/env.txt"
 echo "tw_reuse   : $(cat /proc/sys/net/ipv4/tcp_tw_reuse 2>/dev/null)" | tee -a "$OUT/env.txt"
 
-log "构建"
-if ! make -C "$SRC" -j"$(nproc)" ${BENCH_OPT:+OPT=$BENCH_OPT} > "$OUT/build.log" 2>&1; then
-  echo "构建失败，最后 40 行日志："
-  tail -40 "$OUT/build.log"
-  exit 1
+log "准备二进制"
+# 预编译二进制（做同机 A/B 时用，必须是绝对路径）：给了就跳过 make。
+BIN=${BENCH_BIN:-}
+if [ -z "$BIN" ]; then
+  BIN="$SRC/tetris_game"
+  if ! make -C "$SRC" -j"$(nproc)" ${BENCH_OPT:+OPT=$BENCH_OPT} > "$OUT/build.log" 2>&1; then
+    echo "构建失败，最后 40 行日志："
+    tail -40 "$OUT/build.log"
+    exit 1
+  fi
+  echo "构建完成: $BIN" | tee -a "$OUT/env.txt"
+  # 优化级别必须落进结果目录：-O0 与 -O2 的数字不能混比（见 docs/HANDOVER.md）
+  echo "优化级别  : ${BENCH_OPT:-$(make -s -C "$SRC" print-opt)}" | tee -a "$OUT/env.txt"
+else
+  echo "使用预编译二进制（跳过 make）" | tee -a "$OUT/env.txt"
+  if [ ! -x "$BIN" ]; then
+    echo "::error::BENCH_BIN 不存在或不可执行: $BIN"
+    exit 1
+  fi
 fi
-echo "构建完成: $SRC/tetris_game" | tee -a "$OUT/env.txt"
-# 优化级别必须落进结果目录：-O0 与 -O2 的数字不能混比（见 docs/HANDOVER.md）
-echo "优化级别  : ${BENCH_OPT:-$(make -s -C "$SRC" print-opt)}" | tee -a "$OUT/env.txt"
+echo "二进制    : $BIN" | tee -a "$OUT/env.txt"
 echo "workers   : $WORKERS" | tee -a "$OUT/env.txt"
 echo "reuseport : ${REUSEPORT:-auto}" | tee -a "$OUT/env.txt"
 
@@ -187,7 +203,7 @@ SERVER_ENV="TETRIS_WORKERS=$WORKERS"
 if [ -n "$REUSEPORT" ]; then
   SERVER_ENV="$SERVER_ENV TETRIS_REUSEPORT=$REUSEPORT"
 fi
-env $SERVER_ENV ./tetris_game > "$OUT/server.log" 2>&1 &
+env $SERVER_ENV "$BIN" > "$OUT/server.log" 2>&1 &
 SRV_PID=$!
 SAMPLER_PID=""
 cleanup() {
