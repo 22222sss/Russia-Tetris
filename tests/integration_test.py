@@ -65,8 +65,20 @@ def annotate(level, message):
 class Conn:
     """一条到服务端的连接，负责累积输出并等待文本片段出现。"""
 
-    def __init__(self, host, port, timeout=15.0):
-        self.sock = socket.create_connection((host, port), timeout=timeout)
+    def __init__(self, host, port, timeout=15.0, source_ip=None):
+        # source_ip：绑定客户端源地址。按 IP 兜底的测试要靠它从 127.0.0.2 连，
+        # 证明"限流是按来源 IP 分的"，而不是"登录失败就全站封"。
+        if source_ip:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(timeout)
+            try:
+                self.sock.bind((source_ip, 0))
+                self.sock.connect((host, port))
+            except OSError:
+                self.sock.close()
+                raise
+        else:
+            self.sock = socket.create_connection((host, port), timeout=timeout)
         self.sock.settimeout(0.2)
         self.raw = bytearray()
         self.mark = 0

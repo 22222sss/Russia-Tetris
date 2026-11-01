@@ -115,6 +115,28 @@ jobs:
           fi
           echo "::notice::登录退避自检通过: $(echo "$out" | tr '\n' '|' | cut -c1-800)"
 
+      - name: IP fallback self-test
+        working-directory: src
+        run: |
+          # 按 IP 兜底也是纯状态机（时间注入）：阈值 / 滑动窗口 / 拒绝不记账不延长 /
+          # 条目上限 fail-open / 多 IP 隔离，全枚举，不用起服务端。
+          if ! g++ -std=c++17 -Wall -Wextra -I. TetrisGame/IpThrottle.cpp \
+                ../tests/ip_throttle_test.cpp -pthread -o /tmp/ipt_test \
+                2> /tmp/ipt_build.txt; then
+            echo "::error::IP 兜底自检编译失败: $(tr '\n' '|' < /tmp/ipt_build.txt | cut -c1-1200)"
+            exit 1
+          fi
+
+          set +e
+          out=$(/tmp/ipt_test 2>&1)
+          rc=$?
+          echo "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::IP 兜底自检失败: $(echo "$out" | tr '\n' '|' | cut -c1-1500)"
+            exit 1
+          fi
+          echo "::notice::IP 兜底自检通过: $(echo "$out" | tr '\n' '|' | cut -c1-800)"
+
       - name: Protocol integration test
         working-directory: src
         run: |
@@ -153,6 +175,48 @@ jobs:
               detail=$(tail -20 /tmp/it_server.log 2>/dev/null | tr '\n' '|' | cut -c1-1500)
             fi
             echo "::error::协议集成测试失败，服务端日志: $detail"
+          fi
+          exit "$RC"
+
+      - name: IP fallback integration test
+        working-directory: src
+        run: |
+          # 按 IP 兜底必须用低阈值跑（默认 300 次/5 分钟，测试里等不起）：
+          # 这里 5 次/10 秒。用例换用户名喷洒 -> 该 IP 被拦 -> 正确密码也进不去 ->
+          # 另一个源地址（127.0.0.2）同时能登录 -> 窗口滑过后恢复。
+          set +e
+
+          if ! python3 -m py_compile ../tests/ip_fallback_test.py 2> /tmp/pyc_ip.txt; then
+            echo "::error::ip_fallback_test.py 语法错误: $(tr '\n' '|' < /tmp/pyc_ip.txt | cut -c1-800)"
+            exit 1
+          fi
+
+          rm -f userdata.csv userdata.csv.lock log.txt
+          TETRIS_AUTH_IP_MAX_FAILURES=5 TETRIS_AUTH_IP_WINDOW_MS=10000 \
+            TETRIS_PORT=10006 ./tetris_game > /tmp/ip_server.log 2>&1 &
+          echo $! > /tmp/ip_server.pid
+
+          for i in $(seq 1 120); do
+            if (exec 3<>/dev/tcp/127.0.0.1/10006) 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          python3 ../tests/ip_fallback_test.py --port 10006 --userdata userdata.csv \
+            --max-failures 5 --window-ms 10000
+          RC=$?
+
+          kill "$(cat /tmp/ip_server.pid)" 2>/dev/null
+          wait "$(cat /tmp/ip_server.pid)" 2>/dev/null
+          sleep 1
+
+          if [ "$RC" -ne 0 ]; then
+            detail=$(grep -aE '来源 IP|登录|Client\[|Error|error' log.txt 2>/dev/null | tail -25 | tr '\n' '|' | cut -c1-1500)
+            if [ -z "$detail" ]; then
+              detail=$(tail -20 /tmp/ip_server.log 2>/dev/null | tr '\n' '|' | cut -c1-1500)
+            fi
+            echo "::error::IP 兜底测试失败，服务端日志: $detail"
           fi
           exit "$RC"
 

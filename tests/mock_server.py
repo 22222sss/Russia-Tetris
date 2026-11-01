@@ -111,6 +111,79 @@ def throttle_success(username):
         _throttle_entries.pop(username, None)
 
 
+# ---------------------------------------------------------------------------
+# 按来源 IP 的粗粒度兜底：与 src/TetrisGame/IpThrottle.cpp 对齐。
+# 5 个等长槽位组成滑动窗口；被拒绝的尝试不记账、不延长窗口；成功登录不清零
+# （注册是开放的，成功后清零等于给攻击者一个免费的重置开关）。
+# 真服务端只在事件循环线程上访问，不用加锁；mock 是多线程的，这里用一把锁。
+# ---------------------------------------------------------------------------
+IP_SLOTS = 5
+
+_ip_lock = threading.Lock()
+_ip_entries = {}   # ip -> [(时间片编号, 失败次数)] * IP_SLOTS
+
+
+def _ip_config():
+    return (
+        _auth_env_int("TETRIS_AUTH_IP_MAX_FAILURES", 300),
+        _auth_env_int("TETRIS_AUTH_IP_WINDOW_MS", 5 * 60 * 1000),
+        _auth_env_int("TETRIS_AUTH_IP_MAX_ENTRIES", 4096),
+    )
+
+
+def _ip_slot_ms(window_ms):
+    return max(1, window_ms // IP_SLOTS)
+
+
+def ip_throttle_wait(peer_ip):
+    """返回还要等几秒；0 表示不节流。"""
+    max_failures, window_ms, _max_entries = _ip_config()
+    slot_ms = _ip_slot_ms(window_ms)
+    now_ms = int(time.monotonic() * 1000)
+    cur = now_ms // slot_ms
+    with _ip_lock:
+        slots = _ip_entries.get(peer_ip)
+        if slots is None:
+            return 0
+        total = sum(count for bucket, count in slots
+                    if bucket is not None and bucket <= cur and cur - bucket < IP_SLOTS)
+        if total == 0:
+            _ip_entries.pop(peer_ip, None)
+            return 0
+        if total < max_failures:
+            return 0
+        # 等最老的失败滑出窗口（和 C++ 侧同一算法）
+        acc = total
+        drain_ms = (cur + 1) * slot_ms
+        for bucket, count in sorted(b for b in slots if b[0] is not None):
+            if bucket > cur or cur - bucket >= IP_SLOTS:
+                continue
+            acc -= count
+            if acc < max_failures:
+                drain_ms = (bucket + IP_SLOTS) * slot_ms
+                break
+        return max(1, int(math.ceil((drain_ms - now_ms) / 1000.0)))
+
+
+def ip_throttle_failure(peer_ip):
+    _max_failures, window_ms, max_entries = _ip_config()
+    slot_ms = _ip_slot_ms(window_ms)
+    cur = int(time.monotonic() * 1000) // slot_ms
+    index = cur % IP_SLOTS
+    with _ip_lock:
+        slots = _ip_entries.get(peer_ip)
+        if slots is None:
+            if len(_ip_entries) >= max_entries:
+                return      # 条目满了不再跟踪新 IP（fail-open）
+            slots = [(None, 0)] * IP_SLOTS
+            _ip_entries[peer_ip] = slots
+        bucket, count = slots[index]
+        if bucket != cur:
+            slots[index] = (cur, 1)
+        else:
+            slots[index] = (cur, count + 1)
+
+
 def read_users():
     """从 CSV 读账号（不用内存字典）：多个 mock 实例共享同一份文件时，
     行为和真服务端一致，才能用来验证跨进程测试脚本。"""
@@ -175,6 +248,10 @@ def migrate_credential(name, password):
 
 
 def serve(conn):
+    try:
+        peer_ip = conn.getpeername()[0]
+    except OSError:
+        peer_ip = "0.0.0.0"
     conn.sendall(MENU.encode())
     state = "menu"
     buf = b""
@@ -236,7 +313,10 @@ def serve(conn):
                     conn.sendall("\x1b[15;14H\x1b[37m请输入密码：".encode())
                     state = "login_pwd"
                 elif state == "login_pwd":
-                    wait = throttle_wait(pending_user)
+                    # 先判 IP（与真服务端同序）：换用户名喷洒时只有这一层拦得住
+                    wait = ip_throttle_wait(peer_ip)
+                    if wait == 0:
+                        wait = throttle_wait(pending_user)
                     if wait > 0:
                         conn.sendall(("\x1b[12;14H\x1b[37m登录尝试过于频繁，请 %d 秒后再试：\r\n"
                                       "\x1b[14;14H\x1b[37m请输入密码：" % wait).encode())
@@ -252,6 +332,7 @@ def serve(conn):
                         state = "load_menu"
                     else:
                         throttle_failure(pending_user)
+                        ip_throttle_failure(peer_ip)
                         conn.sendall("登录失败，用户名或密码错误。\r\n按3返回上级菜单:".encode())
                         state = "after_fail"
                 elif state == "after_fail":

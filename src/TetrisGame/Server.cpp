@@ -5,6 +5,7 @@
 #include"PlayerInfo.h"
 #include"PasswordPolicy.h"
 #include"AuthThrottle.h"
+#include"IpThrottle.h"
 #include"../Utility/Utility.h"
 #include"../UImanage/UImanage.h"
 #include"../EventLoop/EventLoop.h"
@@ -303,10 +304,29 @@ int Server::receive_password_load(shared_ptr<User>& user)
 
     if (password != "")
     {
+        const auto now = std::chrono::steady_clock::now();
+
+        // 按来源 IP 的粗粒度兜底（见 TetrisGame/IpThrottle.h）。
+        // 用户名退避挡不住"换用户名喷洒"：每个新用户名都有 5 次免延迟，且攻击者
+        // 可以用不存在的用户名，每次都逼服务端跑一次假 PBKDF2。这一层按 IP 封顶。
+        // 被拒绝的尝试不记账、也不延长窗口，否则同 NAT 后面的人会被一起锁死。
+        const auto ipDecision = IpThrottle::check(user->getPeerIp(), now);
+        if (ipDecision.throttled)
+        {
+            user->setReceivedata("");
+            logger->warn("来源 IP {} 登录失败过多，拒绝本次尝试（{} 秒后可重试）",
+                         IpThrottle::format(user->getPeerIp()),
+                         ipDecision.retryAfterSeconds);
+            if (!UImanage::show_Login_Throttled(ipDecision.retryAfterSeconds, user))
+            {
+                return -1;
+            }
+            return 2;   // 保持"输入密码"状态，客户端等够时间后可重试
+        }
+
         // 失败退避：同一用户名连续失败太多次时，本次直接拒绝（不跑 PBKDF2）。
         // 窗口内的尝试只被拒绝、不延长窗口——否则会被拿来把别人的账号锁死。
-        const auto throttle = AuthThrottle::check(user->getUsername(),
-                                                  std::chrono::steady_clock::now());
+        const auto throttle = AuthThrottle::check(user->getUsername(), now);
         if (throttle.throttled)
         {
             user->setReceivedata("");
@@ -324,8 +344,9 @@ int Server::receive_password_load(shared_ptr<User>& user)
         user->setStatus(STATUS_VERIFYING_PASSWORD);
 
         const string loginUsername = user->getUsername();
+        const std::uint32_t peerIp = user->getPeerIp();   // 异步回调里不再回头读 User
         Filedata::loginAsync(loginUsername, password,
-            [user, loginUsername](Filedata::LoginResult result)
+            [user, loginUsername, peerIp](Filedata::LoginResult result)
             {
                 // 校验期间连接可能已断开（甚至 fd 已被回收复用），
                 // 状态一变就不能再往"这条连接"上渲染。与其它异步回调同一约定。
@@ -348,7 +369,10 @@ int Server::receive_password_load(shared_ptr<User>& user)
 
                 if (result == Filedata::LoginResult::BadCredentials)
                 {
-                    AuthThrottle::onFailure(loginUsername, std::chrono::steady_clock::now());
+                    const auto failedAt = std::chrono::steady_clock::now();
+                    AuthThrottle::onFailure(loginUsername, failedAt);
+                    // IP 维度同时记一笔：换用户名喷洒时只有这一层会生效
+                    IpThrottle::onFailure(peerIp, failedAt);
                     UImanage::show_Login_Failure(user);
                     user->setStatus(STATUS_REGISTER_OR_LOAD_OVER);
                     user->setReceivedata("");
@@ -607,13 +631,25 @@ bool Server::process_STATUS_REGISTER_OR_LOAD_OVER(shared_ptr<User>& user)
 // ✅ 使用连接池的方式
 void Server::handleNewClientConnection(int serverSocket, short events, void* arg) 
 {
-    int clientSocket = accept(serverSocket, NULL, NULL);
+    // 记录来源 IP（按 IP 兜底的输入，见 TetrisGame/IpThrottle.h）。
+    // 监听 socket 是 AF_INET，所以正常情况就是 sockaddr_in；不是 IPv4 时存 0，
+    // IpThrottle 会跳过限流（宁可漏记，也不要因为拿不到地址去误伤）。
+    struct sockaddr_storage peerAddr;
+    memset(&peerAddr, 0, sizeof(peerAddr));
+    socklen_t peerLen = sizeof(peerAddr);
+    int clientSocket = accept(serverSocket,
+                              reinterpret_cast<struct sockaddr*>(&peerAddr), &peerLen);
     if (clientSocket == -1) {
         logger->error("accept失败: {}", strerror(errno));
         return;
     }
 
-    logger->info("Client[{}] 连接!", clientSocket);
+    std::uint32_t peerIp = 0;
+    if (peerAddr.ss_family == AF_INET) {
+        peerIp = ntohl(reinterpret_cast<const struct sockaddr_in*>(&peerAddr)->sin_addr.s_addr);
+    }
+
+    logger->info("Client[{}] 连接! 来自 {}", clientSocket, IpThrottle::format(peerIp));
 
 
     // 🎯 关键改变：从连接池获取，而不是new
@@ -624,6 +660,9 @@ void Server::handleNewClientConnection(int serverSocket, short events, void* arg
         logger->error("从连接池获取User对象失败: {}", clientSocket);
         return;
     }
+
+    // 记在这条连接上：登录失败时按它计数（连接池复用时 resetUserInfo 会清掉）
+    newUser->setPeerIp(peerIp);
 
     // 注意：这里使用newUser.get()获取原始指针，保持原有接口兼容
     User::addUser(clientSocket, newUser);

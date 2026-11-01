@@ -32,6 +32,7 @@ void User::resetUserInfo()
     this->status = STATUS_NOTSTART;
     this->password = "";
     this->receivedata = "";
+    this->peerIp = 0;   // 对象回到池里时清掉来源 IP，避免复用后按上一条连接的 IP 限流
     this->scores = {};
     this->game_diffclutys = {};
     this->sendbuf.clear();
@@ -129,6 +130,18 @@ int User::getFd() const
 void User::setFd(int value)
 {
     this->fd = value;
+}
+
+// Getter and setter functions for peer IP
+
+std::uint32_t User::getPeerIp() const
+{
+    return this->peerIp;
+}
+
+void User::setPeerIp(std::uint32_t value)
+{
+    this->peerIp = value;
 }
 
 // Getter and setter functions for line

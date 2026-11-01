@@ -32,6 +32,11 @@ public:
     int getFd() const;
     void setFd(int value);
 
+    // 连接来源 IPv4（accept 时写入，主机字节序；0 表示未知）。按 IP 兜底用，
+    // 见 TetrisGame/IpThrottle.h。存 4 字节而不是字符串：结构体有 2KB 预算。
+    std::uint32_t getPeerIp() const;
+    void setPeerIp(std::uint32_t value);
+
     // Getter and setter functions for line
     int getLine() const;
     void setLine(int value);
@@ -150,6 +155,7 @@ public:
 
 private:
     int fd;
+    std::uint32_t peerIp = 0;   // 0 = 未知来源（没有 peer 地址时不参与按 IP 限流）
     int line;
     int score;
     int status;
