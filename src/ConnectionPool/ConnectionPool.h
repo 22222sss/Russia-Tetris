@@ -27,9 +27,15 @@ private:
     ~ConnectionPool() = delete;
 
 public:
-    // 单进程默认预创建数量。多 worker 部署时由 main 按 worker 数均分后传入
-    // initialize()，否则 N 个进程会各自预创建这么多，内存直接乘 N。
-    static const constexpr size_t INITIAL_POOL_SIZE = 50000;
+    // 单进程默认预创建数量（多 worker 时由 main 按 worker 数均分后传入 initialize()，
+    // 否则 N 个进程会各自预创建这么多，内存直接乘 N）。
+    //
+    // 这个值原来是为"10 万连接突发"设的 50000：但建连路径实测只占 ~16% 单核，
+    // 池空时按需 new 一个 User 只要 2~3 µs，预创建省不下多少 CPU；而每个 User 现在是
+    // 1984 B 对象 + 两个空 deque 约 1.15 KB 堆，5 万个就是 ~150 MiB——服务端哪怕只有
+    // 200 个玩家，也要常驻这么多内存。改为 2048（约 6 MiB）：能用上池子复用，
+    // 又不为"可能到来的十万连接"提前买单（池空时 acquire 会按需创建，峰值不受影响）。
+    static const constexpr size_t INITIAL_POOL_SIZE = 2048;
 
     // 初始化连接池 - 预创建对象
     static void initialize(size_t initial_size = INITIAL_POOL_SIZE);
