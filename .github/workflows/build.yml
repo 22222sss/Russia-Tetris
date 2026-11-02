@@ -670,7 +670,7 @@ jobs:
             # 所以别去比 "300000:300000" 这个字符串；/proc/<pid>/limits 才是进程里真正
             # 生效的值，systemctl 的输出只当参考信息打出来。
             PID=$(systemctl show tetris-game -p MainPID --value)
-            PROC_FD=$(awk '/Max open files/ {print $4"/"$5}' /proc/"$PID"/limits 2>/dev/null)
+            PROC_FD=$(sudo awk '/Max open files/ {print $4"/"$5}' /proc/"$PID"/limits 2>/dev/null)
             SHOW_FD=$(systemctl show tetris-game -p LimitNOFILE -p LimitNOFILESoft --value 2>/dev/null | tr '\n' '/')
             if [ "$PROC_FD" != "300000/300000" ]; then
               echo "::error::进程的 fd 上限是 '${PROC_FD:-未知}'（期望 300000/300000，软/硬）；systemd 报的是 $SHOW_FD"
@@ -692,17 +692,19 @@ jobs:
               RC_RUNTIME=1
             fi
 
-            # 3.4 真跑一次备份：脚本 + tetris-admin + 权限 + 内容
+            # 3.4 真跑一次备份：脚本 + tetris-admin + 权限 + 内容。
+            # /var/backups/tetris 是 0700 tetrisd —— 检查必须用 root 读（glob 也要在 root
+            # shell 里展开，否则 runner 连目录都列不出来）。
             sudo systemctl start tetris-backup.service
             RC_BACKUP=$?
-            BK=$(ls /var/backups/tetris/tetris-*.db 2>/dev/null | tail -1)
+            BK=$(sudo sh -c 'ls -1 /var/backups/tetris/tetris-*.db 2>/dev/null | tail -1')
             if [ "$RC_BACKUP" -ne 0 ] || [ -z "$BK" ]; then
-              echo "::error::备份失败（rc=$RC_BACKUP）: $(journalctl -u tetris-backup -n 20 --no-pager 2>&1 | tr '\n' '|' | cut -c1-1200)"
+              echo "::error::备份失败（rc=$RC_BACKUP）: $(sudo journalctl -u tetris-backup -n 20 --no-pager 2>&1 | tr '\n' '|' | cut -c1-1200)"
               RC_RUNTIME=1
             else
-              MODE=$(stat -c '%a' "$BK")
-              CHECK=$(python3 -c 'import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute("PRAGMA integrity_check").fetchone()[0])' "$BK")
-              SIZE=$(stat -c '%s' "$BK")
+              MODE=$(sudo stat -c '%a' "$BK")
+              SIZE=$(sudo stat -c '%s' "$BK")
+              CHECK=$(sudo python3 -c 'import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute("PRAGMA integrity_check").fetchone()[0])' "$BK")
               if [ "$MODE" != "600" ] || [ "$CHECK" != "ok" ] || [ "$SIZE" -le 0 ]; then
                 echo "::error::备份产物不对：$BK 权限=$MODE integrity=$CHECK 大小=$SIZE（期望 600 / ok / >0）"
                 RC_RUNTIME=1
@@ -786,7 +788,8 @@ jobs:
           done
 
           UID_IN_IMAGE=$(docker exec tetris-ci id -u 2>/dev/null)
-          FDLIMIT=$(awk '/Max open files/ {print $4}' "/proc/$(docker inspect -f '{{.State.Pid}}' tetris-ci)/limits" 2>/dev/null)
+          CPID=$(docker inspect -f '{{.State.Pid}}' tetris-ci)
+          FDLIMIT=$(sudo awk '/Max open files/ {print $4}' /proc/"$CPID"/limits 2>/dev/null)
           BYTES=$(timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/10020; head -c 16 <&3' 2>/dev/null | wc -c)
           ADMIN="ok"
           docker exec tetris-ci tetris-admin stats > /tmp/docker-admin.txt 2>&1 || ADMIN="fail"
