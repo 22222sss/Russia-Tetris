@@ -190,6 +190,11 @@ void EventLoop::unregister_Event_User(int timerfd, short events, void* arg) {
         // 也保证 fd 被复用后新连接能重新注册到 epoll（否则新连接会"静默"）。
         EventLoop::removeFdEvent(fd);
     }
+
+    // 池子只涨不缩：一批连接集中关闭后空闲 User 会全堆在池子里
+    // （10 万个 ≈ 300MB，直到进程重启）。这里按 TETRIS_POOL_TRIM_* 把空闲缓存
+    // 压回目标值；放在锁外是因为一次可能要析构上万个 User。
+    ConnectionPool::maybeTrim();
 }
 
 void EventLoop::removeFdEvent(evutil_socket_t fd) {

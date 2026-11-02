@@ -278,8 +278,9 @@ python3 tests/load_test.py 100000 5000 1 30 --pid "$(pgrep -f tetris_game)" --js
    （池空时按需 `new` 一个 `User` 只要 2~3µs）。
    同机 A/B：**200 玩家 RSS 190.4 → 41.1 MB（-78%）**，10 万连接**峰值 RSS 基本不变**
    （308/334 → 319/322 MB），成功率/CPU/速率无退化。
-   池子仍只涨不缩（`MAX_POOL_SIZE = 100000`），跑过峰值后会缓存对象
-   （详见 [docs/HANDOVER.md](docs/HANDOVER.md) 4.9）。
+   池子会涨到峰值（`MAX_POOL_SIZE = 100000`），但**空闲时会 trim 回 4096 个**
+   （`TETRIS_POOL_TRIM_TARGET`，默认 5 秒检查一次），跑过 10 万连接后那 ~300MB 缓存
+   最多留几秒；trim 只丢空闲对象，不影响在线连接（详见 [docs/HANDOVER.md](docs/HANDOVER.md) 4.9 与 5.连接池收缩）。
 
 > 口径提醒：上面的历史数字（51.4%、114.2% 等）是"全程 CPU"（含登录哈希），**不能和 -O2 的
 > 游戏窗口口径直接相除**。当前代码的每按键成本按窗口口径是 -O0 约 15 µs、-O2 约 11 µs。

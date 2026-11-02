@@ -49,6 +49,20 @@ public:
     // 获取当前池大小
     static size_t getPoolSize();
 
+    // ---- 池子收缩（trim）----
+    // 池子**只涨不缩**：跑过一次 10 万连接后，空闲的 User 会被一直缓存（每个对象
+    // 约 3.1KB，10 万个 ≈ 300MB），直到进程重启。trimIdleObjects() 把空闲缓存压回
+    // 目标值，让峰值过后的内存能还回去：
+    //   * 只动"空闲"对象（池里本来就只有空闲对象），正在用的连接完全不受影响；
+    //   * 目标值来自 TETRIS_POOL_TRIM_TARGET（默认 4096；设成 >= MAX_POOL_SIZE 即关闭）；
+    //   * 由 100ms 清理定时器通过 maybeTrim() 调用，内部按 TETRIS_POOL_TRIM_INTERVAL_MS
+    //     （默认 5000）限频，避免高频 trim 和建连抢 pool_mutex。
+    // 返回真正丢掉的对象数。
+    static std::size_t trimIdleObjects(std::size_t target);
+    static void maybeTrim();
+    static std::size_t trimTarget();
+    static int trimIntervalMs();
+
     // 清理池（服务器关闭时调用）
     static void cleanup();
 
@@ -60,6 +74,7 @@ public:
     static std::atomic<long> total_acquired;    // 总获取次数
     static std::atomic<long> total_released;    // 总归还次数
     static std::atomic<long> create_count;      // 总创建次数（池外创建）
+    static std::atomic<long> total_trimmed;     // 累计 trim 掉的对象数
 };
 
 #endif // ConnectionPool_H

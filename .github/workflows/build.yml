@@ -343,6 +343,78 @@ jobs:
         run: |
           bash tests/bench.sh 100 100 0 1
 
+      - name: Connection pool trim test
+        working-directory: src
+        run: |
+          # 池子只涨不缩：跑过一批连接后空闲 User 会一直缓存（每个约 3.1KB，
+          # 10 万个 ≈ 300MB，直到重启）。这里用低目标 + 短间隔把 trim 逼出来，
+          # 断言它确实把池子压回目标值，并且 trim 之后服务端仍能正常接新连接
+          # （池子被清空后 acquire 要能按需创建）。
+          set +e
+
+          # 3000 条连接要 3000 个客户端 fd（runner 的默认软限制不一定够）
+          ulimit -n 65535 2>/dev/null || echo "ulimit -n 提升失败（当前 $(ulimit -n)），继续尝试"
+
+          rm -f userdata.csv userdata.csv.lock log.txt
+          TETRIS_POOL_TRIM_TARGET=256 TETRIS_POOL_TRIM_INTERVAL_MS=300 \
+            TETRIS_LOG_LEVEL=info TETRIS_PORT=10007 \
+            ./tetris_game > /tmp/trim_server.log 2>&1 &
+          echo $! > /tmp/trim_server.pid
+
+          for i in $(seq 1 120); do
+            if (exec 3<>/dev/tcp/127.0.0.1/10007) 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          python3 ../tests/load_test.py 3000 500 0 0 --port 10007 \
+            --json /tmp/trim_load.json --min-success 0.9
+          RC_BEFORE=$?
+
+          # 客户端退出后连接才真正关闭：等 100ms 清理定时器把对象还回池子，再等 trim 到点
+          sleep 3
+
+          LINE=$(grep -a '连接池 trim' log.txt | tail -1)
+          if [ -z "$LINE" ]; then
+            echo "::error::连接池 trim 没有发生（日志里没有'连接池 trim'）；日志尾部: $(tail -5 log.txt 2>/dev/null | tr '\n' '|' | cut -c1-900)"
+            kill "$(cat /tmp/trim_server.pid)" 2>/dev/null
+            exit 1
+          fi
+          AFTER=$(echo "$LINE" | sed -n 's/.*-> *\([0-9][0-9]*\) (target.*/\1/p')
+          # 把所有 trim 行的"trim 前大小"加起来：启动那次是 2048（预创建），
+          # 峰值那次是 ~3000。加起来 >= 4200 才能证明"3000 条连接真的被缓存过"。
+          SUM_BEFORE=$(grep -a '连接池 trim' log.txt \
+            | sed -n 's/.*trim: *\([0-9][0-9]*\) ->.*/\1/p' \
+            | awk '{s+=$1} END {print s+0}')
+          echo "trim 记录（最后一条）: $LINE"
+          echo "trim 前大小累计: ${SUM_BEFORE:-?}（启动 ~2048 + 峰值 ~3000）"
+
+          if [ -z "$AFTER" ] || [ "$AFTER" -gt 256 ]; then
+            echo "::error::trim 后池子仍有 $AFTER 个对象（目标 256）: $LINE"
+            kill "$(cat /tmp/trim_server.pid)" 2>/dev/null
+            exit 1
+          fi
+          if [ -z "$SUM_BEFORE" ] || [ "$SUM_BEFORE" -lt 4200 ]; then
+            echo "::error::trim 前大小累计只有 $SUM_BEFORE（期望 >=4200），说明那 3000 条连接没有被缓存进池子: $LINE"
+            kill "$(cat /tmp/trim_server.pid)" 2>/dev/null
+            exit 1
+          fi
+
+          # 池子被压到 256 之后，新连接必须仍然正常（池空 -> 按需创建）
+          python3 ../tests/load_test.py 200 200 0 0 --port 10007 \
+            --json /tmp/trim_after.json --min-success 0.9
+          RC_AFTER=$?
+
+          kill "$(cat /tmp/trim_server.pid)" 2>/dev/null
+          wait "$(cat /tmp/trim_server.pid)" 2>/dev/null
+
+          if [ "$RC_BEFORE" -ne 0 ] || [ "$RC_AFTER" -ne 0 ]; then
+            echo "::error::trim 前后压测失败（before=$RC_BEFORE after=$RC_AFTER）"
+            exit 1
+          fi
+          echo "::notice::连接池 trim 生效: $LINE"
+
       - name: Memory sanity check (sizeof User)
         working-directory: src
         run: |
