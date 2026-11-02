@@ -48,16 +48,14 @@
 **更早**：登录失败退避 + 哈希队列上限；再往前是注册密码策略 + 未知账号假 PBKDF2、
 连接池 2048（4.9）、`User` 棋盘 int8（4.8）、构建优化 -O2（4.7）。
 
-**下一步建议（按顺序）**：
+**下一步建议（按顺序，详见第 8 节）**：
 
-1. **管理员 CLI + 备份**（上线必需）：`tetris-admin reset-password <user>`（没有邮箱，"找回"
-   只能这样）、`tetris-admin backup`（`sqlite3 .backup` 或直接把库拷走）；顺便把"启动时打印生效配置"
-   一起做掉；
-2. **注册限流**（可选）：注册路径不经过用户名退避/IP 兜底，每次注册一次 PBKDF2（占写队列，
-   不占哈希线程池）；只在对外开放注册时才值得做；
-3. **认证状态跨进程**（可选）：用户名退避 / IP 兜底的计数都在各 worker 内存里（见 6.23/6.25）；
-4. **打包/部署**（上线必需）：Dockerfile / systemd unit / SSH 承载（`ForceCommand`）；
-5. **`-flto` / 连接建立路径**（性能线，收益有限）；远程多机压测要第二台机器/预算。
+1. **SSH 承载**（上线必需）：sshd `ForceCommand`，解决"明文密码过网"，零协议改造；
+2. **管理员 CLI + 备份**（上线必需）：`reset-password`（没邮箱，"找回"只能这样）/
+   `backup`（`sqlite3 .backup`）；顺便启动时打印生效配置；
+3. **打包/部署**（上线必需）：Dockerfile（多阶段、非 root、HEALTHCHECK）+ systemd unit；
+4. **注册限流**（公网开放后）：注册的 PBKDF2 在唯一写线程上且无上限（见 6.30）；
+5. **认证状态跨进程**（可选，多 worker 才值得）；`-flto` / 连接建立路径（性能线，收益有限）。
 
 **最有用的结论**（细节见后文）：
 
@@ -70,7 +68,7 @@
   **两层退避状态都是每进程的**：多 worker 时阈值实际 ×N（默认 1 worker 不受影响）；
 - **新注册密码 ≥ 8 个字符**（UTF-8 码点）且不能全空白；**老账号不受限**；
 - **登录后可以改密**（主菜单 5）：新密码走同一套策略，旧密码错误计入退避/IP 兜底
-  （不然它就是绕限流猜密码的旁路），落盘复用迁移的路径（flock + 临时文件 + rename），
+  （不然它就是绕限流猜密码的旁路），落盘是一条 `UPDATE accounts`（不再是整表重写），
   改完另一个 worker 立即可用；**存量短密码由此有了出路**；
 - **账号不存在与密码错误耗时同量级**（未知账号也跑一次假 PBKDF2）；
 
@@ -490,34 +488,35 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 
 ### 密码存储
 
-- 新增 `TetrisGame/PasswordHash.{h,cpp}`：PBKDF2-HMAC-SHA256（OpenSSL `PKCS5_PBKDF2_HMAC`）
+- `TetrisGame/PasswordHash.{h,cpp}`：PBKDF2-HMAC-SHA256（OpenSSL `PKCS5_PBKDF2_HMAC`）
   - 存储格式 `$pbkdf2-sha256$<iter>$<salt-hex>$<hash-hex>`，当前 `iter=100000`、盐 16 字节、
-    摘要 32 字节；用 hex 而不是 base64，因为 CSV 是裸切逗号的；
+    摘要 32 字节；用 hex 而不是 base64 是为了不引额外编码库（这列历史上在 CSV 里，格式没变）；
   - 盐来自 `RAND_bytes`；比较用 `CRYPTO_memcmp`；
   - `verify()` 对旧版明文兼容匹配并置 `needsRehash=true`；**前缀像哈希但解析失败时直接拒绝**，
     绝不退回明文比较（否则改坏一行记录就能绕过校验）；
-- 注册（`saveNewUserDataAsync`）：在**每次调用时先拷贝用户名/密码**（原实现直接捕获 `shared_ptr<User>`，
-  异步线程执行时连接可能已断开、对象已被池复用并清空），再用哈希落盘、缓存也只存哈希；
+- 注册（`saveNewUserDataAsync`）：先在事件循环线程上**拷贝用户名/密码**（原实现直接捕获
+  `shared_ptr<User>`，异步执行时连接可能已断开、对象已被池复用并清空），排进写队列后在
+  **文件线程**里算哈希 → `Db::insertAccount()`（一条 INSERT，UNIQUE 挡重名）；
+  ⚠️ 注册的 PBKDF2 **不在哈希线程池里、也没有任何限流**（见 6.30）；
 - 登录（`Filedata::loginAsync`）：
-  - `lookupCredential()` 只查一个用户：缓存有效（mtime/size 没变）时是 **O(1) map 查找**，
-    不再为每次登录重建整个 `PlayerInfo`；缓存失效（首次登录 / 别的进程写过文件）才完整加载一次；
-  - 拿到存储值后**释放文件锁**再算 PBKDF2（不让慢哈希占着跨进程锁）；
-  - 校验通过且 `needsRehash` 时：独占锁内 `rewriteStoredCredential()`（只替换该行第 2 个字段，
-    临时文件带 pid、rename 覆盖、保留 `\r` 与其余字段），再同步更新缓存与 `PlayerInfo`；
+  - `lookupCredential()` 现在是**一条主键查询**（`SELECT password FROM accounts WHERE username=?`），
+    不再有"整表加载 + mtime 缓存"；账号不存在时补一次 `verifyDummy()`，保持耗时同量级；
   - 校验在**哈希线程池**里做（`TETRIS_HASH_THREADS`，默认 2；0/1 关闭退回文件线程串行），
-    迁移的落盘任务投递回**单写线程**（写队列），结果用 `EventLoop::post` 回到循环线程；
-  - 线程池在 `initializeAsyncSystem()`（fork 之后）创建，`shutdownAsyncSystem()` 先停池再停文件线程，
-    保证迁移任务都入队后才结束文件线程；
-- 状态机：新增 `STATUS_VERIFYING_PASSWORD`（枚举末尾，避免改动已有状态值）。密码送出后立即进入该状态，
+    PBKDF2 期间不持有 SQLite 锁（`Db` 只在查询那一瞬间加锁）；
+  - 校验通过且 `needsRehash` 时：投递到单写线程执行 `Db::updateCredential()`（一条 UPDATE），
+    再同步 `PlayerInfo` 快照；
+  - 线程池在 `initializeAsyncSystem()`（fork 之后）创建；`shutdownAsyncSystem()` 先停池、
+    再停写线程、最后 `Db::close()`，保证迁移任务都落库后才关连接；
+- 状态机：`STATUS_VERIFYING_PASSWORD`（枚举末尾，避免改动已有状态值）。密码送出后立即进入该状态，
   回调先校验"状态没变"再渲染；期间客户端若继续发数据，`handleClientData` 会读走丢弃
   （libevent 水平触发，不读会空转）；
-- `User::initUserInfo()` 改为**只按用户名**取成绩（原来还比密码，而磁盘上是哈希，永远比不中）；
+- `User::initUserInfo()` 改为**只按用户名**取成绩（原来还比密码，而库里是哈希，永远比不中）；
   登录已经认证过，没必要再算一次 PBKDF2；
-- `Filedata::loadPlayerData()` 增加 `gLoadMutex`，把"清空 + 填充 `PlayerInfo::players`"串行化：
-  它现在会被事件循环线程（注册/选难度）和异步线程（登录校验）同时调用，交错会重复/丢玩家；
-  加锁顺序固定为"文件锁 → gLoadMutex"；
-- 测试：`tests/credential.py` 与 C++ 实现对齐（mock 也用它模拟哈希/迁移，集成测试用它复算落盘哈希）；
-  `play_test.py --seed` 直接写哈希账号，否则压测时每个账号都会触发一次整文件重写。
+- `Filedata::loadPlayerData()` 用 `gLoadMutex` 把"清空 + 填充 `PlayerInfo::players`"串行化，
+  内容来自 `Db::loadPlayerStats()`；只有 `Db::cacheStamp()` 变了才重建（本进程写过 / 别的进程
+  提交过），所以注册/开局那次调用通常是 O(1)（快照未过期直接返回）；
+- 测试：`tests/credential.py` 与 C++ 实现对齐（mock 也用它模拟哈希/迁移，集成测试用它复算库里的哈希）；
+  `play_test.py --seed` / `login_bench.py --seed` 直接把哈希账号写进 SQLite，避免压测时触发迁移。
 
 ### 认证加固（2026-11-01 第一批）
 
@@ -583,10 +582,10 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 - **入口**：登录后的主菜单新增「5. 修改密码」（`UImanage::showLoadMenu`），接
   `STATUS_CHANGE_PASSWORD_OLD` → `STATUS_CHANGE_PASSWORD_NEW`；
 - **`Filedata::changePasswordAsync(username, oldPassword, newPassword, cb)`**：
-  1. `lookupCredential()` 取当前凭据（O(1) 缓存或整表加载，与登录同一路径）；
+  1. `lookupCredential()` 取当前凭据（一条主键查询，与登录同一路径）；
   2. `runHashTask()` 里**先** `PasswordHash::verify(oldPassword)`——错的旧密码不该白烧一次
      `hash()`；**再** `PasswordHash::hash(newPassword)`；
-  3. 落盘回单写线程：`DataFileLock(独占)` + `rewriteStoredCredential()` + `updateCredentialInMemory()`；
+  3. 落盘回单写线程：`rewriteStoredCredential()`（`UPDATE accounts`）+ `updateCredentialInMemory()`；
   4. 结果 `PasswordChangeResult{Ok, BadCredentials, Busy, Error}`——比 `LoginResult` 多一个
      `Error`（生成哈希/写盘失败既不是"密码错"也不该让用户重试），用单独的枚举避免把
      `Error` 误当成登录成功；
@@ -770,6 +769,15 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     2~3µs，可忽略）。多 worker 时每个进程各有一份池子、各自 trim，阈值不叠加；
     trim 的日志是 info 级别（默认 warn 不落盘），压测时想要这行就 `TETRIS_LOG_LEVEL=info`。
 
+30. **注册路径没有任何限流**（登录有三层，注册一层都没有）：注册的 PBKDF2 跑在**唯一的异步写线程**
+    上——而登录的凭据查询、成绩写入、排行榜读取也排在同一条队列里。后果不是"内存爆"，而是
+    一个客户端每秒能塞进 ~20 个注册，把写线程占满后**正常登录的延迟会无界增长**；
+    另外每个账号都会落库，刷号还会涨磁盘、抢用户名。**注册限流还没做**，方案见第 8 节。
+31. **SQLite 的运维细节**：库文件是 `tetris.db` + `-wal`/`-shm`（三件套，`.gitignore` 已覆盖），
+    备份要用 `sqlite3 tetris.db ".backup out.db"`，或停机时三件一起拷（**只拷 .db 会丢 WAL 里的新数据**）；
+    库里是密码哈希，权限按敏感数据处理。旧 `userdata.csv` 只在"空库 + 文件存在"时导入一次，
+    导入后不再同步（想重导得先删库）；导入发生在 `Db::open()`，所以**服务端启动目录**决定导入哪份文件。
+
 ## 7. 仓库现状
 
 - `main` 干净，CI 全绿；无 tag；
@@ -795,8 +803,9 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
   - 登录吞吐默认 2 哈希线程；更高并发调 `TETRIS_HASH_THREADS`（多 worker 时线程数按进程相乘），
     没有"按核数自动伸缩"；
   - 旧明文账号必须登录一次才会迁移（见 6.14）；旧 `userdata.csv` 只在首次启动（空库）时导入一次，
-  导入后不再同步——想重跑导入得先删库；
-- **没有管理员 CLI**：重置密码只能手工改库（`sqlite3` 或 `UPDATE accounts ...`），备份也没脚本；
+    导入后不再同步——想重跑导入得先删库（见 6.31）；
+  - **没有管理员 CLI，也没有备份脚本**：重置密码只能手工改库（`sqlite3` 或
+    `UPDATE accounts SET password=...`），备份只能手工 `.backup`（见 6.31）；
   - 远程压测脚本与手册已就绪（`play_remote.sh` / `REMOTE_BENCH.md`），尚未在真实云主机上跑过；
   - 连接数多机压测（`BENCH_REMOTE_CLIENTS`）修了源 IP 绑定，但 >6.4 万/台仍需加网卡 alias，未实测；
   - `output()` 的 1 MB 慢客户端上限是拍脑袋定的，未针对极端场景验证过；
@@ -807,8 +816,11 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 
 | 方向 | 内容 | 价值 |
 |---|---|---|
+| **SSH 承载（上线必需）** | sshd `Match User tetris` + `ForceCommand`，`ssh tetris@host` 直接进游戏；零协议改造，顺带解决"明文密码过网" | **高**：现在裸 TCP 是明文，公网不能直接开 |
+| **管理员 CLI + 备份（上线必需）** | `tetris-admin reset-password <user>`（没邮箱，"找回"只能这样）/ `backup`（`sqlite3 .backup`）；顺便启动时打印生效配置 | **高**：线上忘密码的用户目前无自救路径 |
+| **打包/部署（上线必需）** | Dockerfile（多阶段、非 root、HEALTHCHECK）+ systemd unit + 日志轮转 | **高**：别人无法按 README 一把部署 |
+| **注册限流（公网时做）** | 方案 A：按 IP（20 次/5 分钟）+ 全局（200 次/小时），提交密码前挡掉；方案 B（更重）：把注册哈希挪进哈希线程池，队满回 Busy | 中：见 6.30，是现在唯一无上限的 PBKDF2 路径 |
 | 认证状态跨进程 | 用户名退避 / IP 兜底的计数都在各 worker 内存里，阈值实际 ×N；要统一得放共享内存或落文件 | 低：只有真的开多 worker 才值得 |
-| 注册限流 | 现在只拦登录；开放注册 + 每次注册一次 PBKDF2，刷号能把写队列拖慢（不占哈希线程池） | 低：看是否对外开放 |
 | `-flto` | 跨 TU 内联（UImanage/Utility 的小函数），预期几个点；用 bench.yml 的 A/B 步骤量 | 低~中：CPU |
 | 连接建立路径 | accept 时 `showInitMenu` 也批量，并把固定菜单预渲染成静态字符串 | 低~中：10 万连接场景的 CPU（当前不是瓶颈） |
 | 空闲定时器 | 维护"游戏中/待发/待清理"集合，别每 100ms 扫全表 | 低：只有继续压连接数才值得 |
@@ -827,33 +839,26 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 ```
 读 docs/HANDOVER.md 了解现状，然后我们继续做 <方向>。
 
-建议下一步：认证线、连接池、存储层都已收口（SQLite 的 accounts/scores + 旧 CSV 导入），
-别再重复做。上线前真正缺的是**运营件**：管理员 CLI（重置密码/备份）、Dockerfile/systemd、
-SSH 承载（`ForceCommand`）；性能线已收口，别再堆优化。
-30 万连接已试过，卡在压测客户端（服务端 1.27GB/53% 单核），别在 4 核 runner 上硬加客户端进程。
+方向已定：**A（终端原生，SSH 承载）+ SQLite**，目标是把现在的服务端做成能上线的产品。
+功能与加固线都已收口（认证三层 / 改密 / 连接池 trim / 存储层 SQLite + 旧 CSV 导入），
+不要再重复做，也别再堆性能优化（两种场景服务端都不是瓶颈）。
+
+上线前真正缺的（按优先级）：
+1. SSH 承载：sshd ForceCommand，解决"明文密码过网"（不解决就不能公网开放）；
+2. 管理员 CLI + 备份：reset-password / backup（忘密码的用户没有别的出路）；
+3. Dockerfile / systemd：部署交付；
+4. 注册限流（公网开放后）：注册的 PBKDF2 跑在唯一写线程上且无上限，见 6.30。
 
 要点：
-- 编译/运行在 WSL 的 ~/Russia-Tetris（先 git pull --ff-only），Windows 侧仓库在 D:\dev\Russia-Tetris；
-  WSL 克隆的 origin 是 HTTPS（偶尔 GnuTLS -110，重试即可）；WSL 里没有 SSH key，要 push 先从 Windows 拷；
-- 沙箱里跑不了 WSL 和 g++，C++ 改动只能 push 到 main 让 CI 验证；失败细节靠 ::notice::/::error:: 注解回传；
-- 但沙箱里有 Python：改测试脚本时先用 tests/mock_server.py 本地跑通，别浪费 CI 轮次
-  （mock 的密码行为要和真服务端同步：哈希、迁移、策略、失败退避、按 IP 兜底的滑动窗口、
-  改密流程与文案）；
-  按 IP 兜底的协议测试要**用低阈值起 mock/服务端**（`TETRIS_AUTH_IP_MAX_FAILURES=5
-  TETRIS_AUTH_IP_WINDOW_MS=10000`），默认 300 次/5 分钟在测试里等不起；
+- 数据在 `tetris.db`（SQLite，WAL，三件套），旧 `userdata.csv` 只用于首次导入；
+  测试脚本统一用 `--db`；schema 在 `src/TetrisGame/Db.cpp` 与 `tests/db.py` 两处，**改结构要同时改**；
+- 沙箱里跑不了 WSL/g++，C++ 改动只能 push main 让 CI 验证；失败细节靠 ::notice::/::error:: 注解
+  （Build 步骤现在会把前几条 error 一起回传）；
+- 沙箱里有 Python：改测试脚本先用 tests/mock_server.py（它也用 SQLite）本地跑通，
+  集成 12 项 + 跨进程 5 项 + IP 兜底都能在本地跑，别浪费 CI 轮次；
 - 压测数字的读法：CPU 看「游戏窗口 CPU / 每按键 µs」，「全程 CPU」被登录 PBKDF2 污染；
-  内存看「服务端 RSS」，注意连接池预创建 2048 是固定 ~6MiB，且池子只涨不缩；
-  跨 run/跨 runner 的绝对值不要直接相除，要比就用 bench.yml 的同机交错 A/B；
-  跨提交 A/B 可以在临时 bench-run 分支上用 `git archive <base-sha>` 编一份旧二进制，
-  再用 `BENCH_BIN` 指给 bench.sh / play_bench.sh（4.8/4.9 就是这么测的，
-  注意 git archive 在子目录里只导出该目录，要 `-C` 回仓库根）；
-- 起一次长时间压测前，先确认机器不会睡眠/合盖；否则 p99 和总耗时会完全失真；
-- 不要再做这些已完成的事：WSL 安装、README 数据清理、GIF 处理、死代码清理、
-  质量工程（集成/跨进程测试）、多核化（已实现且已有结论）、密码加盐哈希 + 迁移、
-  登录吞吐优化（O(1) 查找 + 2 线程哈希池）、输出批量（CPU 已减半）、构建优化 -O2、
-  `User` 棋盘 int8（sizeof 1984 / RSS -52%）、连接池预创建 2048（空闲 RSS 190→41MB）、
-  **注册密码最小长度 + 未知账号假 PBKDF2（时序侧信道）**、
-  **登录失败退避 + 哈希队列上限（含 auth_throttle_test）**、
-  **按 IP 兜底（IpThrottle + ip_throttle_test + ip_fallback_test）**、
-  **改密/重置（主菜单 5 + changePasswordAsync + 集成/跨进程用例）**。
+  内存看「服务端 RSS」；跨 run/跨 runner 的绝对值不要直接相除；
+- 不要再做这些已完成的事：WSL 安装、README 数据清理、GIF 处理、死代码清理、质量工程、
+  多核化、密码加盐哈希 + 迁移、登录吞吐、输出批量、`-O2`、`User` int8、池子 2048、
+  注册密码策略、假 PBKDF2、用户名退避 + 队列上限、按 IP 兜底、改密、连接池 trim、SQLite 存储层。
 ```
