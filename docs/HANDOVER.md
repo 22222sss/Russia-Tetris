@@ -44,9 +44,16 @@
    "怎么验"（`ss -ltn` 只绑回环、`/proc/<pid>/limits`、`systemctl --failed`、恢复演练……），
    另有升级/回滚、日志、备份恢复、排错表、安全边界各一节。
 
-> ⚠️ 本轮的 C++/deploy/CI 改动沙箱里跑不了（没有 g++、systemd、docker、bash），只能靠 CI；
-> 本地跑通的是 `tests/deploy_test.py`（7 项执行 + 2 项 shell 项在本机跳过）。
-> 首次 push 的 CI 结果见本节末尾 / 第 5 节对应小节。
+> **CI 实测（SHA `c23d1e1`，一轮全绿）**：`deploy_test` 9/9；日志轮转真的轮了
+> （`TETRIS_LOG_MAX_BYTES=4096` × 3 份历史 → `log.1/2/3.txt` + `log.txt`，合计 15 KB）；
+> `install-systemd.sh` 真的装成功：`/proc/<pid>/limits` = 300000/300000、`systemctl show`
+> 的两个 nofile 属性都是 300000、`ss -ltn` 只有 127.0.0.1:9999、`tetris-backup` 跑出
+> 40 KB / 600 / integrity ok、`kill -9` 后从 pid 3595 拉到 3737、stop <5s；
+> 镜像 build 出来 healthy + uid 10001 + 宿主能读到 9999 + 容器内 `tetris-admin stats` 可用；
+> 其余 22 步照旧通过。**本轮被 CI 抓到的四个错**（本地都没有 g++/systemd/docker/bash，只能靠它）：
+> spdlog 头文件路径（6.50）、`LimitNOFILE` 被 systemd 拆成软/硬两个属性（6.45）、
+> spdlog 的 `max_files` 是"历史份数"而不是总数、`/var/backups/tetris` 是 0700 导致 CI 用
+> runner 用户读不到（检查必须 `sudo`）。
 
 **上一轮做完了管理命令行：`tetris-admin`**（`src/tetris_admin.cpp`）
 
@@ -593,7 +600,11 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
   `tests/log_rotation_test.py`（真二进制）；CI 末尾两步分别是"真装一遍 systemd 并跑一次备份"
   和"真 build 镜像并跑容器"，见第 3 节；
 - **`docs/DEPLOY.md`**：上线 checklist（每条都带验证命令）+ systemd/Docker 两种形态 +
-  环境变量/上限 + 日志 + 备份恢复 + 升级回滚 + 巡检 + 排错表 + 安全边界。
+  环境变量/上限 + 日志 + 备份恢复 + 升级回滚 + 巡检 + 排错表 + 安全边界；
+- **CI 实测（SHA `c23d1e1`，一轮全绿）**：这一轮共 4 次 push 才绿——前三次都是只读注释
+  看不出、本地也没有对应环境的东西：spdlog 头文件路径（6.50）、`LimitNOFILE` 的两个
+  systemd 属性（6.45）、spdlog `max_files` 的语义、CI 用 runner 用户读 0700 备份目录。
+  具体数字见第 0 节那段。
 
 ### SSH 承载（2026-11-02）
 

@@ -49,11 +49,11 @@
 
 **运维**
 
-- [ ] 日志轮转生效：`ls /var/log/tetris` → `log.txt` + 可能的 `log.1.txt`…；总量不超过
+- [ ] 日志轮转生效：`sudo ls -l /var/log/tetris` → `log.txt` + 可能的 `log.1.txt`…；总量不超过
       `TETRIS_LOG_MAX_BYTES × (TETRIS_LOG_MAX_FILES + 1)`（当前文件 + 历史，默认约 60 MiB）
 - [ ] 备份 timer 已启用：`systemctl list-timers tetris-backup.timer` → 下一次 04:15
 - [ ] **手动跑一次备份并检查产物**：`sudo systemctl start tetris-backup.service` →
-      `ls -l /var/backups/tetris`（600、非空）、`journalctl -u tetris-backup -n 20`（integrity ok）
+      `sudo ls -l /var/backups/tetris`（600、非空）、`sudo journalctl -u tetris-backup -n 20`（integrity ok）
 - [ ] **恢复演练过一次**（第 7.4 节）：拿一份备份在另一台机器/另一个目录上真正起过一次服务
 - [ ] 记录本次上线的 commit：`git rev-parse HEAD`，写进你的运维记录（出问题才知道回滚到哪）
 
@@ -341,8 +341,9 @@ sudo -u tetrisd env TETRIS_DB=/var/lib/tetris/tetris.db \
 ### 7.3 恢复前先确认
 
 ```bash
-sqlite3 /var/backups/tetris/tetris-20261102T041500Z.db "PRAGMA integrity_check;"
-sqlite3 /var/backups/tetris/tetris-20261102T041500Z.db \
+# 备份目录是 0700 tetrisd，所以下面的读操作都要 sudo
+sudo sqlite3 /var/backups/tetris/tetris-20261102T041500Z.db "PRAGMA integrity_check;"
+sudo sqlite3 /var/backups/tetris/tetris-20261102T041500Z.db \
   "SELECT COUNT(*) FROM accounts; SELECT COUNT(*) FROM scores;"
 ```
 
@@ -399,8 +400,8 @@ sudo systemctl start tetris-game
 ```bash
 systemctl is-active tetris-game && systemctl is-active tetris-backup.timer
 ss -ltn | grep 9999                                  # 必须只有 127.0.0.1:9999
-ls -l /var/log/tetris | tail -3                       # 轮转有没有在走
-ls -lt /var/backups/tetris | head -3                  # 最新备份是不是今天的
+sudo ls -l /var/log/tetris | tail -3                 # 轮转有没有在走（目录 0750 tetrisd）
+sudo ls -lt /var/backups/tetris | head -3             # 最新备份是不是今天的（目录 0700）
 systemctl --failed                                    # 备份/服务有没有 failed
 sudo -u tetrisd env TETRIS_DB=/var/lib/tetris/tetris.db tetris-admin stats
 df -h /var/lib/tetris /var/backups/tetris             # 库和备份的盘都别超过 80%
