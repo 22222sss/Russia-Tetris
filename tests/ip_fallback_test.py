@@ -5,7 +5,7 @@
 "accept 时真的记下了来源 IP""拒绝发生在 PBKDF2 之前""拦的是 IP 而不是用户名"
 这三件事只有走真实协议才能证明。所以这个脚本要配合低阈值服务端跑（见下）。
 
-用法（在服务端的工作目录下执行，userdata.csv 就在那儿）：
+用法（在服务端的工作目录下执行，SQLite 库就在那儿）：
     TETRIS_AUTH_IP_MAX_FAILURES=5 TETRIS_AUTH_IP_WINDOW_MS=10000 TETRIS_PORT=10006 \\
         ./tetris_game &
     python3 ../tests/ip_fallback_test.py --port 10006 --max-failures 5 --window-ms 10000
@@ -38,7 +38,7 @@ def register_account(args, conn, user, password):
     conn.sendline(password)
     it.expect(conn, "注册成功")
     # 注册是异步落盘的：不等到落盘就登录，会偶发"登录失败"，把用例变成假失败
-    if not it.wait_for_userdata(args.userdata, user, args.timeout):
+    if not it.wait_for_userdata(args.db, user, args.timeout):
         raise it.Failure("[%s] 账号 %r 未落盘（超时 %ss）" % (it.STAGE, user, args.timeout))
     conn.sendline("3")
     it.expect(conn, "2. 登录")
@@ -61,7 +61,7 @@ def main():
     parser = argparse.ArgumentParser(description="按 IP 兜底的协议级测试")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=10006)
-    parser.add_argument("--userdata", default="userdata.csv")
+    parser.add_argument("--db", default="tetris.db")
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--max-failures", type=int, default=5,
                         help="必须与服务端 TETRIS_AUTH_IP_MAX_FAILURES 一致")

@@ -7,12 +7,12 @@
 
 // 密码加盐哈希：PBKDF2-HMAC-SHA256（OpenSSL 实现）。
 //
-// 存储格式（userdata.csv 的 Password 列）：
+// 存储格式（SQLite accounts.password）：
 //     $pbkdf2-sha256$<迭代次数>$<盐 hex>$<摘要 hex>
 // 例：$pbkdf2-sha256$100000$1f3c...$9ab2...
 //
-// 用 hex 而不是 base64：不需要额外编码库，且绝不会出现逗号——
-// userdata.csv 是按逗号裸切的，字段里出现逗号会直接破坏整行。
+// 用 hex 而不是 base64：不需要额外编码库，也没有分隔符风险
+// （历史上这列存在 CSV 里，是按逗号裸切的；现在虽然进了 SQLite，格式保持不变）。
 //
 // 旧版本存的是明文密码；verify() 对明文做兼容匹配并置 needsRehash，
 // 由调用方在登录成功后就地迁移成哈希（见 Filedata::loginAsync）。

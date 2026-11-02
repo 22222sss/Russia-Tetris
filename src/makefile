@@ -7,7 +7,7 @@ CXX = g++
 OPT ?= -O2
 CXXFLAGS = -Wall -g $(OPT) -std=c++17 -pthread -MMD -MP
 INCLUDES = -ICommon -IUtility -IEventLoop -ITetrisGame -IUImanage -IConnectionPool
-LDFLAGS = -levent -lspdlog -lfmt -lcrypto -pthread   # -lcrypto: PBKDF2/随机盐（libssl-dev）
+LDFLAGS = -levent -lspdlog -lfmt -lcrypto -lsqlite3 -pthread   # -lcrypto: PBKDF2；-lsqlite3: 存储层
 
 # 源文件
 SOURCES = \
@@ -21,6 +21,7 @@ SOURCES = \
     TetrisGame/AuthThrottle.cpp \
     TetrisGame/IpThrottle.cpp \
     TetrisGame/PlayerInfo.cpp \
+    TetrisGame/Db.cpp \
     TetrisGame/Server.cpp \
     TetrisGame/User.cpp \
     UImanage/UImanage.cpp \

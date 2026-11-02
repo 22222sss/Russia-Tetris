@@ -19,7 +19,7 @@
 #   安全组放行 TCP $PORT（默认 9999）
 #
 # 注意:
-#   * 脚本会清空 VPS 上该仓库的 userdata.csv，并结束该机器上所有 tetris_game 进程；
+#   * 脚本会清空 VPS 上该仓库的 SQLite 库（tetris.db）与旧 userdata.csv，并结束该机器上所有 tetris_game 进程；
 #   * 只用于专用压测机，不要指向有别的业务的机器；
 #   * 客户端（本机）需要 python3，且能直连 VPS 的 $PORT。
 set -u
@@ -104,7 +104,7 @@ if ! run_ssh "command -v python3 >/dev/null" 2>>"$OUT/ssh.log"; then
 fi
 
 log "在 VPS 造 $PLAYERS 个哈希账号（800 个约 30~60 秒）..."
-if ! run_ssh "cd $REMOTE_SRC && rm -f userdata.csv userdata.csv.lock log*.txt && python3 ../tests/play_test.py --seed $PLAYERS --userdata userdata.csv" 2>>"$OUT/ssh.log"; then
+if ! run_ssh "cd $REMOTE_SRC && rm -f tetris.db tetris.db-wal tetris.db-shm userdata.csv userdata.csv.lock log*.txt && python3 ../tests/play_test.py --seed $PLAYERS --db tetris.db" 2>>"$OUT/ssh.log"; then
   echo "造账号失败，见 $OUT/ssh.log"
   exit 1
 fi

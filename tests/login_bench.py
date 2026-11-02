@@ -11,7 +11,7 @@
 用法
 ====
     # 1) 造账号（密码直接写成哈希，避免登录时触发明文迁移）
-    python3 login_bench.py --seed 200 --userdata userdata.csv
+    python3 login_bench.py --seed 200 --db tetris.db
 
     # 2) 服务端起来后压登录
     python3 login_bench.py --players 200 --port 10099 --json /tmp/login.json
@@ -28,6 +28,7 @@ import sys
 import time
 
 import credential
+import db
 
 USER_FMT = "lb%04d"
 PWD_FMT = "pw%04d"
@@ -118,18 +119,9 @@ async def login_once(idx, args, stats, latencies):
 
 
 def seed_users(count, path):
-    """直接写哈希账号：省掉 N 次注册往返，且避免登录时触发迁移。"""
-    try:
-        empty = os.path.getsize(path) == 0
-    except OSError:
-        empty = True
-
-    with open(path, "a", encoding="utf-8") as f:
-        if empty:
-            f.write(HEADER + "\n")
-        for i in range(count):
-            f.write("%s,%s,0,EASY,,0,NORMAL,,0,DIFFICULT,,\n"
-                    % (USER_FMT % i, credential.hash_password(PWD_FMT % i)))
+    """直接把哈希账号写进 SQLite：省掉 N 次注册往返，且避免登录时触发迁移。"""
+    db.seed_accounts(path, [(USER_FMT % i, credential.hash_password(PWD_FMT % i))
+                            for i in range(count)])
     print("已写入 %d 个账号（密码为加盐哈希）-> %s" % (count, path), flush=True)
 
 
@@ -175,8 +167,8 @@ def main():
     parser.add_argument("--players", type=int, default=200)
     parser.add_argument("--seed", type=int, default=0,
                         help="只造账号不压测：--seed 200")
-    parser.add_argument("--userdata", default="userdata.csv",
-                        help="userdata.csv 路径（相对服务端工作目录）")
+    parser.add_argument("--db", default="tetris.db",
+                        help="SQLite 数据库路径（相对服务端工作目录）")
     parser.add_argument("--timeout", type=float, default=60.0,
                         help="单个登录步骤的等待上限（秒）")
     parser.add_argument("--connect-timeout", type=float, default=20.0)
@@ -185,7 +177,7 @@ def main():
     args = parser.parse_args()
 
     if args.seed > 0:
-        seed_users(args.seed, args.userdata)
+        seed_users(args.seed, args.db)
         return 0
 
     result = asyncio.run(run_all(args))

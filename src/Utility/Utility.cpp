@@ -1,4 +1,5 @@
 #include"Utility.h"
+#include"../TetrisGame/Db.h"
 
 extern shared_ptr<spdlog::logger> logger;
 
@@ -269,17 +270,14 @@ int Color(int c)
     }
 }
 
+// 注册前查重：直接问 SQLite，不再依赖"整张玩家表已经在内存里"这个隐含前提
 bool isUserExists(const string& playername)
 {
-
-    for (auto& player : PlayerInfo::getPlayers())
+    if (playername.empty())
     {
-        if (player->getPlayerName() == playername)
-        {
-            return true;
-        }
+        return false;
     }
-    return false;
+    return Db::accountExists(playername);
 }
 
 string currenttime()//日志函数

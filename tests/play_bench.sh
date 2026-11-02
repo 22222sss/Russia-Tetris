@@ -51,10 +51,10 @@ for w in $WORKERS_LIST; do
   LABEL=${BENCH_LABEL:-workers=$w}
   # 文件名用标签的"安全"形式：标签里可能有空格/等号
   SAFE=$(printf '%s' "$LABEL" | tr -c 'A-Za-z0-9._-' '_')
-  rm -f userdata.csv userdata.csv.lock log*.txt
+  rm -f tetris.db tetris.db-wal tetris.db-shm userdata.csv userdata.csv.lock log*.txt
 
   # 先造账号，省掉 N 次注册往返，把时间留给真正的游戏负载
-  python3 "$TESTS/play_test.py" --seed "$PLAYERS" --userdata userdata.csv > "$OUT/seed-$SAFE.log" 2>&1
+  python3 "$TESTS/play_test.py" --seed "$PLAYERS" --db tetris.db > "$OUT/seed-$SAFE.log" 2>&1
 
   RP=0
   if [ "$w" -gt 1 ]; then RP=1; fi

@@ -14,9 +14,10 @@ import threading
 import time
 
 import credential
+import db
 
 PORT = int(sys.argv[1])
-USERDATA = sys.argv[2]
+DB_PATH = sys.argv[2]
 
 MENU = ("\x1b[2J\x1b[H\x1b[12;14H\x1b[37m请选择操作："
         "\x1b[13;14H\x1b[37m1. 注册帐号"
@@ -185,74 +186,28 @@ def ip_throttle_failure(peer_ip):
             slots[index] = (cur, count + 1)
 
 
-def read_users():
-    """从 CSV 读账号（不用内存字典）：多个 mock 实例共享同一份文件时，
-    行为和真服务端一致，才能用来验证跨进程测试脚本。"""
-    found = {}
-    try:
-        with open(USERDATA, "r", encoding="utf-8") as fh:
-            next(fh, None)   # 跳过表头
-            for line in fh:
-                line = line.rstrip("\r\n")
-                if not line:
-                    continue
-                parts = line.split(",")
-                if len(parts) >= 2 and parts[0]:
-                    found[parts[0]] = parts[1]
-    except FileNotFoundError:
-        pass
-    return found
+def account_exists(name):
+    """账号是否存在（直接查 SQLite，多个 mock 进程共享同一个库文件）。"""
+    return db.account_exists(DB_PATH, name)
 
 
-def write_csv(name, password):
+def stored_credential(name):
+    """返回存储的密码字段（明文或哈希）；账号不存在返回 None。"""
+    return db.read_credential(DB_PATH, name)
+
+
+def write_account(name, password):
+    """注册：只存加盐哈希（与真服务端一致）。"""
     try:
-        empty = False
-        try:
-            with open(USERDATA, "r", encoding="utf-8") as fh:
-                empty = fh.read(1) == ""
-        except FileNotFoundError:
-            empty = True
-        with open(USERDATA, "a", encoding="utf-8") as fh:
-            if empty:
-                fh.write("Username,Password,Easy_Score,Easy_Difficulty,Easy_Timestamp,"
-                         "Normal_Score,Normal_Difficulty,Normal_Timestamp,"
-                         "Difficult_Score,Difficult_Difficulty,Difficult_Timestamp,Recent_Scores\n")
-            fh.write("%s,%s,0,EASY,,0,NORMAL,,0,DIFFICULT,,\n"
-                     % (name, credential.hash_password(password)))
-    except OSError as exc:
-        print("csv error:", exc)
+        db.insert_account(DB_PATH, name, credential.hash_password(password))
+    except Exception as exc:
+        print("db error:", exc)
         sys.exit(1)
-
-
-def rewrite_credential(name, new_credential, only_if_plaintext=False):
-    """替换某一行第 2 个字段（改密 / 旧明文迁移共用）。
-
-    真服务端是"临时文件 + rename"、并在 flock 里做；mock 单进程，用 os.replace 等价。
-    """
-    tmp = USERDATA + ".mock.tmp"
-    try:
-        with open(USERDATA, "r", encoding="utf-8") as src, \
-                open(tmp, "w", encoding="utf-8") as dst:
-            for line in src:
-                parts = line.split(",")
-                if (len(parts) >= 2 and parts[0] == name
-                        and (not only_if_plaintext or not credential.is_hashed(parts[1]))):
-                    parts[1] = new_credential
-                    dst.write(",".join(parts))
-                else:
-                    dst.write(line)
-        os.replace(tmp, USERDATA)
-    except OSError as exc:
-        print("rewrite error:", exc)
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
 
 
 def migrate_credential(name, password):
     """模拟服务端"旧明文账号登录成功后迁移成加盐哈希"。"""
-    rewrite_credential(name, credential.hash_password(password), only_if_plaintext=True)
+    db.update_credential(DB_PATH, name, credential.hash_password(password))
 
 
 def serve(conn):
@@ -298,7 +253,7 @@ def serve(conn):
                     else:
                         conn.sendall(MENU.encode())
                 elif state == "reg_user":
-                    if cmd in read_users():
+                    if account_exists(cmd):
                         conn.sendall("该用户名已被注册，请选择其他用户名:".encode())
                     else:
                         conn.sendall("\x1b[15;14H\x1b[37m请输入密码：".encode())
@@ -311,7 +266,7 @@ def serve(conn):
                         conn.sendall("\x1b[12;14H\x1b[37m密码至少需要 8 个字符（不能全是空格），"
                                      "请重新输入密码：".encode())
                         continue
-                    write_csv(pending_user, cmd)
+                    write_account(pending_user, cmd)
                     conn.sendall("\x1b[16;14H\x1b[37m注册成功！\r\n"
                                  "\x1b[17;14H\x1b[37m请按3返回上级菜单：".encode())
                     state = "after_reg"
@@ -331,7 +286,7 @@ def serve(conn):
                         conn.sendall(("\x1b[12;14H\x1b[37m登录尝试过于频繁，请 %d 秒后再试：\r\n"
                                       "\x1b[14;14H\x1b[37m请输入密码：" % wait).encode())
                         continue        # 保持"输入密码"状态，等够时间可重试
-                    stored = read_users().get(pending_user)
+                    stored = stored_credential(pending_user)
                     if stored is not None and credential.verify(cmd, stored):
                         throttle_success(pending_user)
                         # 旧版明文账号：登录成功后迁移（与真服务端一致）
@@ -391,9 +346,9 @@ def serve(conn):
                                       "\x1b[14;14H\x1b[37m请按3返回主菜单：" % wait).encode())
                         state = "after_change"
                         continue
-                    stored = read_users().get(pending_user)
+                    stored = stored_credential(pending_user)
                     if stored is not None and credential.verify(pending_old, stored):
-                        rewrite_credential(pending_user, credential.hash_password(cmd))
+                        db.update_credential(DB_PATH, pending_user, credential.hash_password(cmd))
                         conn.sendall("\x1b[2J\x1b[H\x1b[12;14H\x1b[37m密码修改成功！\r\n"
                                      "\x1b[13;14H\x1b[37m下次登录请使用新密码。\r\n"
                                      "\x1b[15;14H\x1b[37m请按3返回主菜单：".encode())

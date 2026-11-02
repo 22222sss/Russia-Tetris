@@ -32,6 +32,7 @@ import sys
 import time
 
 import credential
+import db
 
 KEY_LEFT = b"\x1b[D"
 KEY_RIGHT = b"\x1b[C"
@@ -169,22 +170,13 @@ async def run_player(idx, args, stats):
 
 
 def seed_users(count, path):
-    """直接往 CSV 追加账号：省掉 N 次注册往返，把时间留给真正的游戏负载。
+    """直接把账号写进 SQLite：省掉 N 次注册往返，把时间留给真正的游戏负载。
 
     密码写成当前格式的加盐哈希（与真服务端一致），否则每个账号登录时都会
-    触发一次"明文迁移"（重写整份 CSV），会严重污染压测结果。
+    触发一次"明文迁移"，会污染压测结果。
     """
-    try:
-        empty = os.path.getsize(path) == 0
-    except OSError:
-        empty = True
-
-    with open(path, "a", encoding="utf-8") as f:
-        if empty:
-            f.write(HEADER + "\n")
-        for i in range(count):
-            f.write("%s,%s,0,EASY,,0,NORMAL,,0,DIFFICULT,,\n"
-                    % (USER_FMT % i, credential.hash_password(PWD_FMT % i)))
+    db.seed_accounts(path, [(USER_FMT % i, credential.hash_password(PWD_FMT % i))
+                            for i in range(count)])
     print("已写入 %d 个账号 -> %s" % (count, path), flush=True)
 
 
@@ -247,7 +239,7 @@ def main():
     parser.add_argument("--timeout", type=float, default=15.0,
                         help="单个登录/开局步骤的等待上限（秒）")
     parser.add_argument("--connect-timeout", type=float, default=10.0)
-    parser.add_argument("--userdata", default="userdata.csv")
+    parser.add_argument("--db", default="tetris.db")
     parser.add_argument("--seed", type=int, default=0,
                         help="只造账号不发压：play_test.py --seed 200")
     parser.add_argument("--json", default="",
@@ -255,7 +247,7 @@ def main():
     args = parser.parse_args()
 
     if args.seed > 0:
-        seed_users(args.seed, args.userdata)
+        seed_users(args.seed, args.db)
         return 0
 
     result = asyncio.run(run_all(args))

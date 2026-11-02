@@ -22,14 +22,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential libevent-dev libspdlog-dev libfmt-dev libssl-dev
+            build-essential libevent-dev libspdlog-dev libfmt-dev libssl-dev libsqlite3-dev
 
       - name: Build
         working-directory: src
         run: |
           # pipefail：make 失败时 tee 不能把退出码吞掉
           set -o pipefail
-          make -j"$(nproc)" 2>&1 | tee /tmp/build.log
+          # 编译失败时日志全文读不到，所以把前几条 error 用注解回传
+          if ! make -j"$(nproc)" 2>&1 | tee /tmp/build.log; then
+            echo "::error::编译失败: $(grep -aE 'error:|Error [0-9]|undefined reference' /tmp/build.log | head -8 | tr '\n' '|' | cut -c1-1800)"
+            exit 1
+          fi
           file tetris_game
           # -O2 可能带出 -O0 时代看不到的告警（未初始化/严格别名等）。
           # 日志正文读不到，所以把前几条回传成注解，便于判断是否是真问题。
@@ -150,7 +154,7 @@ jobs:
 
           # 用干净的数据文件起服务端，工作目录与测试脚本保持一致（userdata.csv 在 src/）
           # 打开 debug 日志：出问题时能通过注解回传服务端的连接/收发细节
-          rm -f userdata.csv log.txt
+          rm -f tetris.db tetris.db-wal tetris.db-shm userdata.csv log.txt
           TETRIS_LOG_LEVEL=debug ./tetris_game > /tmp/it_server.log 2>&1 &
           echo $! > /tmp/it_server.pid
 
@@ -161,7 +165,7 @@ jobs:
             sleep 1
           done
 
-          python3 ../tests/integration_test.py --host 127.0.0.1 --port 9999
+          python3 ../tests/integration_test.py --host 127.0.0.1 --port 9999 --db tetris.db
           RC=$?
 
           kill "$(cat /tmp/it_server.pid)" 2>/dev/null
@@ -178,6 +182,50 @@ jobs:
           fi
           exit "$RC"
 
+      - name: Legacy CSV import test
+        working-directory: src
+        run: |
+          # 旧版本的 userdata.csv 要能一次性导入 SQLite：先造一份旧格式 CSV，
+          # 再让服务端在"空库 + 有 CSV"的目录里启动（导入发生在打开库的时候），
+          # 然后验证：账号/成绩入库、旧明文密码能登录、登录后迁移成加盐哈希。
+          set +e
+
+          if ! python3 -m py_compile ../tests/csv_import_test.py 2> /tmp/pyc_csv.txt; then
+            echo "::error::csv_import_test.py 语法错误: $(tr '\n' '|' < /tmp/pyc_csv.txt | cut -c1-800)"
+            exit 1
+          fi
+
+          rm -f tetris.db tetris.db-wal tetris.db-shm userdata.csv log.txt
+          python3 ../tests/csv_import_test.py --seed-csv userdata.csv \
+            --user legacy-csv --password plain-pw-123 --score 4321
+
+          TETRIS_PORT=10008 ./tetris_game > /tmp/csv_server.log 2>&1 &
+          echo $! > /tmp/csv_server.pid
+
+          for i in $(seq 1 120); do
+            if (exec 3<>/dev/tcp/127.0.0.1/10008) 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          python3 ../tests/csv_import_test.py --port 10008 --db tetris.db \
+            --user legacy-csv --password plain-pw-123 --score 4321
+          RC=$?
+
+          kill "$(cat /tmp/csv_server.pid)" 2>/dev/null
+          wait "$(cat /tmp/csv_server.pid)" 2>/dev/null
+          sleep 1
+
+          if [ "$RC" -ne 0 ]; then
+            detail=$(grep -aE 'SQLite|导入|Error|error|warn' log.txt 2>/dev/null | tail -20 | tr '\n' '|' | cut -c1-1200)
+            if [ -z "$detail" ]; then
+              detail=$(tail -20 /tmp/csv_server.log 2>/dev/null | tr '\n' '|' | cut -c1-1200)
+            fi
+            echo "::error::旧 CSV 导入测试失败，服务端日志: $detail"
+          fi
+          exit "$RC"
+
       - name: IP fallback integration test
         working-directory: src
         run: |
@@ -191,7 +239,7 @@ jobs:
             exit 1
           fi
 
-          rm -f userdata.csv userdata.csv.lock log.txt
+          rm -f tetris.db tetris.db-wal tetris.db-shm userdata.csv userdata.csv.lock log.txt
           TETRIS_AUTH_IP_MAX_FAILURES=5 TETRIS_AUTH_IP_WINDOW_MS=10000 \
             TETRIS_PORT=10006 ./tetris_game > /tmp/ip_server.log 2>&1 &
           echo $! > /tmp/ip_server.pid
@@ -203,7 +251,7 @@ jobs:
             sleep 1
           done
 
-          python3 ../tests/ip_fallback_test.py --port 10006 --userdata userdata.csv \
+          python3 ../tests/ip_fallback_test.py --port 10006 --db tetris.db \
             --max-failures 5 --window-ms 10000
           RC=$?
 
@@ -231,7 +279,7 @@ jobs:
           fi
 
           # 两个进程：同一工作目录（共享同一份 userdata.csv），端口不同
-          rm -f userdata.csv userdata.csv.lock log.txt
+          rm -f tetris.db tetris.db-wal tetris.db-shm userdata.csv userdata.csv.lock log.txt
           TETRIS_PORT=10001 ./tetris_game > /tmp/pa.log 2>&1 &
           echo $! > /tmp/pa.pid
           TETRIS_PORT=10002 ./tetris_game > /tmp/pb.log 2>&1 &
@@ -246,7 +294,7 @@ jobs:
             done
           done
 
-          python3 ../tests/cross_process_test.py --port-a 10001 --port-b 10002
+          python3 ../tests/cross_process_test.py --port-a 10001 --port-b 10002 --db tetris.db
           RC=$?
 
           kill "$(cat /tmp/pa.pid)" 2>/dev/null
@@ -265,7 +313,7 @@ jobs:
         working-directory: src
         run: |
           set +e
-          rm -f userdata.csv userdata.csv.lock log*.txt
+          rm -f tetris.db tetris.db-wal tetris.db-shm userdata.csv userdata.csv.lock log*.txt
 
           TETRIS_WORKERS=2 TETRIS_PORT=10003 ./tetris_game > /tmp/mw.log 2>&1 &
           echo $! > /tmp/mw.pid
@@ -290,7 +338,7 @@ jobs:
           fi
 
           # 连接会被内核随机分到某个 worker，所以这个测试同时验证了跨 worker 的数据一致性
-          python3 ../tests/integration_test.py --port 10003
+          python3 ../tests/integration_test.py --port 10003 --db tetris.db
           RC=$?
 
           kill "$(cat /tmp/mw.pid)" 2>/dev/null
@@ -355,7 +403,7 @@ jobs:
           # 3000 条连接要 3000 个客户端 fd（runner 的默认软限制不一定够）
           ulimit -n 65535 2>/dev/null || echo "ulimit -n 提升失败（当前 $(ulimit -n)），继续尝试"
 
-          rm -f userdata.csv userdata.csv.lock log.txt
+          rm -f tetris.db tetris.db-wal tetris.db-shm userdata.csv userdata.csv.lock log.txt
           TETRIS_POOL_TRIM_TARGET=256 TETRIS_POOL_TRIM_INTERVAL_MS=300 \
             TETRIS_LOG_LEVEL=info TETRIS_PORT=10007 \
             ./tetris_game > /tmp/trim_server.log 2>&1 &

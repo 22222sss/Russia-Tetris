@@ -22,10 +22,8 @@ private:
 	static std::thread asyncWriteThread;                  // 后台线程
 
 	// 内存缓存
-	static std::unordered_map<std::string, std::shared_ptr<PlayerInfo>> playerCache;  // 缓存映射
-	static std::mutex cacheMutex;                           // 缓存锁
-	static std::atomic<long> cacheHits;                     // 命中统计
-	static std::atomic<long> cacheMisses;                   // 未命中统计
+	// 注意：原来的 playerCache（按文件 mtime/size 失效）已经去掉——SQLite 是唯一数据源，
+	// 凭据用一次主键查询，排行榜/玩家表用 PlayerInfo 快照（见 loadPlayerData）。
 
 	// 密码校验线程池：PBKDF2 是纯 CPU 计算，可以并行；默认 2 线程。
 	// TETRIS_HASH_THREADS=0/1 可关掉（校验退回文件线程串行执行，用于对照实验）。
@@ -54,9 +52,7 @@ private:
 	static std::size_t hashQueueLimit();
 
 	// 缓存管理
-	static void addToCache(const std::shared_ptr<PlayerInfo>& player);
-	static std::shared_ptr<PlayerInfo> getFromCache(const std::string& username);
-	static void removeFromCache(const std::string& username);
+	// （已随 SQLite 迁移删除：addToCache / getFromCache / removeFromCache）
 
 	// 把某一行的 Password 字段原地替换成新值（调用方必须已持有 DataFileLock 独占锁）
 	static bool rewriteStoredCredential(const std::string& username, const std::string& credential);
@@ -92,9 +88,7 @@ public:
 
 	static vector<string> Read_recent_grades(const shared_ptr<User>& user);
 
-	static vector<shared_ptr<PlayerInfo>> Read_AllpalyerInfo(ifstream &file);
-
-	// 读取用户数据文件，初始化players向量
+	// 读取用户数据（SQLite -> PlayerInfo 快照），初始化 players 向量
 	static bool loadPlayerData();
 
 	//更新用户最高分和最近20次分数
@@ -113,8 +107,7 @@ public:
 	static void loginAsync(const std::string& username, const std::string& password,
 		std::function<void(LoginResult)> callback);
 
-	// 修改密码：校验当前密码 -> 生成新密码的加盐哈希 -> 在 flock 临界区内原地改写
-	// 该行（临时文件 + rename，多进程安全）-> 同步本进程缓存。
+	// 修改密码：校验当前密码 -> 生成新密码的加盐哈希 -> 更新 accounts 表 -> 同步内存快照。
 	// 旧密码校验失败回 BadCredentials（上层必须计入退避，否则改密流程就成了
 	// 绕过登录限流猜密码的旁路）；callback 在事件循环线程上执行。
 	static void changePasswordAsync(const std::string& username,
@@ -127,10 +120,6 @@ public:
 	static void readAllPlayerInfoAsync(std::function<void(bool success, vector<shared_ptr<PlayerInfo>> result)> callback);
 
 	static void loadPlayerDataAsync(std::function<void(bool success)> callback);
-
-
-	// 缓存统计
-	static void printCacheStatistics();
 
 };
 

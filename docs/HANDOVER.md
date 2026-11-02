@@ -4,56 +4,55 @@
 
 ## 0. 当前状态（截至 2026-11-02）
 
-> 本次会话（2026-11-02）三轮：**① 按来源 IP 兜底**（认证加固第三批）→ **② 改密/重置**
-> → **③ 连接池 trim**。前几轮：`-O2`（4.7）→ `User` 棋盘 int8（4.8）
-> → 连接池预创建 50000 → 2048（4.9）→ 认证加固第一/二批（注册密码策略、未知账号假 PBKDF2、
-> 登录失败退避、哈希队列上限）。每轮的实现细节见第 5 节对应小节，性能数据见第 4 节。
+> 本次会话（2026-11-02）四轮：**① 按来源 IP 兜底** → **② 改密/重置**
+> → **③ 连接池 trim** → **④ 存储层 CSV → SQLite**。前几轮：`-O2`（4.7）→ `User` 棋盘 int8（4.8）
+> → 连接池预创建 2048（4.9）→ 认证加固第一/二批。每轮的实现细节见第 5 节，性能数据见第 4 节。
 
-**本轮做完了"池子只涨不缩"：空闲缓存定期 trim**（`ConnectionPool::maybeTrim`）
+**本轮做完了存储层：`userdata.csv` → SQLite**（`TetrisGame/Db.{h,cpp}`）
 
-1. **问题**：`MAX_POOL_SIZE = 100000`，池子只涨不缩——跑过一次 10 万连接后，空闲的 `User`
-   会一直缓存（每个约 3.1KB，10 万个 ≈ **300MB**）直到进程重启；
-2. **做法**：`trimIdleObjects(target)` 把空闲缓存压回目标值（默认 **4096**，约 13MB），
-   由现有的 **100ms 清理定时器**（`EventLoop::unregister_Event_User`，刚好把死连接还回池子之后）
-   调用 `maybeTrim()`，内部按 `TETRIS_POOL_TRIM_INTERVAL_MS`（默认 **5000**）限频；
-   `target >= MAX_POOL_SIZE` 即关闭（想回到"只涨不缩"就设 `TETRIS_POOL_TRIM_TARGET=100000`）；
-3. **安全性**：池里只有"空闲"对象，正在用的连接完全不受影响；先把要丢的对象一次性移出队列
-   （持锁很短），**在锁外析构**——一次可能释放上万个 `User`，不该占着 `pool_mutex`；
-   池空时 `acquire` 照旧按需创建（原本就支持 10 万连接突发）；
-4. **代价**：峰值过后再来一波建连会重新 new 对象（每个 2~3µs）：10 万连接那轮约 85k 次重新
-   分配摊在 200 秒里，可忽略；"200 玩家持续游戏"时池子只有几百个对象，根本不会触发 trim；
-5. **可观测**：trim 时打一条 `连接池 trim: A -> B (target C)`（info 级别，默认 warn 不落盘），
-   `printPerformanceStats()` 多一行"累计 trim"；
-6. **CI 实测**：新增一步「Connection pool trim test」——用 `TETRIS_POOL_TRIM_TARGET=256`、
-   `_INTERVAL_MS=300`、`TETRIS_LOG_LEVEL=info` 起服务端，压 3000 条连接再让客户端退出，
-   断言日志里出现 `trim: A -> 256`，且所有 trim 行的"trim 前大小"累计 ≥ 4200（启动预创建那次
-   是 2048，加上峰值那次的 ~3000，才能证明 3000 条连接真的被缓存过），**并且 trim 之后再压
-   200 条连接仍然 ≥90% 成功**（池被清空后按需创建没退化）；
-7. **CI 实测**（SHA `315ed6b`）：编译 **0 告警**；trim 日志实测
-   `连接池 trim: 3000 -> 256 (target 256)`（3000 条连接全被缓存后又压回 256，
-   trim 之后 200 条连接 100% 建立）；集成 **12/12**（单/双 worker）、跨进程 **5/5**、
-   IP 兜底与其它自检全部通过、`sizeof(User)` 仍是 **1992**；
-   登录基准 128/128（1 worker 1.48~1.67s / 77~87 次/秒，2 worker 1.21~1.24s / 103~105 次/秒，0 错误）。
+1. **为什么换**：注册是往文件追加一行，但**改密/成绩更新要整表重写**（临时文件 + rename），
+   而且每个进程的缓存一失效就要把整张表重新解析；账号/成绩一多，写放大和解析成本都是 O(n)，
+   多进程还得靠 `flock` 串行。SQLite 一条 `UPDATE`/`INSERT` 就够，WAL 下多进程并发读、
+   写按行加锁；排行榜直接用索引取前 N；
+2. **表结构**：`accounts(username PK, password, created_at)` +
+   `scores(id, username, difficulty, score, played_at)` + 三个索引（按用户取最近 20 条、
+   按难度取最高分、每用户每难度的最高分）；难度固定 `EASY/NORMAL/DIFFICULT`；
+3. **旧数据一次性导入**：库里 `accounts` 为空、目录里还有 `userdata.csv` 时，启动自动导入
+   （账号 + 三个难度的最高分 + 最近成绩对），写 `meta.csv_imported=1` 后不再重复；
+   旧明文密码原样导入，登录时照旧迁移成哈希；
+4. **缓存失效换信号**：原来的"文件 mtime/size"换成 `Db::cacheStamp()`（本进程写次数 +
+   SQLite `data_version`，别的进程提交过就会变）；`loadPlayerData()` 只在变了才重建，
+   凭据查询直接走主键——`playerCache` 那套缓存整个删掉了；
+5. **线程/多进程**：每进程一个连接 + 内部递归锁，慢操作（PBKDF2）仍在锁外；
+   WAL + `busy_timeout=5000`；首次多 worker 同时建库有重试；
+6. **配置**：`TETRIS_DB`（默认 `tetris.db`）。`userdata.csv` 只在导入时读一次，之后不再写；
+7. **测试/CI**：新增 `tests/db.py`（统一 schema 与查询，mock 与各测试脚本共用）；
+   mock/集成/跨进程/IP 兜底/压测 seed 全部改用 SQLite（`--userdata` → `--db`）；
+   新增「Legacy CSV import test」（旧文件 -> 导入 -> 明文登录 -> 迁移成哈希）；
+   CI 装 `libsqlite3-dev`，每个步骤先删库。本地 mock 已跑通 12/12、跨进程 5/5、IP 兜底。
 
-**上一轮：改密/重置**（`Filedata::changePasswordAsync` + 主菜单 5）：新密码走同一套
-`PasswordPolicy`、不能与当前密码相同；旧密码错误计入用户名退避 + 按 IP 兜底（否则改密就是
-绕登录限流猜密码的旁路）；落盘复用迁移路径（`flock` + 临时文件 + rename），改完其它 worker
-立刻可用。集成 12 项、跨进程 5 项。细节见 5.「认证加固第四批」。
+**上一轮：连接池 trim**（`ConnectionPool::maybeTrim`）：空闲缓存压回 4096 个（默认 5 秒检查一次），
+跑过 10 万连接后的 ~300MB 不再常驻；只丢空闲对象，CI 用 3000 连接断言过。细节见 5.连接池收缩。
 
-**再往前：按来源 IP 兜底**（`IpThrottle`）：5 槽滑动窗口、默认 300 次/5 分钟，把单源压到
-≈1 次哈希/秒；拒绝不记账、成功不清零；CI 用低阈值服务端跑协议用例（127.0.0.2 对照）。
-细节见 5.「认证加固第三批」。
+**再往前：改密/重置**：主菜单 5 + `changePasswordAsync`，新密码走同一套策略，旧密码错误计入
+退避/IP 兜底，落盘复用迁移路径。集成 12 项、跨进程 5 项。细节见 5.认证加固第四批。
+
+**再往前：按来源 IP 兜底**：5 槽滑动窗口、300 次/5 分钟，拒绝不记账、成功不清零。
+细节见 5.认证加固第三批。
 
 **更早**：登录失败退避 + 哈希队列上限；再往前是注册密码策略 + 未知账号假 PBKDF2、
 连接池 2048（4.9）、`User` 棋盘 int8（4.8）、构建优化 -O2（4.7）。
 
 **下一步建议（按顺序）**：
 
-1. **注册限流**（可选）：注册路径不经过用户名退避/IP 兜底，每次注册一次 PBKDF2（占写队列，
+1. **管理员 CLI + 备份**（上线必需）：`tetris-admin reset-password <user>`（没有邮箱，"找回"
+   只能这样）、`tetris-admin backup`（`sqlite3 .backup` 或直接把库拷走）；顺便把"启动时打印生效配置"
+   一起做掉；
+2. **注册限流**（可选）：注册路径不经过用户名退避/IP 兜底，每次注册一次 PBKDF2（占写队列，
    不占哈希线程池）；只在对外开放注册时才值得做；
-2. **认证状态跨进程**（可选）：用户名退避 / IP 兜底的计数都在各 worker 内存里（见 6.23/6.25），
-   要统一得用共享内存或落文件；
-3. **`-flto` / 连接建立路径**（都属性能线，收益有限，见第 8 节）；远程多机压测要第二台机器/预算。
+3. **认证状态跨进程**（可选）：用户名退避 / IP 兜底的计数都在各 worker 内存里（见 6.23/6.25）；
+4. **打包/部署**（上线必需）：Dockerfile / systemd unit / SSH 承载（`ForceCommand`）；
+5. **`-flto` / 连接建立路径**（性能线，收益有限）；远程多机压测要第二台机器/预算。
 
 **最有用的结论**（细节见后文）：
 
@@ -70,6 +69,8 @@
   改完另一个 worker 立即可用；**存量短密码由此有了出路**；
 - **账号不存在与密码错误耗时同量级**（未知账号也跑一次假 PBKDF2）；
 
+- **存储层是 SQLite**（`TetrisDB`）：每局一条 `INSERT`、改密一条 `UPDATE`，不再整表重写；
+  WAL 下多进程并发读写；旧 `userdata.csv` 在首次启动时一次性导入，之后不再使用；
 - **`sizeof(User)` = 1992 字节**（棋盘 int8 + 来源 IP 4 字节 + 对齐填充）；10 万连接用户对象 ~190MB；
   实测 8.5 万连接 RSS ~330MB、200 玩家 ~41MB（int8 + 池子瘦身之后；之前 397MB）；
 - **连接池启动只预创建 2048 个 `User`**（`INITIAL_POOL_SIZE`），空闲内存 ~6MiB；
@@ -140,6 +141,7 @@ cd src && make -j"$(nproc)"
 | `TETRIS_AUTH_IP_MAX_ENTRIES` | 4096 | 最多跟踪多少个来源 IP（满了对新 IP fail-open） |
 | `TETRIS_POOL_TRIM_TARGET` | 4096 | 空闲连接池最多缓存多少个 `User`；`>= 100000` 表示不缩 |
 | `TETRIS_POOL_TRIM_INTERVAL_MS` | 5000 | 多久检查一次要不要 trim（100ms 定时器里的限频） |
+| `TETRIS_DB` | `tetris.db` | SQLite 库文件路径（账号 + 成绩；旧的 `userdata.csv` 只用于首次导入） |
 
 注意：改了**头文件**之后 `make` 现在会自动重编依赖它的源文件（`-MMD -MP`）。
 如果 `obj/` 是旧规则时代留下的，建议先 `make clean` 一次。
@@ -162,21 +164,24 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 
 - 用 `tetris_client.py` 而不是 `telnet`：telnet 默认行模式，方向键要按回车才发，且回车不是 CRLF；
 - 客户端连的是 `127.0.0.1:9999`，所以**服务端必须跑在 WSL 里**；
-- 账号和成绩存在服务端工作目录的 `userdata.csv`（已 gitignore）。
+- 账号和成绩存在服务端工作目录的 SQLite 库 `tetris.db`（已 gitignore；WAL 会带出 `-wal`/`-shm` 两个文件）；
+  旧版本的 `userdata.csv` 会在首次启动（空库）时自动导入一次，之后不再使用。
 
 ## 3. 测试与压测工具链
 
 | 文件 | 作用 |
 |---|---|
-| `tests/integration_test.py` | 协议级集成测试（仅标准库，**12 项**）：注册 → 登录 → 排行榜 → 选难度 → 进游戏 → 按键 → 游戏结束，外加二次登录、错误密码、**短密码注册被拒**、**未知账号与错误密码提示一致**、**失败退避与等待后放行**、**修改密码**、**加盐哈希落盘**、**旧明文登录即迁移**、快速重连 |
+| `tests/integration_test.py` | 协议级集成测试（仅标准库，**12 项**；`--db` 指向服务端的 SQLite 库）：注册 → 登录 → 排行榜 → 选难度 → 进游戏 → 按键 → 游戏结束，外加二次登录、错误密码、**短密码注册被拒**、**未知账号与错误密码提示一致**、**失败退避与等待后放行**、**修改密码**、**加盐哈希落盘**、**旧明文登录即迁移**、快速重连 |
 | `tests/password_hash_test.cpp` | 哈希层自检（CI 单独编译运行）：Python `hashlib` 已知向量交叉验证、随机盐、旧明文兼容、坏记录拒绝、**`verifyDummy` 恒 false 且耗时同量级**、**注册密码策略（UTF-8 码点计数）**、单次耗时 |
 | `tests/auth_throttle_test.cpp` | 退避状态机自检（CI 单独编译运行）：注入时间，覆盖**指数增长/30s 封顶/成功清零/窗口内不延长/过期/条目上限/超长用户名** |
 | `tests/ip_throttle_test.cpp` | 按 IP 兜底的状态机自检（CI 单独编译运行）：注入时间，覆盖**阈值/滑动窗口（5 槽）/拒绝不延长/跨槽累计/多 IP 隔离/条目上限/过期/格式化** |
 | `tests/ip_fallback_test.py` | 按 IP 兜底的协议级用例（CI 用低阈值 `5 次/10 秒` 起服务端）：**换用户名喷洒被按 IP 拦截 → 正确密码也进不去 → 127.0.0.2 同时可登录 → 窗口滑过后恢复** |
 | `tests/credential.py` | 哈希格式的 Python 实现（与 `PasswordHash.cpp` 对齐），供 mock / 集成测试 / play_test 复用 |
-| `tests/cross_process_test.py` | 跨进程存储一致性（**5 项**）：两个服务进程共享同一份 `userdata.csv`，验证 A 注册的账号能在 B 登录（哈希校验跨进程同样生效），以及 **A 改密后 B 能用新密码登录、旧密码在 B 失效**（顺带证明整行改写没写坏文件） |
-| `tests/mock_server.py` | 协议 mock，**只用于在没有真服务端的环境里验证上述测试脚本本身**，不是协议规范；密码行为与真服务端一致（注册写哈希、登录校验、明文迁移、**注册密码策略**） |
-| `tests/play_test.py` | 游戏负载压测客户端：真实登录/开局/持续按键（只按左/右，不按下 → 不提前 GAME OVER）；`--seed` 直接写哈希账号，避免压测时触发迁移 |
+| `tests/db.py` | 测试侧的 SQLite 存取（schema 与 `Db.cpp` 保持一致）：`--db` 路径、等账号落库、读凭据、造账号、查成绩 |
+| `tests/csv_import_test.py` | 旧 `userdata.csv` 一次性导入验证：造旧 CSV → 服务端启动自动导入 → 明文密码能登录 → 登录后库里变成加盐哈希 |
+| `tests/cross_process_test.py` | 跨进程存储一致性（**5 项**）：两个服务进程共享同一个 SQLite 库（WAL + `busy_timeout`），验证 A 注册的账号能在 B 登录（哈希校验跨进程同样生效），以及 **A 改密后 B 能用新密码登录、旧密码在 B 失效**（顺带证明改密写库对另一个进程立即可见） |
+| `tests/mock_server.py` | 协议 mock，**只用于在没有真服务端的环境里验证上述测试脚本本身**，不是协议规范；密码与存储行为跟真服务端对齐（写 SQLite、注册写哈希、登录校验、明文迁移、注册密码策略、改密、按 IP 兜底的滑动窗口） |
+| `tests/play_test.py` | 游戏负载压测客户端：真实登录/开局/持续按键（只按左/右，不按下 → 不提前 GAME OVER）；`--seed` 直接把哈希账号写进 SQLite，避免压测时触发迁移 |
 | `tests/play_bench.sh` | 按 worker 列表跑游戏负载对比，每组回传一条注解；`BENCH_BIN`/`BENCH_LABEL` 可跳过 make、直接跑预编译二进制（同机 A/B 用） |
 | `tests/gameplay_stats.py` | 把 `play_test` 的 JSON + 采样 JSON 归纳成一行指标：**游戏窗口 CPU / 全程 CPU / 每按键 µs**；`play_bench.sh` 调用它 |
 | `tests/play_remote.sh` | **远程**游戏负载：SSH 到独立服务端，按 1/2/4 worker 正反序各跑一轮，取回采样并汇总（解决同机抢核） |
@@ -203,12 +208,13 @@ CI 步骤（`build.yml`，每次 push `main` 都跑，顺序如下）：
 → 3. 测试脚本语法（`tests/*.py` py_compile + `tests/*.sh` `bash -n`）
 → 4. 密码哈希自检（`password_hash_test.cpp`，失败细节走注解）→ 5. 退避自检（`auth_throttle_test.cpp`）
 → 6. **IP 兜底自检**（`ip_throttle_test.cpp`）→ 7. 协议集成测试（12 项）
-→ 8. **IP 兜底协议测试**（低阈值服务端 + `ip_fallback_test.py`）→ 9. 跨进程存储测试（5 项）
-→ 10. 双 worker 测试（先断言两个子进程都活着，再跑完整协议测试）
-→ 11. 登录吞吐基准（1/2 worker 各 2 轮，只回传 `::notice::`，不做时间断言）
-→ 12. 200 连接冒烟 → 13. `bench.sh` 100 连接冒烟 → 14. **连接池 trim（3000 连接后断言池子被压回
-目标值、且之后仍能接新连接）** → 15. `sizeof(User)` → 16. 头文件依赖跟踪自检
-（`touch User.h` + `make -n`）。CI 的 apt 依赖里已加 `libssl-dev`。
+→ 8. **旧 CSV 导入**（`csv_import_test.py`：造旧 CSV → 启动自动导入 → 明文登录 → 迁移）
+→ 9. **IP 兜底协议测试**（低阈值服务端 + `ip_fallback_test.py`）→ 10. 跨进程存储测试（5 项）
+→ 11. 双 worker 测试（先断言两个子进程都活着，再跑完整协议测试）
+→ 12. 登录吞吐基准（1/2 worker 各 2 轮，只回传 `::notice::`，不做时间断言）
+→ 13. 200 连接冒烟 → 14. `bench.sh` 100 连接冒烟 → 15. **连接池 trim（3000 连接后断言池子被压回
+目标值、且之后仍能接新连接）** → 16. `sizeof(User)` → 17. 头文件依赖跟踪自检
+（`touch User.h` + `make -n`）。CI 的 apt 依赖里已加 `libssl-dev`、`libsqlite3-dev`。
 
 `bench.yml` 只在 push 到 `bench-run` 分支或手动触发时跑，**用完记得删分支**。
 push 触发时它做两件事：**同机 -O0/-O2 交错 A/B**（`Build -O0 and -O2 binaries` +
@@ -456,12 +462,26 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
   现在用 `EventLoop::post()` 经**自管道**投递回循环线程——没用 `evthread_use_pthreads()`（会给每个 event
   操作加全局锁）；回调里加了"状态已变化就丢弃"的守卫。
 
-### 存储层（多进程前置）
+### 存储层（SQLite，2026-11-02）
 
-- `userdata.csv` 的读-改-写放进 `flock` 临界区（跨进程互斥、**同线程可重入**——否则外层持锁、内层又
-  `flock` 另一个 fd 会把自己锁死）；整表写入仍是"临时文件 + rename"；锁文件 `userdata.csv.lock`；
-- 缓存改为按文件 `mtime`(含纳秒)/`size` 失效，否则别的进程注册的账号本进程看不到；
-- `load_test.py` 的 socket 补了 `SO_REUSEADDR`（见 6.10）。
+- **`TetrisGame/Db.{h,cpp}`**：每进程一个 `sqlite3` 连接 + 内部递归锁（查询都是微秒级，
+  PBKDF2 这类慢操作仍在锁外）；`PRAGMA journal_mode=WAL` + `synchronous=NORMAL` +
+  `busy_timeout=5000`，多进程可以并发读、写按行加锁；
+- **表**：`accounts(username PK, password, created_at)`、`scores(id, username, difficulty,
+  score, played_at)`，索引 `(username,id DESC)` / `(username,difficulty,score DESC,id)` /
+  `(difficulty,score DESC,id)`；"最近 20 次"= `ORDER BY id DESC LIMIT 20`，
+  排行榜 = 每个难度取 `MAX(score)` 那条（连时间戳一起）；
+- **写路径**：注册 = 一条 `INSERT`（UNIQUE 天然挡重名）；改密 = 一条 `UPDATE`;
+  一局结束 = 一条 `INSERT scores`。原来的"整表重写 + 临时文件 + rename + flock"全部删掉了；
+- **读路径**：凭据查询走主键（登录/改密各一次），不再需要 `playerCache`；
+  `PlayerInfo` 快照由 `loadPlayerData()` 从库里重建，用 `Db::cacheStamp()`
+  （本进程写次数 + SQLite `data_version`）判断要不要重建——这替代了原来的 mtime/size 账本；
+- **旧数据导入**：`Db::open()` 发现库空 + 目录里有 `userdata.csv` 时导入一次
+  （账号/三个难度的最高分/最近成绩对），成功后写 `meta.csv_imported=1`；
+  明文密码原样导入，登录时照旧迁移；
+- **多 worker 首次启动**：两个进程可能同时建库/开 WAL，`busy_timeout` + 建表重试（3 次）兜住；
+- **备份**：`sqlite3 tetris.db ".backup backup.db"`（或在停机时直接拷 `.db` + 两个 WAL 文件）；
+  库文件里是密码哈希，权限按敏感数据处理。
 
 ### 密码存储
 
@@ -651,7 +671,7 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 - `showRecentScores` 能识别 `Read_recent_grades` 的哨兵值 `"1"`（否则新账号会看到一个孤零零的 `1`）；
 - 删除 `User::getAllUsers()`（`forEachUser` 替代后无调用点，且它按值复制整张 map，正是上次性能事故的根因）；
 - `SystemOptimizer::setFileDescriptorLimit()`：目标软限制 300000，**只升不降**；
-- `UImanage::clear()` 用 `\x1b[2J\x1b[H`（7 字节）；首次运行自动创建空 `userdata.csv`；
+- `UImanage::clear()` 用 `\x1b[2J\x1b[H`（7 字节）；首次运行自动创建空 SQLite 库；
 - README 只保留**已复测**的数据。
 
 ## 6. 已知坑
@@ -738,7 +758,7 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     改密失败会**计入该用户名的退避 + 该 IP 的失败数**（否则它就是猜密码的旁路），
     所以短时间内连续输错会看到"修改密码尝试过于频繁"。
 28. **改密只支持"知道当前密码"的人**：没有邮箱/密保，忘记密码只能由管理员直接改
-    `userdata.csv`（写一行 `$pbkdf2-sha256$...` 或干脆写明文让它下次登录时迁移）。
+    库里的 `accounts.password`（写一行 `$pbkdf2-sha256$...` 或干脆写明文让它下次登录时迁移）。
 29. **trim 只在"池子比目标大"时动手，且按间隔限频**：默认 4096 / 5 秒，所以跑完 10 万连接
     后那 ~300MB 缓存最多留几秒；想关掉就设 `TETRIS_POOL_TRIM_TARGET=100000`（或更大）。
     它**只丢空闲对象**，不影响在线连接；但峰值过后马上再来一波大建连会重新 `new`（每个
@@ -762,14 +782,16 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     两层状态都是**每进程**的，多 worker 时阈值 ×N（见 6.23/6.25）；
   - IP 兜底不覆盖注册路径，也没有"跨进程共享计数"（要做得上共享内存/文件）；
   - 密码策略只在注册/改密时检查；**登录后可以改密**（主菜单 5），存量短密码由用户自己换；
-    没有"忘记密码"（没邮箱），忘记只能管理员改 `userdata.csv`（见 6.28）；
+    没有"忘记密码"（没邮箱），忘记只能管理员直接改库（见 6.28，"管理员 CLI"还没做）；
   - `accept` 路径的 `showInitMenu` 还没走 `OutputBatch`，菜单也没预渲染缓存；
   - 两个 100ms 定时器仍扫全表（空闲连接 CPU 的主要来源），未做"游戏中/待发/待清理"分集合；
   - 游戏负载的绝对 CPU 数字以 4.7/4.8/4.9 的同机 A/B 为准；4.1~4.6 的 CPU 都是 -O0/全程口径，
     跨 run/跨 runner 不能直接相除（见 6.18）；
   - 登录吞吐默认 2 哈希线程；更高并发调 `TETRIS_HASH_THREADS`（多 worker 时线程数按进程相乘），
     没有"按核数自动伸缩"；
-  - 旧明文账号必须登录一次才会迁移（见 6.14）；
+  - 旧明文账号必须登录一次才会迁移（见 6.14）；旧 `userdata.csv` 只在首次启动（空库）时导入一次，
+  导入后不再同步——想重跑导入得先删库；
+- **没有管理员 CLI**：重置密码只能手工改库（`sqlite3` 或 `UPDATE accounts ...`），备份也没脚本；
   - 远程压测脚本与手册已就绪（`play_remote.sh` / `REMOTE_BENCH.md`），尚未在真实云主机上跑过；
   - 连接数多机压测（`BENCH_REMOTE_CLIENTS`）修了源 IP 绑定，但 >6.4 万/台仍需加网卡 alias，未实测；
   - `output()` 的 1 MB 慢客户端上限是拍脑袋定的，未针对极端场景验证过；
@@ -791,7 +813,8 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 已完成（不要再当待办）：`-O2`（4.7）、`User` 棋盘 int8（4.8）、连接池预创建 2048（4.9）、
 **注册密码策略 + 未知账号假 PBKDF2**、**登录失败退避 + 哈希队列上限**、
 **按 IP 兜底（IpThrottle + 两套测试）**、**改密/重置（主菜单 5 + changePasswordAsync）**、
-**连接池 trim（空闲缓存压回 4096，CI 有 3000 连接用例）**（本轮）、
+**连接池 trim（空闲缓存压回 4096，CI 有 3000 连接用例）**、
+**存储层 SQLite（accounts/scores + WAL + 旧 CSV 一次性导入）**（本轮）、
 密码加盐哈希 + 迁移、登录吞吐、输出批量。
 
 ## 9. 给新会话的起步提示
@@ -799,9 +822,9 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 ```
 读 docs/HANDOVER.md 了解现状，然后我们继续做 <方向>。
 
-建议下一步：认证线已收口（注册策略 / 假 PBKDF2 / 用户名退避 / 哈希队列上限 / 按 IP 兜底 / 改密），
-连接池只涨不缩也已用 trim 解决，都别再重复做。剩下的都是"看部署场景"的可选项：
-注册限流、认证状态跨进程；性能线已收口（两种场景服务端都不是瓶颈），别再堆优化。
+建议下一步：认证线、连接池、存储层都已收口（SQLite 的 accounts/scores + 旧 CSV 导入），
+别再重复做。上线前真正缺的是**运营件**：管理员 CLI（重置密码/备份）、Dockerfile/systemd、
+SSH 承载（`ForceCommand`）；性能线已收口，别再堆优化。
 30 万连接已试过，卡在压测客户端（服务端 1.27GB/53% 单核），别在 4 核 runner 上硬加客户端进程。
 
 要点：

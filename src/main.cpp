@@ -57,7 +57,7 @@ static int env_int(const char* name, int fallback, int lo, int hi) {
 }
 
 // 一个 worker 的完整生命周期：日志 -> 连接池 -> 异步文件线程 -> 监听 socket -> 事件循环。
-// 多 worker 时每个进程各跑一份，互不共享内存；共享的只有 userdata.csv（靠 flock 保护）。
+// 多 worker 时每个进程各跑一份，互不共享内存；共享的只有 SQLite 库文件（WAL + busy_timeout）。
 static int run_worker(int listen_port, int workers, size_t pool_size, int reuseport) {
     logger = create_logger(workers > 1);
 

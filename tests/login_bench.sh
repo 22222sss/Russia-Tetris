@@ -27,9 +27,9 @@ if [ ! -x ./tetris_game ]; then
   exit 1
 fi
 
-rm -f userdata.csv userdata.csv.lock log*.txt
+rm -f tetris.db tetris.db-wal tetris.db-shm userdata.csv userdata.csv.lock log*.txt
 echo "造账号中（$PLAYERS 个，每个账号一次 PBKDF2，需要几十秒）..."
-if ! python3 "$TESTS/login_bench.py" --seed "$PLAYERS" --userdata userdata.csv; then
+if ! python3 "$TESTS/login_bench.py" --seed "$PLAYERS" --db tetris.db; then
   echo "::error::登录基准造账号失败"
   exit 1
 fi

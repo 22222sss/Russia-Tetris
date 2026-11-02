@@ -10,7 +10,7 @@
    不比对整屏内容，避免因布局微调而误报。
 2. 菜单类输入一律以 CRLF 结尾（Server::ReceiveData 用 "\\r\\n" 分帧）；
    进入游戏后是原始按键（服务端用 strcmp(buffer, "\\x1b[B") 判断），不能带 CRLF。
-3. 注册后的落盘和登录后的菜单渲染都是**异步**的（saveNewUserDataAsync /
+3. 注册后的落库和登录后的菜单渲染都是**异步**的（saveNewUserDataAsync /
    loadPlayerDataAsync），所以这里用轮询等待，不假设时序。
 4. 失败信息用 ::error:: 注解输出：GitHub Actions 的日志下载需要 token，
    只有 annotations 能读回来（见 docs/HANDOVER.md 第 6 节第 7 条）。
@@ -19,13 +19,13 @@
 ----
     python3 tests/integration_test.py --host 127.0.0.1 --port 9999
 
-服务端的工作目录决定 userdata.csv 的位置，本脚本的 --userdata 默认相对当前目录，
+服务端的工作目录决定 SQLite 库（tetris.db）的位置，本脚本的 --db 默认相对当前目录，
 所以请在服务端同一个目录下运行（CI 里两者都是 src/）。
 
 改了这个脚本本身后，可以先用 tests/mock_server.py 在本地把它跑通，不必等 CI：
 
-    python3 tests/mock_server.py 19999 /tmp/mock_userdata.csv &
-    python3 tests/integration_test.py --port 19999 --userdata /tmp/mock_userdata.csv
+    python3 tests/mock_server.py 19999 /tmp/mock_tetris.db &
+    python3 tests/integration_test.py --port 19999 --db /tmp/mock_tetris.db
 """
 
 import argparse
@@ -37,6 +37,7 @@ import sys
 import time
 
 import credential
+import db
 
 # ANSI 转义：CSI（颜色/光标/清屏）、OSC、以及 ESC + 单字符
 ANSI_RE = re.compile(
@@ -214,67 +215,31 @@ def wait_for_any(conn, needles, timeout):
 # --------------------------------------------------------------------------
 
 def new_account_name():
-    """每次运行用唯一账号，避免与既有 userdata.csv 冲突。"""
+    """每次运行用唯一账号，避免与既有账号冲突。"""
     return "it%d%d" % (int(time.time()) % 100000, random.randint(100, 999))
 
 
 def wait_for_userdata(path, user, timeout):
-    """轮询 userdata.csv 直到出现账号名。
-
-    注册走的是 saveNewUserDataAsync（异步写盘），所以这里必须等落盘，
-    否则立刻登录会偶发 "登录失败"。
-    """
-    limit = time.time() + timeout
-    while time.time() < limit:
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                if user in fh.read():
-                    return True
-        except FileNotFoundError:
-            pass
-        time.sleep(0.2)
-    return False
+    """轮询到账号落库（注册走 saveNewUserDataAsync，是异步的）。"""
+    return db.wait_for_account(path, user, timeout)
 
 
 def read_credential(path, user):
-    """从 userdata.csv 取某个账号的 Password 字段（找不到返回 None）。"""
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            next(fh, None)      # 跳过表头
-            for line in fh:
-                parts = line.rstrip("\r\n").split(",")
-                if parts and parts[0] == user and len(parts) >= 2:
-                    return parts[1]
-    except FileNotFoundError:
-        pass
-    return None
+    """从 SQLite 取某个账号的 password 字段（找不到返回 None）。"""
+    return db.read_credential(path, user)
 
 
 def wait_for_credential(path, user, predicate, timeout):
-    """轮询等到 Password 字段满足 predicate；超时返回 None。
+    """轮询等到 password 字段满足 predicate；超时返回 None。
 
-    迁移走的是异步写盘（loginAsync -> rewriteStoredCredential + rename），
-    所以不能假设"登录返回成功"时文件已经更新。
+    迁移/改密走的是异步写库，不能假设"登录返回成功"时库已经更新。
     """
-    limit = time.time() + timeout
-    while time.time() < limit:
-        stored = read_credential(path, user)
-        if stored is not None and predicate(stored):
-            return stored
-        time.sleep(0.2)
-    return None
+    return db.wait_for_credential(path, user, predicate, timeout)
 
 
 def append_legacy_account(path, user, password):
-    """直接往 CSV 追加一条"升级前"的明文账号，用来验证登录即迁移。"""
-    try:
-        empty = os.path.getsize(path) == 0
-    except OSError:
-        empty = True
-    with open(path, "a", encoding="utf-8") as fh:
-        if empty:
-            fh.write(HEADER + "\n")
-        fh.write("%s,%s,0,EASY,,0,NORMAL,,0,DIFFICULT,,\n" % (user, password))
+    """直接造一条"升级前"的明文账号，用来验证登录即迁移。"""
+    db.insert_account(path, user, password)
 
 
 def login_expect_success(args, user, password, stage):
@@ -332,9 +297,9 @@ def test_register_and_login(args, user, password):
 
         # 注册是异步写盘的，而登录校验同步读文件 —— 必须等落盘再登录
         STAGE = "等待注册结果落盘（异步保存）"
-        if not wait_for_userdata(args.userdata, user, args.timeout):
+        if not wait_for_userdata(args.db, user, args.timeout):
             raise Failure("[%s] 在 %s 中未找到 %r（超时 %ss）"
-                          % (STAGE, args.userdata, user, args.timeout))
+                          % (STAGE, args.db, user, args.timeout))
 
         STAGE = "注册后按 3 返回主菜单"
         conn.sendline("3")
@@ -394,13 +359,13 @@ def test_register_and_login(args, user, password):
 
 
 def test_userdata_written(args, user):
-    """注册应异步落盘到 userdata.csv（在服务端工作目录）。"""
+    """注册应异步写入 SQLite（库文件在服务端工作目录）。"""
     global STAGE
-    STAGE = "userdata.csv 落盘"
+    STAGE = "账号写入 SQLite"
 
-    if not wait_for_userdata(args.userdata, user, args.timeout):
+    if not wait_for_userdata(args.db, user, args.timeout):
         raise Failure("在 %s 中未找到新注册的账号 %r（超时 %ss）"
-                      % (args.userdata, user, args.timeout))
+                      % (args.db, user, args.timeout))
 
 
 def credential_matches(password):
@@ -419,11 +384,11 @@ def test_password_hashed_at_rest(args, user, password):
     global STAGE
     STAGE = "密码落盘格式"
 
-    stored = wait_for_credential(args.userdata, user, credential_matches(password),
+    stored = wait_for_credential(args.db, user, credential_matches(password),
                                  args.timeout)
     if stored is None:
         raise Failure("[%s] %r 的 Password 字段不是该密码的加盐哈希：%r"
-                      % (STAGE, user, read_credential(args.userdata, user)))
+                      % (STAGE, user, read_credential(args.db, user)))
     if stored == password:
         raise Failure("[%s] 密码仍以明文落盘" % STAGE)
     if credential.verify(password + "-not-it", stored):
@@ -445,18 +410,18 @@ def test_legacy_migration(args):
     password = "legacy" + str(random.randint(100000, 999999))
 
     STAGE = "旧明文迁移：写入两条旧版明文账号"
-    append_legacy_account(args.userdata, user_a, password)
-    append_legacy_account(args.userdata, user_b, password)
+    append_legacy_account(args.db, user_a, password)
+    append_legacy_account(args.db, user_b, password)
 
     STAGE = "旧明文迁移：账号 A 首次登录（明文路径）"
     login_expect_success(args, user_a, password, STAGE)
 
     STAGE = "旧明文迁移：等待 A 落盘为哈希"
-    cred_a = wait_for_credential(args.userdata, user_a, credential_matches(password),
+    cred_a = wait_for_credential(args.db, user_a, credential_matches(password),
                                  args.timeout)
     if cred_a is None:
         raise Failure("[%s] 登录后 A 的密码仍是：%r"
-                      % (STAGE, read_credential(args.userdata, user_a)))
+                      % (STAGE, read_credential(args.db, user_a)))
 
     STAGE = "旧明文迁移：账号 A 二次登录（哈希路径）"
     login_expect_success(args, user_a, password, STAGE)
@@ -465,11 +430,11 @@ def test_legacy_migration(args):
     login_expect_success(args, user_b, password, STAGE)
 
     STAGE = "旧明文迁移：等待 B 落盘为哈希"
-    cred_b = wait_for_credential(args.userdata, user_b, credential_matches(password),
+    cred_b = wait_for_credential(args.db, user_b, credential_matches(password),
                                  args.timeout)
     if cred_b is None:
         raise Failure("[%s] 登录后 B 的密码仍是：%r"
-                      % (STAGE, read_credential(args.userdata, user_b)))
+                      % (STAGE, read_credential(args.db, user_b)))
     if cred_a == cred_b:
         raise Failure("[%s] 同密码的两个账号得到相同哈希，盐没有随机化" % STAGE)
 
@@ -557,16 +522,16 @@ def test_short_password_rejected(args):
         expect(conn, "注册成功")
 
         STAGE = "短密码：等落盘并确认存的是合法密码的哈希"
-        if not wait_for_userdata(args.userdata, user, args.timeout):
+        if not wait_for_userdata(args.db, user, args.timeout):
             raise Failure("[%s] 账号 %r 未落盘（超时 %ss）"
                           % (STAGE, user, args.timeout))
         stored = wait_for_credential(
-            args.userdata, user,
+            args.db, user,
             lambda value: credential.is_hashed(value) and credential.verify(valid, value),
             args.timeout)
         if not stored:
             raise Failure("[%s] 落盘凭据不是合法密码的哈希：%r"
-                          % (STAGE, read_credential(args.userdata, user)))
+                          % (STAGE, read_credential(args.db, user)))
         if credential.verify(short, stored):
             raise Failure("[%s] 7 位密码竟然能校验通过" % STAGE)
     finally:
@@ -623,7 +588,7 @@ def test_login_throttled(args):
         expect(conn, "请输入密码")
         conn.sendline(valid)
         expect(conn, "注册成功")
-        if not wait_for_userdata(args.userdata, user, args.timeout):
+        if not wait_for_userdata(args.db, user, args.timeout):
             raise Failure("[%s] 账号 %r 未落盘（超时 %ss）" % (STAGE, user, args.timeout))
         conn.sendline("3")
         expect(conn, "2. 登录")
@@ -718,7 +683,7 @@ def test_change_password(args):
         expect(conn, "请输入密码")
         conn.sendline(old_pw)
         expect(conn, "注册成功")
-        if not wait_for_userdata(args.userdata, user, args.timeout):
+        if not wait_for_userdata(args.db, user, args.timeout):
             raise Failure("[%s] 账号 %r 未落盘（超时 %ss）" % (STAGE, user, args.timeout))
         conn.sendline("3")
         expect(conn, "2. 登录")
@@ -811,8 +776,8 @@ def main():
     parser = argparse.ArgumentParser(description="俄罗斯方块服务端协议级集成测试")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9999)
-    parser.add_argument("--userdata", default="userdata.csv",
-                        help="userdata.csv 路径（相对服务端工作目录）")
+    parser.add_argument("--db", default="tetris.db",
+                        help="SQLite 数据库路径（相对服务端工作目录）")
     parser.add_argument("--timeout", type=float, default=15.0,
                         help="单个断言的等待上限（秒）")
     parser.add_argument("--game-over-timeout", type=float, default=45.0,

@@ -1,103 +1,18 @@
 #include"Filedata.h"
 #include"PasswordHash.h"
+#include"Db.h"
 #include"../EventLoop/EventLoop.h"
-#include <sys/file.h>   // flock：多进程共享 userdata.csv 时的跨进程互斥
 
 extern shared_ptr<spdlog::logger> logger;
 
 namespace {
 
-const char* const kUserDataFile = "userdata.csv";
-const char* const kUserDataLockFile = "userdata.csv.lock";
-
-// 缓存对应的文件状态。多进程共享同一份 userdata.csv 时，别的进程写过文件，
-// 本进程的缓存就必须失效，否则会看不到对方刚注册/更新的账号。
-time_t gCacheMtimeSec = 0;
-long gCacheMtimeNsec = 0;
-off_t gCacheSize = -1;
-
-void rememberFileState() {
-    struct stat st;
-    if (stat(kUserDataFile, &st) == 0) {
-        gCacheMtimeSec = st.st_mtime;
-        gCacheMtimeNsec = st.st_mtim.tv_nsec;
-        gCacheSize = st.st_size;
-    } else {
-        gCacheSize = -1;
-    }
-}
-
-void forgetFileState() {
-    gCacheSize = -1;
-}
-
-bool cacheMatchesFileState() {
-    if (gCacheSize < 0) {
-        return false;
-    }
-    struct stat st;
-    if (stat(kUserDataFile, &st) != 0) {
-        return false;
-    }
-    return st.st_size == gCacheSize
-        && st.st_mtime == gCacheMtimeSec
-        && st.st_mtim.tv_nsec == gCacheMtimeNsec;
-}
-
-// 跨进程读写锁（flock）。同一线程内可重入：嵌套获取只加一次锁，
-// 否则"外层已持锁、内层又 flock 另一个 fd"会把自己锁死。
-class DataFileLock {
-public:
-    explicit DataFileLock(bool exclusive) {
-        if (depth_ > 0) {
-            ++depth_;
-            return;
-        }
-        depth_ = 1;
-        fd_ = open(kUserDataLockFile, O_CREAT | O_RDWR, 0644);
-        if (fd_ < 0) {
-            logger->warn("无法创建锁文件 {}，userdata.csv 将按单进程方式访问", kUserDataLockFile);
-            return;
-        }
-        locked_ = (flock(fd_, exclusive ? LOCK_EX : LOCK_SH) == 0);
-        if (!locked_) {
-            logger->warn("flock 加锁失败，userdata.csv 将按单进程方式访问");
-        }
-    }
-
-    ~DataFileLock() {
-        --depth_;
-        if (depth_ > 0) {
-            return;
-        }
-        if (fd_ >= 0) {
-            if (locked_) {
-                flock(fd_, LOCK_UN);
-            }
-            close(fd_);
-            fd_ = -1;
-            locked_ = false;
-        }
-    }
-
-    DataFileLock(const DataFileLock&) = delete;
-    DataFileLock& operator=(const DataFileLock&) = delete;
-
-private:
-    static thread_local int depth_;
-    static thread_local int fd_;
-    static thread_local bool locked_;
-};
-
-thread_local int DataFileLock::depth_ = 0;
-thread_local int DataFileLock::fd_ = -1;
-thread_local bool DataFileLock::locked_ = false;
-
-// loadPlayerData 会被两类线程同时调用：事件循环线程（注册/选难度前刷新）和
-// 异步文件线程（登录校验、loadPlayerDataAsync）。两边都会"清空 + 重新填充"
-// PlayerInfo::players，交错执行会重复或丢玩家，所以整段串行化。
-// 加锁顺序固定为"文件锁 -> 本锁"（loginAsync 先拿共享文件锁再进来），避免反向嵌套。
+// PlayerInfo 快照：由 loadPlayerData() 从 SQLite 重建。
+// 用 Db::cacheStamp()（本进程写次数 + SQLite data_version）判断要不要重建，
+// 替代原来"按文件 mtime/size 失效"的那套账本。
 std::mutex gLoadMutex;
+std::uint64_t gPlayersStamp = 0;
+bool gPlayersLoaded = false;
 
 }  // namespace
 
@@ -108,10 +23,6 @@ std::condition_variable Filedata::queueCondition;
 std::atomic<bool> Filedata::stopAsyncThread(false);
 std::thread Filedata::asyncWriteThread;
 
-std::unordered_map<std::string, std::shared_ptr<PlayerInfo>> Filedata::playerCache;
-std::mutex Filedata::cacheMutex;
-std::atomic<long> Filedata::cacheHits(0);
-std::atomic<long> Filedata::cacheMisses(0);
 
 std::vector<std::thread> Filedata::hashThreads;
 std::queue<std::function<void()>> Filedata::hashQueue;
@@ -259,6 +170,12 @@ bool Filedata::runHashTask(std::function<void()> task) {
 
 // 初始化异步系统
 bool Filedata::initializeAsyncSystem() {
+    // 先打开存储：失败就别起线程，让 main 直接报错退出（比"跑起来但存不了"好）
+    if (!Db::openFromEnv()) {
+        logger->error("打开 SQLite 存储失败（TETRIS_DB）");
+        return false;
+    }
+
     stopAsyncThread = false;
     asyncWriteThread = std::thread(asyncWriteWorker);
 
@@ -291,11 +208,9 @@ void Filedata::shutdownAsyncSystem() {
         asyncWriteThread.join();
     }
 
-    // 清空缓存
-    {
-        std::lock_guard<std::mutex> lock(cacheMutex);
-        playerCache.clear();
-    }
+    // 所有写任务都已执行完、文件线程已退出，可以安全关库
+    Db::close();
+    gPlayersLoaded = false;
 
     logger->info("异步文件系统已关闭");
 }
@@ -331,29 +246,8 @@ void Filedata::asyncWriteWorker() {
     }
 }
 
-// 缓存管理方法
-void Filedata::addToCache(const std::shared_ptr<PlayerInfo>& player) {
-    std::lock_guard<std::mutex> lock(cacheMutex);
-    playerCache[player->getPlayerName()] = player;
-}
-
-std::shared_ptr<PlayerInfo> Filedata::getFromCache(const std::string& username) {
-    std::lock_guard<std::mutex> lock(cacheMutex);
-    auto it = playerCache.find(username);
-    if (it != playerCache.end()) {
-        cacheHits++;
-        return it->second;
-    }
-    cacheMisses++;
-    return nullptr;
-}
-
-void Filedata::removeFromCache(const std::string& username) {
-    std::lock_guard<std::mutex> lock(cacheMutex);
-    playerCache.erase(username);
-}
-
-// 异步保存方法
+// 异步保存方法（注册）：只把加盐哈希写进 accounts 表。
+// 原实现是往 CSV 追加一行；现在一条 INSERT 就够，而且 UNIQUE(username) 天然挡住重名。
 void Filedata::saveNewUserDataAsync(const shared_ptr<User>& user) {
     // 在事件循环线程上先把值拷出来：任务真正执行时这条连接可能已经断开、
     // User 对象已被放回连接池并复用（用户名/密码会被 resetUserInfo 清空）。
@@ -361,8 +255,8 @@ void Filedata::saveNewUserDataAsync(const shared_ptr<User>& user) {
     const string password = user->getPassword();
 
     auto task = [username, password]() {
-        // 落盘只存加盐哈希，明文密码不进入 userdata.csv。
-        // 先算哈希再拿文件锁：PBKDF2 要几十毫秒，不该占着跨进程锁。
+        // 落盘只存加盐哈希，明文密码不进入数据库。
+        // 先算哈希再写库：PBKDF2 要几十毫秒，不该占着 SQLite 的连接锁。
         string credential;
         try {
             credential = PasswordHash::hash(password);
@@ -372,37 +266,11 @@ void Filedata::saveNewUserDataAsync(const shared_ptr<User>& user) {
             return;
         }
 
-        // 跨进程独占锁：多个 worker 进程同时注册会互相覆盖
-        DataFileLock fileLock(true);
-
-        ofstream file(kUserDataFile, std::ios::app);
-        if (!file.is_open()) {
-            logger->error("无法打开文件保存用户数据");
+        if (!Db::insertAccount(username, credential)) {
+            logger->error("账号保存失败（可能已被同名注册）: {}", username);
             return;
         }
-
-        // 检查文件是否为空，如果是则添加标题行
-        struct stat stat_buf;
-        if (stat("userdata.csv", &stat_buf) == 0 && stat_buf.st_size == 0) {
-            file << "Username,Password,Easy_Score,Easy_Difficulty,Easy_Timestamp,"
-                << "Normal_Score,Normal_Difficulty,Normal_Timestamp,"
-                << "Difficult_Score,Difficult_Difficulty,Difficult_Timestamp,Recent_Scores\n";
-        }
-
-        // 写入用户数据
-        file << username << "," << credential << ","
-            << "0" << "," << "EASY" << "," << "" << ","
-            << "0" << "," << "NORMAL" << "," << "" << ","
-            << "0" << "," << "DIFFICULT" << "," << "" << ",\n";
-
-        file.close();
-        forgetFileState();   // 本进程刚改过文件，缓存的"文件状态账本"作废
-
-        // 添加到缓存
-        auto player = std::make_shared<PlayerInfo>();
-        player->setPlayerName(username);
-        player->setPassword(credential);
-        addToCache(player);
+        logger->info("账号已保存: {}", username);
         };
 
     {
@@ -414,11 +282,8 @@ void Filedata::saveNewUserDataAsync(const shared_ptr<User>& user) {
 
 void Filedata::update_TopScore_RecentScoreAsync(shared_ptr<User>& user) {
     auto task = [user]() {
-        // 跨进程独占锁：这条路径是"读整个文件 -> 改 -> 写回"，
-        // 两个 worker 同时做会互相覆盖（丢分数）。
-        DataFileLock fileLock(true);
+        // 一条 INSERT 就是一个事务，不需要再拿跨进程文件锁
         Update_TopScore_RecentScore(user);
-        forgetFileState();
         };
 
     {
@@ -428,124 +293,30 @@ void Filedata::update_TopScore_RecentScoreAsync(shared_ptr<User>& user) {
     queueCondition.notify_one();
 }
 
-// 把某一行的 Password 字段原地替换成新值。调用方必须已持有独占数据锁。
+// 把某账号的密码字段改成新值。调用方在单写线程上，SQLite 自己保证原子性。
 bool Filedata::rewriteStoredCredential(const std::string& username, const std::string& credential) {
-    const string filename = kUserDataFile;
-    // 临时文件名带 pid：多进程各写各的临时文件，最后 rename 覆盖，
-    // 不会出现"两个进程共用 temp_file.csv 互相踩"的问题。
-    const string tempName = filename + ".tmp." + std::to_string(getpid());
-
-    ifstream in(filename);
-    if (!in.is_open()) {
-        logger->error("迁移密码失败：无法打开 {}", filename);
+    if (!Db::updateCredential(username, credential)) {
+        logger->error("更新密码失败: {}", username);
         return false;
     }
-
-    ofstream out(tempName, std::ios::trunc);
-    if (!out.is_open()) {
-        logger->error("迁移密码失败：无法创建临时文件 {}", tempName);
-        return false;
-    }
-
-    string line;
-    bool found = false;
-
-    // 表头原样保留
-    if (getline(in, line)) {
-        out << line << '\n';
-    }
-
-    while (getline(in, line)) {
-        // 只替换第 2 个字段，其余（成绩、时间戳、\r 等）原样不动
-        size_t firstComma = line.find(',');
-        size_t secondComma = (firstComma == string::npos)
-            ? string::npos : line.find(',', firstComma + 1);
-
-        if (firstComma != string::npos && secondComma != string::npos &&
-            line.compare(0, firstComma, username) == 0) {
-            out << line.substr(0, firstComma) << ','
-                << credential << ','
-                << line.substr(secondComma + 1) << '\n';
-            found = true;
-        }
-        else {
-            out << line << '\n';
-        }
-    }
-
-    out.flush();
-    const bool writeOk = out.good();
-    out.close();
-    in.close();
-
-    if (!writeOk) {
-        logger->error("迁移密码失败：写入临时文件出错 {}", tempName);
-        remove(tempName.c_str());
-        return false;
-    }
-    if (!found) {
-        logger->warn("迁移密码时没找到用户 {}，保留原文件", username);
-        remove(tempName.c_str());
-        return false;
-    }
-    if (rename(tempName.c_str(), filename.c_str()) != 0) {
-        logger->error("迁移密码失败：rename 出错: {}", strerror(errno));
-        remove(tempName.c_str());
-        return false;
-    }
-
-    forgetFileState();
     return true;
 }
 
+// 同步内存里的凭据（PlayerInfo 快照），避免本进程后续还按旧值比较
 void Filedata::updateCredentialInMemory(const std::string& username, const std::string& credential) {
-    {
-        std::lock_guard<std::mutex> lock(cacheMutex);
-        auto it = playerCache.find(username);
-        if (it != playerCache.end() && it->second) {
-            it->second->setPassword(credential);
-        }
-    }
-
     auto player = PlayerInfo::findPlayer(username);
     if (player) {
         player->setPassword(credential);
     }
 }
 
-// 登录只需要"某个用户的凭据"，不需要整张玩家表。
-// 原实现每次登录都调 loadPlayerData()：即使缓存命中，也会清空并重新填充
-// PlayerInfo::players（O(账号数) 次 shared_ptr 拷贝，还占着文件锁和 gLoadMutex）。
-// 账号越多、并发登录越多，这笔开销越明显，而它对登录结果毫无用处。
+// 登录/改密只需要"某个账号的凭据"：一次主键查询（比原来"整表加载 + 缓存"更简单，
+// 也不再有"缓存和文件对不上"的问题）。
 bool Filedata::lookupCredential(const std::string& username, std::string& credential) {
-    // 共享锁：读缓存期间别让别的进程改文件（缓存有效性判断 + 读取必须是同一时刻的）
-    DataFileLock fileLock(false);
-
-    {
-        std::lock_guard<std::mutex> lock(cacheMutex);
-        if (!playerCache.empty() && cacheMatchesFileState()) {
-            auto it = playerCache.find(username);
-            if (it == playerCache.end() || !it->second) {
-                return false;   // 文件状态没变，缓存里没有 → 这个账号不存在
-            }
-            credential = it->second->getPassword();
-            return true;
-        }
-    }
-
-    // 缓存不可用（首次登录 / 别的进程改过文件）：完整加载一次再查
-    if (!loadPlayerData()) {
-        return false;
-    }
-
-    auto player = PlayerInfo::findPlayer(username);
-    if (!player) {
-        return false;
-    }
-    credential = player->getPassword();
-    return true;
+    return Db::lookupCredential(username, credential);
 }
 
+// 登录只需要一个账号的凭据，不需要整张玩家表（见上）。
 void Filedata::loginAsync(const std::string& username, const std::string& password,
     std::function<void(LoginResult)> callback) {
     // 参数全部按值捕获：任务在异步线程上跑，不能再去读 User（连接可能已断、对象已被复用）。
@@ -615,7 +386,6 @@ void Filedata::loginAsync(const std::string& username, const std::string& passwo
                 {
                     std::lock_guard<std::mutex> lock(queueMutex);
                     writeQueue.push([username, upgraded, finish]() {
-                        DataFileLock fileLock(true);
                         if (rewriteStoredCredential(username, upgraded)) {
                             updateCredentialInMemory(username, upgraded);
                             logger->info("账号密码已迁移为加盐哈希: {}", username);
@@ -694,11 +464,10 @@ void Filedata::changePasswordAsync(const std::string& username,
                     return;
                 }
 
-                // 落盘回单写线程：与注册/迁移的文件操作串行，flock 仍然保护跨进程
+                // 落盘回单写线程：与注册/迁移的写操作串行（跨进程由 SQLite 保证）
                 {
                     std::lock_guard<std::mutex> lock(queueMutex);
                     writeQueue.push([username, upgraded, finish]() {
-                        DataFileLock fileLock(true);
                         if (rewriteStoredCredential(username, upgraded)) {
                             updateCredentialInMemory(username, upgraded);
                             logger->info("账号密码已修改: {}", username);
@@ -723,645 +492,91 @@ void Filedata::changePasswordAsync(const std::string& username,
     queueCondition.notify_one();
 }
 
-// 修改loadPlayerData使用缓存
+// 把 SQLite 里的账号/成绩统计装载成 PlayerInfo 快照（排行榜与 initUserInfo 用）。
+// 数据没变（本进程没写过、别的进程也没提交）时直接复用，不重复重建。
 bool Filedata::loadPlayerData() {
-    // 共享锁：避免读到别的进程正在写入的半行
-    DataFileLock fileLock(false);
-    // 本进程内串行化"清空 + 填充"，否则两个线程交错会把玩家列表弄重复/弄丢
     std::lock_guard<std::mutex> loadLock(gLoadMutex);
 
-    PlayerInfo::clearPlayers();
-
-    // 先尝试从缓存加载。多进程共享同一个 userdata.csv，缓存必须与文件状态
-    // 对得上才能用，否则会看不到别的进程刚注册的账号。
-    {
-        std::lock_guard<std::mutex> lock(cacheMutex);
-        if (!playerCache.empty() && cacheMatchesFileState()) {
-            for (const auto& pair : playerCache) {
-                PlayerInfo::addPlayer(pair.second);
-            }
-            logger->info("从缓存加载了 {} 个玩家数据", playerCache.size());
-            return true;
-        }
-        playerCache.clear();   // 文件已被别的进程改过，旧缓存作废
-    }
-
-    // 缓存不可用，从文件加载
-    ifstream file("userdata.csv");
-    if (!file.is_open()) {
-        // 首次运行：数据文件不存在时自动创建带表头的空文件（不含任何用户数据），
-        // 保证 clone 仓库后无需手工准备数据文件即可启动
-        ofstream create("userdata.csv");
-        if (!create.is_open()) {
-            logger->error("无法创建用户数据文件");
-            return false;
-        }
-        create << "Username,Password,Easy_Score,Easy_Difficulty,Easy_Timestamp,"
-               << "Normal_Score,Normal_Difficulty,Normal_Timestamp,"
-               << "Difficult_Score,Difficult_Difficulty,Difficult_Timestamp,Recent_Scores\n";
-        create.close();
-        rememberFileState();
-        logger->info("用户数据文件不存在，已自动创建空数据文件");
+    const std::uint64_t stamp = Db::cacheStamp();
+    if (gPlayersLoaded && stamp == gPlayersStamp) {
         return true;
     }
 
-    string line;
-    getline(file, line); // 读取标题行
+    std::vector<Db::PlayerRow> rows;
+    if (!Db::loadPlayerStats(rows)) {
+        logger->error("加载玩家数据失败");
+        return false;
+    }
 
-    while (getline(file, line)) {
-        if (line.empty()) continue;
-
-        // 移除Windows换行符\r
-        if (!line.empty() && line[line.length() - 1] == '\r') {
-            line.erase(line.length() - 1);
-        }
-
-        if (line.empty()) continue;
-
-        istringstream ss(line);
-        string cell;
-
-        auto player = std::make_shared<PlayerInfo>(); // 使用智能指针
-        string playerName = "";
-        string password = "";
-
-        getline(ss, playerName, ',');
-        getline(ss, password, ',');
-
-        player->setPlayerName(playerName);
-        player->setPassword(password);
-
-        // 读取EASY难度最高分
-        getline(ss, cell, ',');
-        if (!cell.empty() && isNumber(cell))
-        {
-            player->setMaximum_Score_Easy(stoi(cell));
-        }
-        else
-        {
-            player->setMaximum_Score_Easy(0);
-        }
-
-        // 跳过EASY难度字符串
-        getline(ss, cell, ',');
-
-        // 读取EASY难度时间戳
-        string timestampEasy;
-        getline(ss, timestampEasy, ',');
-        player->setTimestampEasy(timestampEasy);
-
-        // 读取NORMAL难度最高分
-        getline(ss, cell, ',');
-        if (!cell.empty() && isNumber(cell))
-        {
-            player->setMaximum_Score_Normal(stoi(cell));
-        }
-        else
-        {
-            player->setMaximum_Score_Normal(0);
-        }
-
-        // 跳过NORMAL难度字符串
-        getline(ss, cell, ',');
-
-        // 读取NORMAL难度时间戳
-        string timestampNormal;
-        getline(ss, timestampNormal, ',');
-        player->setTimestampNormal(timestampNormal);
-
-        // 读取DIFFICULT难度最高分
-        getline(ss, cell, ',');
-        if (!cell.empty() && isNumber(cell))
-        {
-            player->setMaximum_Score_Difficult(stoi(cell));
-        }
-        else
-        {
-            player->setMaximum_Score_Difficult(0);
-        }
-
-        // 跳过DIFFICULT难度字符串
-        getline(ss, cell, ',');
-
-        // 读取DIFFICULT难度时间戳
-        string timestampDifficult;
-        getline(ss, timestampDifficult, ',');
-        player->setTimestampDifficult(timestampDifficult);
-
-        // 读取最近的成绩记录
-        while (getline(ss, cell, ','))
-        {
-            if (!cell.empty() && isNumber(cell))
-            {
-                int score = stoi(cell);
-                string difficulty;
-
-                if (getline(ss, difficulty, ','))
-                {
-                    if (!difficulty.empty())
-                    {
-                        player->setScores_Push(score);
-                        player->setGameDiffclutys_Push(difficulty);
-                    }
-                }
-            }
-        }
-
-        // 添加到缓存
-        addToCache(player);
+    PlayerInfo::clearPlayers();
+    for (const auto& row : rows) {
+        auto player = std::make_shared<PlayerInfo>();
+        player->setPlayerName(row.username);
+        player->setMaximum_Score_Easy(row.best[0]);
+        player->setTimestampEasy(row.bestAt[0]);
+        player->setMaximum_Score_Normal(row.best[1]);
+        player->setTimestampNormal(row.bestAt[1]);
+        player->setMaximum_Score_Difficult(row.best[2]);
+        player->setTimestampDifficult(row.bestAt[2]);
         PlayerInfo::addPlayer(player);
     }
 
-    file.close();
-    rememberFileState();   // 记下这份缓存对应的文件状态
-    logger->info("从文件加载了 {} 个玩家数据到缓存", playerCache.size());
+    gPlayersStamp = stamp;
+    gPlayersLoaded = true;
+    logger->info("从 SQLite 加载了 {} 个玩家数据", rows.size());
     return true;
 }
 
-// 缓存统计
-void Filedata::printCacheStatistics() {
-    logger->info("缓存统计 - 命中: {}, 未命中: {}, 缓存大小: {}",
-        cacheHits.load(), cacheMisses.load(), playerCache.size());
-}
-
+// 最近 20 次成绩：成绩表只追加，id 就是时间顺序，倒序取最新 20 条。
 vector<string> Filedata::Read_recent_grades(const shared_ptr<User>& user)
 {
     vector<string> temp = {};
-    ifstream file("userdata.csv");
+    if (user == nullptr) {
+        return temp;
+    }
 
-    if (!file.is_open())
-    {
-        logger->error("Unable to open file or file opening failed! Error message: {}\n", strerror(errno));
-        logger->flush();
+    std::vector<Db::ScoreRow> rows;
+    if (!Db::recentScores(user->getUsername(), 20, rows)) {
+        logger->error("读取最近成绩失败: {}", user->getUsername());
         temp.push_back("-1");
         return temp;
     }
 
-    string line;
-    getline(file, line); // 读取标题行
-
-    while (getline(file, line))
-    {
-        // 移除Windows换行符\r
-        if (!line.empty() && line[line.length() - 1] == '\r') {
-            line.erase(line.length() - 1);
-        }
-
-        istringstream ss(line);
-        string cell;
-
-        getline(ss, cell, ',');//读取用户名
-
-        if (cell == user->getUsername())
-        {
-            getline(ss, cell, ',');//读取密码
-
-            // 跳过EASY难度数据
-            getline(ss, cell, ',');
-            getline(ss, cell, ',');
-            getline(ss, cell, ',');
-
-            // 跳过NORMAL难度数据
-            getline(ss, cell, ',');
-            getline(ss, cell, ',');
-            getline(ss, cell, ',');
-
-            // 跳过DIFFICULT难度数据
-            getline(ss, cell, ',');
-            getline(ss, cell, ',');
-            getline(ss, cell, ',');
-
-            // 读取最近的成绩
-            int count = 0;
-            while (getline(ss, cell, ','))
-            {
-                if (cell.empty()) continue;
-
-                string score = cell;
-                string difficulty;
-
-                if (getline(ss, difficulty, ','))
-                {
-                    if (!difficulty.empty())
-                    {
-                        string outcome = score + "  " + difficulty;
-                        temp.push_back(outcome);
-                        count++;
-
-                        // 只保留最近的20条记录
-                        if (count >= 20) break;
-                    }
-                }
-            }
-            file.close();
-
-            if (temp.empty())
-            {
-                temp.push_back("1"); // 表示用户存在但没有成绩记录
-            }
-
-            return temp;
-        }
+    for (const auto& row : rows) {
+        temp.push_back(to_string(row.score) + "  " + row.difficulty);
     }
 
-    file.close();
+    if (temp.empty()) {
+        temp.push_back("1");   // 用户存在但没有成绩记录（UI 依赖这个哨兵值）
+    }
     return temp;
 }
 
-vector<shared_ptr<PlayerInfo>> Filedata::Read_AllpalyerInfo(ifstream& file)
-{
-    vector<shared_ptr<PlayerInfo>> show = {};
-
-    string line;
-    getline(file, line); // 读取标题行
-
-    while (getline(file, line))
-    {
-        // 移除Windows换行符\r
-        if (!line.empty() && line[line.length() - 1] == '\r') {
-            line.erase(line.length() - 1);
-        }
-
-        istringstream ss(line);
-        string cell;
-        std::shared_ptr<PlayerInfo> gamer = std::make_shared<PlayerInfo>();
-
-        string playerName = "";
-        string Password = "";
-
-        getline(ss, playerName, ',');//读取用户名
-        gamer->setPlayerName(playerName);
-
-        getline(ss, Password, ',');//读取密码
-        gamer->setPassword(Password);
-
-        // 读取EASY难度最高分
-        getline(ss, cell, ',');
-        if (!cell.empty() && isNumber(cell))
-        {
-            gamer->setMaximum_Score_Easy(stoi(cell));
-        }
-        else
-        {
-            gamer->setMaximum_Score_Easy(0);
-        }
-
-        // 跳过EASY难度字符串
-        getline(ss, cell, ',');
-
-        // 读取EASY难度时间戳
-        string TimestampEasy;
-        getline(ss, TimestampEasy, ',');
-        gamer->setTimestampEasy(TimestampEasy);
-
-        // 读取NORMAL难度最高分
-        getline(ss, cell, ',');
-        if (!cell.empty() && isNumber(cell))
-        {
-            gamer->setMaximum_Score_Normal(stoi(cell));
-        }
-        else
-        {
-            gamer->setMaximum_Score_Normal(0);
-        }
-
-        // 跳过NORMAL难度字符串
-        getline(ss, cell, ',');
-
-        // 读取NORMAL难度时间戳
-        string TimestampNormal;
-        getline(ss, TimestampNormal, ',');
-        gamer->setTimestampNormal(TimestampNormal);
-
-        // 读取DIFFICULT难度最高分
-        getline(ss, cell, ',');
-        if (!cell.empty() && isNumber(cell))
-        {
-            gamer->setMaximum_Score_Difficult(stoi(cell));
-        }
-        else
-        {
-            gamer->setMaximum_Score_Difficult(0);
-        }
-
-        // 跳过DIFFICULT难度字符串
-        getline(ss, cell, ',');
-
-        // 读取DIFFICULT难度时间戳
-        string TimestampDifficult;
-        getline(ss, TimestampDifficult, ',');
-        gamer->setTimestampDifficult(TimestampDifficult);
-
-        // 读取最近的成绩记录
-        while (getline(ss, cell, ','))
-        {
-            if (!cell.empty() && isNumber(cell))
-            {
-                int score = stoi(cell);
-                string difficulty;
-
-                if (getline(ss, difficulty, ','))
-                {
-                    if (!difficulty.empty())
-                    {
-                        gamer->setScores_Push(score);
-                        gamer->setGameDiffclutys_Push(difficulty);
-                    }
-                }
-            }
-        }
-
-        show.push_back(gamer);
-    }
-
-
-    file.close();
-    return show;
-}
-
+// 一局结束：追加一条成绩。原实现是"读整表 -> 改命中行 -> 写回临时文件 + rename"，
+// 账号越多越慢；现在是一条 INSERT，顺便刷新内存里的历史最高分（本次连接展示用）。
 bool Filedata::Update_TopScore_RecentScore(const shared_ptr<User>& user)
 {
-    // 添加空指针检查
     if (user == nullptr) {
-        logger->error("User pointer is null in Update_TopScore_RecentScore");
-        logger->flush();
+        logger->error("Update_TopScore_RecentScore: user 为空");
         return false;
     }
 
-    // 添加对用户分数队列的检查
-    if (user->getScores().size() < 20)
-    {
-        user->setScores_Push(user->getScore());
-        user->setGameDiffclutys_Push(user->getGameDiffculty());
-    }
-    else
-    {
-        user->setScores_Push(user->getScore());
-        user->setScores_Pop();
+    const string username = user->getUsername();
+    const string difficulty = user->getGameDiffculty();
+    const int score = user->getScore();
 
-        user->setGameDiffclutys_Push(user->getGameDiffculty());
-        user->setGameDiffclutys_Pop();
-    }
-
-    const string filename = "userdata.csv";
-
-    // 添加文件存在性检查
-    if (access(filename.c_str(), F_OK) == -1) {
-        logger->error("File does not exist: {}", filename);
-        logger->flush();
+    if (!Db::insertScore(username, difficulty, score, currenttime())) {
+        logger->error("保存成绩失败: 用户={}, 难度={}, 分数={}", username, difficulty, score);
         return false;
     }
 
-    ifstream file(filename);
-    ofstream tempFile("temp_file.csv");
-
-    if (!file.is_open() || !tempFile.is_open()) {
-        logger->error("Error opening files.");
-        logger->flush();
-        return false;
+    const int best = Db::bestScore(username, difficulty);
+    switch (Db::difficultyIndex(difficulty)) {
+    case 0: user->setMaximum_Score_Easy(best); break;
+    case 1: user->setMaximum_Score_Normal(best); break;
+    case 2: user->setMaximum_Score_Diffcult(best); break;
+    default: break;
     }
-
-    string line;
-
-    // 跳过第一行
-    if (!getline(file, line)) {
-        logger->error("Failed to read header from file.");
-        logger->flush();
-        file.close();
-        tempFile.close();
-        return false;
-    }
-
-    tempFile << line << endl;
-
-    while (getline(file, line))
-    {
-        istringstream iss(line);
-        string username, password, Maximum_score_easy, timestamp_easy, Maximum_score_normal, timestamp_normal, Maximum_score_diffcult, timestamp_diffcult, cell;
-
-        // 添加解析检查
-        if (!getline(iss, username, ',') ||
-            !getline(iss, password, ',') ||
-            !getline(iss, Maximum_score_easy, ',') ||
-            !getline(iss, cell, ',') ||
-            !getline(iss, timestamp_easy, ',') ||
-            !getline(iss, Maximum_score_normal, ',') ||
-            !getline(iss, cell, ',') ||
-            !getline(iss, timestamp_normal, ',') ||
-            !getline(iss, Maximum_score_diffcult, ',') ||
-            !getline(iss, cell, ',') ||
-            !getline(iss, timestamp_diffcult, ',')) {
-
-            logger->warn("Skipping malformed line: {}", line);
-            continue;
-        }
-
-        if (username == user->getUsername())
-        {
-            if (user->getGameDiffculty() == "EASY")
-            {
-                if (user->getScore() > user->getMaximum_Score_Easy())
-                {
-                    user->setMaximum_Score_Easy(user->getScore());
-
-                    tempFile << username << "," << password << ",";
-
-                    tempFile << user->getScore() << "," << "EASY" << "," << currenttime() << ",";
-
-                    tempFile << Maximum_score_normal << "," << "NORMAL" << "," << timestamp_normal << ",";
-
-                    tempFile << Maximum_score_diffcult << "," << "DIFFICULT" << "," << timestamp_diffcult << ",";
-
-                    // 添加队列空检查
-                    queue<int> tempQueue = user->getScores();
-                    queue<string> tempQueue1 = user->getGameDiffclutys();
-                    if (tempQueue.size() != tempQueue1.size()) {
-                        logger->warn("Queue size mismatch for user: {}", username);
-                    }
-
-                    while (!tempQueue.empty() && !tempQueue1.empty())
-                    {
-                        tempFile << tempQueue.front() << "," << tempQueue1.front() << ",";
-                        tempQueue.pop();
-                        tempQueue1.pop();
-                    }
-
-                    tempFile << endl;
-                }
-                else
-                {
-                    tempFile << username << "," << password << ",";
-
-                    tempFile << Maximum_score_easy << "," << "EASY" << "," << timestamp_easy << ",";
-
-                    tempFile << Maximum_score_normal << "," << "NORMAL" << "," << timestamp_normal << ",";
-
-                    tempFile << Maximum_score_diffcult << "," << "DIFFICULT" << "," << timestamp_diffcult << ",";
-
-                    // 添加队列空检查
-                    queue<int> tempQueue = user->getScores();
-                    queue<string> tempQueue1 = user->getGameDiffclutys();
-                    if (tempQueue.size() != tempQueue1.size()) {
-                        logger->warn("Queue size mismatch for user: {}", username);
-                    }
-
-                    while (!tempQueue.empty() && !tempQueue1.empty())
-                    {
-                        tempFile << tempQueue.front() << "," << tempQueue1.front() << ",";
-                        tempQueue.pop();
-                        tempQueue1.pop();
-                    }
-
-                    tempFile << endl;
-                }
-            }
-            else if (user->getGameDiffculty() == "NORMAL")
-            {
-                if (user->getScore() > user->getMaximum_Score_Normal())
-                {
-                    user->setMaximum_Score_Normal(user->getScore());
-
-                    tempFile << username << "," << password << ",";
-
-                    tempFile << Maximum_score_easy << "," << "EASY" << "," << timestamp_easy << ",";
-
-                    tempFile << user->getScore() << "," << "NORMAL" << "," << currenttime() << ",";
-
-                    tempFile << Maximum_score_diffcult << "," << "DIFFICULT" << "," << timestamp_diffcult << ",";
-
-                    // 添加队列空检查
-                    queue<int> tempQueue = user->getScores();
-                    queue<string> tempQueue1 = user->getGameDiffclutys();
-                    if (tempQueue.size() != tempQueue1.size()) {
-                        logger->warn("Queue size mismatch for user: {}", username);
-                    }
-
-                    while (!tempQueue.empty() && !tempQueue1.empty())
-                    {
-                        tempFile << tempQueue.front() << "," << tempQueue1.front() << ",";
-                        tempQueue.pop();
-                        tempQueue1.pop();
-                    }
-
-                    tempFile << endl;
-                }
-                else
-                {
-                    tempFile << username << "," << password << ",";
-
-                    tempFile << Maximum_score_easy << "," << "EASY" << "," << timestamp_easy << ",";
-
-                    tempFile << Maximum_score_normal << "," << "NORMAL" << "," << timestamp_normal << ",";
-
-                    tempFile << Maximum_score_diffcult << "," << "DIFFICULT" << "," << timestamp_diffcult << ",";
-
-                    // 添加队列空检查
-                    queue<int> tempQueue = user->getScores();
-                    queue<string> tempQueue1 = user->getGameDiffclutys();
-                    if (tempQueue.size() != tempQueue1.size()) {
-                        logger->warn("Queue size mismatch for user: {}", username);
-                    }
-
-                    while (!tempQueue.empty() && !tempQueue1.empty())
-                    {
-                        tempFile << tempQueue.front() << "," << tempQueue1.front() << ",";
-                        tempQueue.pop();
-                        tempQueue1.pop();
-                    }
-
-                    tempFile << endl;
-                }
-            }
-            else if (user->getGameDiffculty() == "DIFFICULT")
-            {
-                if (user->getScore() > user->getMaximum_Score_Diffcult())
-                {
-                    user->setMaximum_Score_Diffcult(user->getScore());
-
-                    tempFile << username << "," << password << ",";
-
-                    tempFile << Maximum_score_easy << "," << "EASY" << "," << timestamp_easy << ",";
-
-                    tempFile << Maximum_score_normal << "," << "NORMAL" << "," << timestamp_normal << ",";
-
-                    tempFile << user->getScore() << "," << "DIFFICULT" << "," << currenttime() << ",";
-
-                    // 添加队列空检查
-                    queue<int> tempQueue = user->getScores();
-                    queue<string> tempQueue1 = user->getGameDiffclutys();
-                    if (tempQueue.size() != tempQueue1.size()) {
-                        logger->warn("Queue size mismatch for user: {}", username);
-                    }
-
-                    while (!tempQueue.empty() && !tempQueue1.empty())
-                    {
-                        tempFile << tempQueue.front() << "," << tempQueue1.front() << ",";
-                        tempQueue.pop();
-                        tempQueue1.pop();
-                    }
-
-                    tempFile << endl;
-                }
-                else
-                {
-                    tempFile << username << "," << password << ",";
-
-                    tempFile << Maximum_score_easy << "," << "EASY" << "," << timestamp_easy << ",";
-
-                    tempFile << Maximum_score_normal << "," << "NORMAL" << "," << timestamp_normal << ",";
-
-                    tempFile << Maximum_score_diffcult << "," << "DIFFICULT" << "," << timestamp_diffcult << ",";
-
-                    // 添加队列空检查
-                    queue<int> tempQueue = user->getScores();
-                    queue<string> tempQueue1 = user->getGameDiffclutys();
-                    if (tempQueue.size() != tempQueue1.size()) {
-                        logger->warn("Queue size mismatch for user: {}", username);
-                    }
-
-                    while (!tempQueue.empty() && !tempQueue1.empty())
-                    {
-                        tempFile << tempQueue.front() << "," << tempQueue1.front() << ",";
-                        tempQueue.pop();
-                        tempQueue1.pop();
-                    }
-
-                    tempFile << endl;
-                }
-            }
-        }
-        else
-        {
-            tempFile << line << endl;
-        }
-    }
-
-    file.close();
-    tempFile.close();
-
-    // 删除原文件前检查临时文件是否成功创建
-    ifstream tempCheck("temp_file.csv");
-    if (!tempCheck.is_open()) {
-        logger->error("Temporary file was not created successfully.");
-        logger->flush();
-        return false;
-    }
-    tempCheck.close();
-
-    // 删除原文件
-    if (remove(filename.c_str()) != 0) {
-        logger->error("Failed to delete original file: {}", filename);
-        logger->flush();
-        return false;
-    }
-
-    // 重命名临时文件为原文件
-    if (rename("temp_file.csv", filename.c_str()) != 0) {
-        logger->error("Failed to rename temporary file.");
-        logger->flush();
-        return false;
-    }
-
     return true;
 }
 
@@ -1369,8 +584,6 @@ bool Filedata::Update_TopScore_RecentScore(const shared_ptr<User>& user)
 void Filedata::readRecentGradesAsync(const shared_ptr<User>& user,std::function<void(bool success, vector<string> result)> callback) 
 {
     auto task = [user, callback]() {
-        // 共享锁：和写入方互斥，避免读到写了一半的文件
-        DataFileLock fileLock(false);
         try {
             vector<string> result = Read_recent_grades(user);
             bool success = !(result.empty() || result.front() == "-1");
@@ -1400,23 +613,33 @@ void Filedata::readRecentGradesAsync(const shared_ptr<User>& user,std::function<
 // 🔥 新增：异步读取所有玩家信息（带callback）
 void Filedata::readAllPlayerInfoAsync(std::function<void(bool success, vector<shared_ptr<PlayerInfo>> result)> callback) {
     auto task = [callback]() {
-        // 共享锁：和写入方互斥，避免读到写了一半的文件
-        DataFileLock fileLock(false);
         try {
-            ifstream file("userdata.csv");
-            if (!file.is_open()) {
-                logger->error("无法打开用户数据文件");
+            std::vector<Db::PlayerRow> rows;
+            if (!Db::loadPlayerStats(rows)) {
+                logger->error("读取排行榜失败");
                 EventLoop::post([callback]() { callback(false, {}); });
                 return;
             }
 
-            vector<shared_ptr<PlayerInfo>> result = Read_AllpalyerInfo(file);
-            EventLoop::post([callback, result]() { callback(true, result); });
+            vector<shared_ptr<PlayerInfo>> result;
+            result.reserve(rows.size());
+            for (const auto& row : rows) {
+                auto player = std::make_shared<PlayerInfo>();
+                player->setPlayerName(row.username);
+                player->setMaximum_Score_Easy(row.best[0]);
+                player->setTimestampEasy(row.bestAt[0]);
+                player->setMaximum_Score_Normal(row.best[1]);
+                player->setTimestampNormal(row.bestAt[1]);
+                player->setMaximum_Score_Difficult(row.best[2]);
+                player->setTimestampDifficult(row.bestAt[2]);
+                result.push_back(player);
+            }
 
-            logger->debug("异步读取所有玩家信息完成: 玩家数={}", result.size());
+            EventLoop::post([callback, result]() { callback(true, result); });
+            logger->debug("排行榜读取完成: 玩家数={}", result.size());
         }
         catch (const std::exception& e) {
-            logger->error("异步读取所有玩家信息失败: {}", e.what());
+            logger->error("异步读取排行榜失败: {}", e.what());
             EventLoop::post([callback]() { callback(false, {}); });
         }
         };

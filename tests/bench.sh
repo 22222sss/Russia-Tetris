@@ -17,7 +17,7 @@
 #
 # 说明:
 #   * 会尝试把 ulimit -n 提到 40 万，并在有 root/sudo 时调整内核参数
-#   * 服务端在 src/ 下启动，userdata.csv / log.txt 自动生成（已 gitignore）
+#   * 服务端在 src/ 下启动，tetris.db（SQLite）/ log.txt 自动生成（已 gitignore）
 #   * 结果写入 bench-results/<时间戳>/，包含 result.json、result.txt、server.log、summary.md
 #
 # 同机 A/B 用的环境变量:

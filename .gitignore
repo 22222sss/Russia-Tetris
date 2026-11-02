@@ -14,6 +14,11 @@ userdata.csv.lock
 userdata.csv.tmp.*
 userdata.csv.mock.tmp
 
+# SQLite 数据（同样含密码哈希）
+tetris.db
+tetris.db-wal
+tetris.db-shm
+
 # 系统优化脚本生成的检查脚本
 src/check_system.sh
 

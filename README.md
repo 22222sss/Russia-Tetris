@@ -46,7 +46,8 @@ Russia-Tetris/
 │   │   ├── PasswordPolicy.h  # 注册密码策略（最小长度 / 全空白）
 │   │   ├── AuthThrottle.h/.cpp # 登录失败退避（按用户名指数延迟）与哈希队列上限
 │   │   ├── IpThrottle.h/.cpp # 按来源 IP 的粗粒度兜底（滑动窗口，挡换用户名喷洒）
-│   │   └── Filedata.h/.cpp   # userdata.csv 数据读写
+│   │   ├── Db.h/.cpp         # SQLite 存储层（账号 + 成绩）
+│   │   └── Filedata.h/.cpp   # 存储/成绩的业务封装（异步读写队列）
 │   ├── UImanage/             # 界面管理（TUI）
 │   ├── Utility/              # 工具函数与系统优化
 │   ├── main.cpp              # 程序入口
@@ -71,7 +72,7 @@ Ubuntu / Debian 下一条命令安装全部依赖：
 
 ```bash
 sudo apt update
-sudo apt install -y g++ make libevent-dev libspdlog-dev libfmt-dev libssl-dev
+sudo apt install -y g++ make libevent-dev libspdlog-dev libfmt-dev libssl-dev libsqlite3-dev
 ```
 
 ### 3. 编译
@@ -89,7 +90,8 @@ make
 ./tetris_game
 ```
 
-> 首次运行若当前目录没有 `userdata.csv`，服务端会自动创建带表头的空数据文件，无需手工准备。
+> 首次运行会在当前目录自动创建 SQLite 库 `tetris.db`（账号 + 成绩），无需手工准备；
+> 如果目录里有旧版本的 `userdata.csv`，会在**首次启动（空库）时一次性导入**，之后不再使用。
 
 ### 5. 客户端连接
 
@@ -136,7 +138,7 @@ telnet <服务器IP> 9999
 
 ## 密码存储
 
-账号密码**不以明文落盘**。`userdata.csv` 的 `Password` 列保存的是：
+账号密码**不以明文落盘**。SQLite 库 `tetris.db` 的 `accounts.password` 保存的是：
 
 ```
 $pbkdf2-sha256$<迭代次数>$<随机盐 hex>$<摘要 hex>
@@ -152,7 +154,8 @@ $pbkdf2-sha256$<迭代次数>$<随机盐 hex>$<摘要 hex>
   不能与当前密码相同；旧密码错误会计入用户名退避与按 IP 兜底（否则它就是绕过登录限流
   猜密码的旁路）；落盘复用旧明文迁移那条路径（`flock` + 临时文件 + rename，只替换密码字段），
   改完其它 worker 立刻能用新密码登录——**存量短密码由此有了官方出路**；
-  注意本项目没有邮箱，"找回密码"只能管理员直接改 `userdata.csv`；
+  注意本项目没有邮箱，"找回密码"只能管理员直接改库（`sqlite3 tetris.db`）——管理员 CLI 还没做；
+  数据库文件里是密码哈希，权限要按敏感数据处理（别提交进仓库，`.gitignore` 已覆盖 `tetris.db*`）；
 - **不泄露账号是否存在**：账号不存在时也会跑一次**随机假凭据**的 PBKDF2（`PasswordHash::verifyDummy`），
   使"账号不存在"和"密码错误"耗时同量级，不能用响应时间枚举账号；
 - **登录失败退避**：同一用户名前 **5** 次失败免延迟，之后每次失败延迟翻倍（**1s → 2s → … → 30s 封顶**），
@@ -198,7 +201,7 @@ $pbkdf2-sha256$<迭代次数>$<随机盐 hex>$<摘要 hex>
 ```bash
 git clone git@github.com:22222sss/Russia-Tetris.git
 cd Russia-Tetris
-sudo apt install -y g++ make libevent-dev libspdlog-dev libfmt-dev libssl-dev python3
+sudo apt install -y g++ make libevent-dev libspdlog-dev libfmt-dev libssl-dev libsqlite3-dev python3
 bash tests/bench.sh 100000 5000 30 1 2
 ```
 
