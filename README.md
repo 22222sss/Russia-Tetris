@@ -173,7 +173,7 @@ journalctl -u tetris-game -n 40             # 启动打印的"生效配置"
 ```
 
 - 日志按大小轮转（`TETRIS_LOG_DIR` / `TETRIS_LOG_MAX_BYTES` / `TETRIS_LOG_MAX_FILES`，
-  默认 10 MiB × 5 份），不再无限增长；
+  默认 10 MiB、保留 5 份历史 + 当前文件 ≈ 60 MiB），不再无限增长；
 - `LimitNOFILE=300000`、`Restart=always`、`ProtectSystem=strict` 都写在
   `deploy/systemd/tetris-game.service` 里，改之前先读注释；
 - 完整步骤、上线 checklist、备份/恢复、升级/回滚、排错表：

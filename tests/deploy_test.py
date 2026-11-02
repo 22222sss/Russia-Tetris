@@ -150,7 +150,8 @@ def test_game_unit(sections):
     if env.get("TETRIS_LOG_MAX_BYTES", "0") in ("", "0"):
         raise Failure("TETRIS_LOG_MAX_BYTES 不能是 0（那等于不轮转，log.txt 会一直增长）")
     if int(env.get("TETRIS_LOG_MAX_FILES", "0")) < 2:
-        raise Failure("TETRIS_LOG_MAX_FILES 至少 2，否则永远只有当前那一个文件")
+        raise Failure("TETRIS_LOG_MAX_FILES 至少 2：它是**轮转出去的份数**（当前文件另算），"
+                      "1 只留一个旧文件，出问题基本不够查")
 
     # journal 里要能看见启动打印的"生效配置"（排查时唯一的一手信息）
     for key in ("StandardOutput", "StandardError"):

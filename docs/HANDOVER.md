@@ -17,7 +17,7 @@
    连接天花板。CI 里既查 `systemctl show -p LimitNOFILE`，也读 `/proc/<pid>/limits` 核对进程；
 3. **日志真的会轮转了**：`main.cpp` 从 `basic_logger_mt` 换成 `rotating_logger_mt`，
    新增 `TETRIS_LOG_DIR`（日志目录，默认当前目录）、`TETRIS_LOG_MAX_BYTES`（默认 10 MiB，0=不轮转）、
-   `TETRIS_LOG_MAX_FILES`（默认 5）；**没有用外部 logrotate**（spdlog 的 fd 常开，
+   `TETRIS_LOG_MAX_FILES`（默认 5 份历史，当前文件另算）；**没有用外部 logrotate**（spdlog 的 fd 常开，
    `create` 会让进程继续写旧 inode、`copytruncate` 会在文件里留 NUL 空洞，见 6.44）；
    打不开日志目录时退回 stderr 并提示，不让"日志写不了"变成"服务起不来"；
 4. **SIGTERM 处理器**（单 worker 模式）：容器里 `tetris_game` 通常是 1 号进程，而内核不会把
@@ -109,7 +109,7 @@
 - **部署有三条"不写就出事"**：`LimitNOFILE=300000:300000`（systemd 默认软限制就是连接数
   天花板）、`TETRIS_BIND=127.0.0.1`（否则明文端口直上公网）、`Restart=always`（崩溃能回来）；
   上线 checklist 在 `docs/DEPLOY.md` 第 0 节，每条都带"怎么验"；
-- **日志在进程内轮转**（`TETRIS_LOG_DIR` / `_MAX_BYTES` / `_MAX_FILES`，默认 10 MiB × 5 份）：
+- **日志在进程内轮转**（`TETRIS_LOG_DIR` / `_MAX_BYTES` / `_MAX_FILES`，默认 10 MiB × 5 份历史 + 当前文件）：
   不用外部 logrotate，因为 spdlog 的 fd 常开 —— `create` 会让进程继续写旧 inode，
   `copytruncate` 会在文件里留 NUL 空洞（6.44）；
 - **备份是系统的一部分**：`tetris-backup.timer` 每天 04:15 调 `tetris-admin backup`，
@@ -193,7 +193,7 @@ cd src && make -j"$(nproc)"    # 产出两个二进制：tetris_game（服务端
 | `TETRIS_DB` | `tetris.db` | SQLite 库文件路径（账号 + 成绩；旧的 `userdata.csv` 只用于首次导入） |
 | `TETRIS_LOG_DIR` | 空（当前目录） | 日志目录（末尾补 `/`）；生产设 `/var/log/tetris`，让日志和库分家 |
 | `TETRIS_LOG_MAX_BYTES` | 10485760 | 单份日志上限；`0` = 不轮转（旧行为，log.txt 一直增长） |
-| `TETRIS_LOG_MAX_FILES` | 5 | 轮转保留份数（含当前文件），总量 ≈ 上限 × 份数 |
+| `TETRIS_LOG_MAX_FILES` | 5 | 轮转保留的**历史**份数（spdlog 的 `max_files`，当前 `log.txt` 另算）；总量 ≈ 上限 × (份数+1) |
 
 注意：改了**头文件**之后 `make` 现在会自动重编依赖它的源文件（`-MMD -MP`）。
 如果 `obj/` 是旧规则时代留下的，建议先 `make clean` 一次。
@@ -568,7 +568,7 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
   等加固项；stdout/stderr 进 journal（启动打印的"生效配置"在这里）；
 - **日志轮转**（`main.cpp`）：`spdlog::basic_logger_mt` → `rotating_logger_mt`，新增
   `TETRIS_LOG_DIR`（默认当前目录，保留旧行为）、`TETRIS_LOG_MAX_BYTES`（默认 10 MiB，`0`=不轮转）、
-  `TETRIS_LOG_MAX_FILES`（默认 5）；轮转命名是 spdlog 的 `log.1.txt` 规则；
+  `TETRIS_LOG_MAX_FILES`（默认 5 份历史 + 当前文件）；轮转命名是 spdlog 的 `log.1.txt` 规则；
   打不开日志时退回 stderr 并打印原因（不让"日志目录没建"变成"服务起不来"）；
   为什么不用 logrotate 见 6.44；
 - **退出语义**（`main.cpp::exit_on_signal`）：单 worker 模式装 `SIGINT`/`SIGTERM` 处理器，

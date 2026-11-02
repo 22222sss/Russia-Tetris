@@ -66,7 +66,8 @@ static size_t logMaxBytesFromEnv() {
                                       0, 1024LL * 1024 * 1024));
 }
 
-// 轮转保留的份数（含当前文件）：默认 5，即最多占 50 MiB。
+// 轮转保留的**历史**份数（spdlog 的 max_files：当前 log.txt 另算）：
+// 默认 5，即最多 6 个文件、总量 ≈ 60 MiB。
 static size_t logMaxFilesFromEnv() {
     return static_cast<size_t>(env_ll("TETRIS_LOG_MAX_FILES", 5, 1, 100));
 }
@@ -160,7 +161,7 @@ static void printEffectiveConfig(int listen_port, int workers, int reuseport) {
               << (logMaxBytes == 0
                       ? std::string("不轮转（log.txt 会一直增长）")
                       : std::to_string(logMaxBytes / 1024) + " KiB × "
-                            + std::to_string(logMaxFilesFromEnv()) + " 份轮转")
+                            + std::to_string(logMaxFilesFromEnv()) + " 份历史（+当前文件）")
               << std::endl;
     std::cout << "  数据库      TETRIS_DB               = " << Db::configuredPath() << std::endl;
     std::cout << "  哈希线程    TETRIS_HASH_THREADS     = " << hashThreads

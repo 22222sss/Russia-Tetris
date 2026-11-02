@@ -50,7 +50,7 @@
 **运维**
 
 - [ ] 日志轮转生效：`ls /var/log/tetris` → `log.txt` + 可能的 `log.1.txt`…；总量不超过
-      `TETRIS_LOG_MAX_BYTES × TETRIS_LOG_MAX_FILES`（默认 50 MiB）
+      `TETRIS_LOG_MAX_BYTES × (TETRIS_LOG_MAX_FILES + 1)`（当前文件 + 历史，默认约 60 MiB）
 - [ ] 备份 timer 已启用：`systemctl list-timers tetris-backup.timer` → 下一次 04:15
 - [ ] **手动跑一次备份并检查产物**：`sudo systemctl start tetris-backup.service` →
       `ls -l /var/backups/tetris`（600、非空）、`journalctl -u tetris-backup -n 20`（integrity ok）
@@ -94,7 +94,7 @@
 | Python 3 | 桥需要（`deploy/tetris-bridge.py`） | 宿主侧需要（桥不在容器里） |
 | 端口 | 22（sshd）、**9999 只对本机** | 同左；容器额外占用一个宿主回环端口 |
 | 账号 | `tetrisd`（跑服务）、`tetris`（SSH 登录，只能跑桥） | 容器内 `tetris`（uid 10001） |
-| 磁盘 | 库 + 日志（默认 ≤50 MiB）+ 备份（库大小 × 14） | 两个卷（`/data`、`/var/log/tetris`） |
+| 磁盘 | 库 + 日志（默认 ≤60 MiB）+ 备份（库大小 × 14） | 两个卷（`/data`、`/var/log/tetris`） |
 
 编译依赖（只在构建机需要）：`build-essential libevent-dev libspdlog-dev libfmt-dev libssl-dev libsqlite3-dev`。
 
@@ -263,7 +263,7 @@ docker compose exec tetris tetris-backup                # 默认写 /var/backups
 | `TETRIS_DB` | `/var/lib/tetris/tetris.db`（容器 `/data/tetris.db`） | 绝对路径，避免"在别的目录一跑就建了个空库" |
 | `TETRIS_LOG_DIR` | `/var/log/tetris` | 日志和库分家，`ProtectSystem=strict` 下也写得进去 |
 | `TETRIS_LOG_MAX_BYTES` | `10485760`（10 MiB；`0`=不轮转） | 单份上限 |
-| `TETRIS_LOG_MAX_FILES` | `5` | 份数上限，总量 ≈ 50 MiB |
+| `TETRIS_LOG_MAX_FILES` | `5` | 历史份数（当前 `log.txt` 另算），默认 6 个文件 ≈ 60 MiB |
 | `TETRIS_LOG_LEVEL` | `warn` | `info` 下每条连接都会落盘，别在生产常开 |
 | `TETRIS_WORKERS` | `1`（默认） | 多 worker 时退避/IP 兜底状态是每进程一份，阈值实际 ×N（HANDOVER 6.23/6.25） |
 | `TETRIS_AUTH_*` / `TETRIS_AUTH_IP_*` | 默认 | 共享口令入口的机器按"全站额度"重新评估（HANDOVER 6.35） |
@@ -284,13 +284,16 @@ docker compose exec tetris tetris-backup                # 默认写 /var/backups
 - `copytruncate`：截断后 spdlog 的写偏移还停在原处，文件前面会留下空洞（一屏幕 `NUL`）。
 
 所以轮转放在**进程内**（`spdlog::rotating_file_sink`）：写满 `TETRIS_LOG_MAX_BYTES` 就改名为
-`log.1.txt`，旧的依次后移，超过 `TETRIS_LOG_MAX_FILES` 的最老文件删掉。Docker 和 systemd
+`log.1.txt`，旧的依次后移，历史份数超过 `TETRIS_LOG_MAX_FILES` 后最老的删掉。Docker 和 systemd
 两种形态都同样生效，不需要外部定时任务。
+
+> 一个容易记错的细节：`TETRIS_LOG_MAX_FILES` 是**历史份数**（spdlog 的 `max_files`），
+> 当前 `log.txt` 另算。所以默认 5 份 = 最多 6 个文件 ≈ 60 MiB，不是 50 MiB。
 
 | 文件 | 说明 |
 |---|---|
 | `/var/log/tetris/log.txt` | 当前文件（多 worker 时是 `log.<pid>.txt`，每进程一份） |
-| `/var/log/tetris/log.1.txt` … `log.4.txt` | 轮转出来的历史（默认最多 5 份） |
+| `/var/log/tetris/log.1.txt` … `log.5.txt` | 轮转出来的历史（默认最多 5 份） |
 
 ### 6.2 看日志
 

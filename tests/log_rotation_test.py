@@ -8,7 +8,8 @@ rotating sink 之后，"轮转到底有没有发生"只能从文件系统上证�
 
 1. `TETRIS_LOG_DIR` 真的生效（日志写进指定目录，而不是工作目录）；
 2. `TETRIS_LOG_MAX_BYTES` 真的被读到：写满后出现 `log.1.txt`（不是一直写一个文件）；
-3. 份数不超过 `TETRIS_LOG_MAX_FILES`；
+3. 文件数 = 当前文件 + 不超过 `TETRIS_LOG_MAX_FILES` 份历史
+   （spdlog 的 max_files 指**轮转出去的份数**，当前 `log.txt` 另算）；
 4. 每个文件都不超过上限的 ~1.5 倍（说明是"接近上限就轮转"，不是攒到很大才转）；
 5. `log.txt` 始终是"当前文件"的名字（运维按这个名字找日志）。
 
@@ -119,13 +120,15 @@ def test_rotation(binary, workdir, connections, max_bytes, max_files):
     if "log.txt" not in names:
         raise Failure("日志目录里没有 log.txt（TETRIS_LOG_DIR 没生效？目录内容：%r）"
                       % sorted(os.listdir(log_dir)))
-    if len(files) < 2:
-        raise Failure("没有发生轮转：只有 %r（写了 %s 字节，上限 %d）——"
+    if len(files) < 3:
+        raise Failure("没有看到至少两次轮转：只有 %r（写了 %s 字节，上限 %d）——"
                       "TETRIS_LOG_MAX_BYTES 是不是没被读到？"
                       % (names, sizes.get("log.txt"), max_bytes))
-    if len(files) > max_files:
-        raise Failure("文件数 %d 超过 TETRIS_LOG_MAX_FILES=%d：%r"
-                      % (len(files), max_files, names))
+    # spdlog 的 max_files 是"轮转出去的份数"：当前文件 + 最多 max_files 份历史。
+    # 两边留一档余量（不同版本对 max_files 的解释可能差一），只守住"不会无限涨"。
+    if len(files) > max_files + 1:
+        raise Failure("文件数 %d 超过 max_files+1=%d（TETRIS_LOG_MAX_FILES=%d）：%r"
+                      % (len(files), max_files + 1, max_files, names))
     if "log.1.txt" not in names:
         raise Failure("没有 log.1.txt（spdlog 的轮转命名是 log.N.txt）：%r" % names)
 

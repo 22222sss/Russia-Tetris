@@ -34,7 +34,8 @@ Environment=TETRIS_BIND=127.0.0.1
 Environment=TETRIS_PORT=9999
 Environment=TETRIS_DB=/var/lib/tetris/tetris.db
 Environment=TETRIS_LOG_DIR=/var/log/tetris
-# 按大小轮转：每份 10 MiB，最多 5 份（≈50 MiB 封顶）。0 = 不轮转（旧行为）
+# 按大小轮转：每份 10 MiB、保留 5 份历史（当前 log.txt 另算，最多 6 个文件 ≈60 MiB）。
+# 0 = 不轮转（旧行为：log.txt 一直增长）
 Environment=TETRIS_LOG_MAX_BYTES=10485760
 Environment=TETRIS_LOG_MAX_FILES=5
 # 先把日志级别保持 warn：info 级别在压测/高并发下会写很多盘
