@@ -1090,6 +1090,13 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     当前目录找，报"找不到数据库文件"（或者更糟：建了个空库然后说"库里还没有账号"）。
     手工用时一律带绝对路径：`sudo -u tetrisd env TETRIS_DB=/var/lib/tetris/tetris.db tetris-admin stats`。
 
+50. **spdlog 的头文件布局随发行版版本变**：`rotating_file_sink` 和工厂函数
+    `rotating_logger_mt` 都在 **`spdlog/sinks/rotating_file_sink.h`**；顶层的
+    `spdlog/rotating_file_sink.h` 只是旧版本的转发头，**Ubuntu 24.04 的 libspdlog-dev(1.12)
+    里没有**，写了就是 `fatal error: spdlog/rotating_file_sink.h: No such file or directory`
+    —— 本轮 CI 第一次跑就抓到了这个（本地没有 g++，只能靠 CI）。改 logger 相关代码后，
+    先看 Build 步骤的 `::error::` 注解（它回传前几条编译错误），别等后面的测试步骤。
+
 ## 7. 仓库现状
 
 - `main` 干净，CI 全绿；无 tag；

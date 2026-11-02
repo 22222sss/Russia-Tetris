@@ -12,7 +12,10 @@
 #include"../TetrisGame/PlayerInfo.h"
 #include"../Utility/SystemOptimizer.h"
 #include <spdlog/async.h>
-#include <spdlog/rotating_file_sink.h>
+// 轮转 sink 和它的工厂函数 rotating_logger_mt 都在 sinks/ 下：顶层
+// spdlog/rotating_file_sink.h 那个转发头在 Ubuntu 24.04 的 libspdlog-dev(1.12)
+// 里已经不存在，写错路径在 CI 上就是 fatal error（见 HANDOVER 6.50）
+#include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <sys/wait.h>
 #include <arpa/inet.h>   // inet_pton：TETRIS_BIND 解析（netinet/in.h 不保证带上它）
