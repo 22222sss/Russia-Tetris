@@ -134,6 +134,66 @@ bool UImanage::show_Server_Busy(const shared_ptr<User>& user)
     return true;
 }
 
+// ---------------- 修改密码（登录后，主菜单 5） ----------------
+
+bool UImanage::show_Change_Password_Old(const shared_ptr<User>& user)
+{
+    if (!UImanage::clear(user))
+        return false;
+
+    if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "修改密码"))
+        return false;
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请输入当前密码："))
+        return false;
+    return true;
+}
+
+bool UImanage::show_Receive_New_Password(const shared_ptr<User>& user)
+{
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE,
+                    "请输入新密码（至少 8 个字符，不能全是空格）："))
+        return false;
+    return true;
+}
+
+bool UImanage::show_Password_Unchanged_Error(const shared_ptr<User>& user)
+{
+    string emptyLine(4 * WINDOW_COL_COUNT, ' ');
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 1, COLOR_WHITE, emptyLine))
+        return false;
+
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE,
+                    "新密码不能与当前密码相同，请重新输入新密码："))
+        return false;
+    return true;
+}
+
+bool UImanage::show_Password_Changed(const shared_ptr<User>& user)
+{
+    if (!UImanage::clear(user))
+        return false;
+
+    if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "密码修改成功！"))
+        return false;
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 1, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "下次登录请使用新密码。"))
+        return false;
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请按3返回主菜单："))
+        return false;
+    return true;
+}
+
+bool UImanage::show_Change_Password_Error(const string& message, const shared_ptr<User>& user)
+{
+    if (!UImanage::clear(user))
+        return false;
+
+    if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, message))
+        return false;
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请按3返回主菜单："))
+        return false;
+    return true;
+}
+
 bool UImanage::showLoadMenu(const shared_ptr<User>& user)
 {
     if (!UImanage::clear(user))
@@ -148,6 +208,8 @@ bool UImanage::showLoadMenu(const shared_ptr<User>& user)
     if (!outputText(user, WINDOW_ROW_COUNT / 2 + 6, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "3. 开始游戏"))
         return false;
     if (!outputText(user, WINDOW_ROW_COUNT / 2 + 8, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "4. 返回服务"))
+        return false;
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 10, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "5. 修改密码"))
         return false;
     if (!outputText(user, WINDOW_ROW_COUNT / 2 + 12, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "你的选择是："))
         return false;

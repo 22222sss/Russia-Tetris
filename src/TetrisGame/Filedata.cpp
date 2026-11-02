@@ -639,6 +639,90 @@ void Filedata::loginAsync(const std::string& username, const std::string& passwo
     queueCondition.notify_one();
 }
 
+// 修改密码：和登录共用同一条"哈希线程池 + 单写线程"管线。
+// 顺序很重要：**先验旧密码、再算新哈希**（不能让错的旧密码也白白烧一次 PBKDF2）。
+void Filedata::changePasswordAsync(const std::string& username,
+    const std::string& oldPassword, const std::string& newPassword,
+    std::function<void(PasswordChangeResult)> callback) {
+    // 参数全部按值捕获：任务在异步线程上跑，不能再去读 User（连接可能已断、对象已被复用）。
+    auto task = [username, oldPassword, newPassword, callback]() {
+        // 回到事件循环线程再动 User / socket（与其它异步回调保持同一约定）
+        const auto finish = [callback](PasswordChangeResult result) {
+            EventLoop::post([callback, result]() { callback(result); });
+            };
+
+        string stored;
+        try {
+            if (!lookupCredential(username, stored)) {
+                // 已经登录成功过却查不到凭据：只可能是别的进程刚删过这一行。
+                // 按"当前密码不对"回，让上层记账并提示重试。
+                finish(PasswordChangeResult::BadCredentials);
+                return;
+            }
+        }
+        catch (const std::exception& e) {
+            logger->error("修改密码：读取凭据异常: 用户={}, 错误={}", username, e.what());
+            finish(PasswordChangeResult::Error);
+            return;
+        }
+
+        if (!runHashTask([username, oldPassword, newPassword, stored, finish]() {
+                // needsRehash 这里用不上：无论旧凭据是明文还是旧参数哈希，
+                // 本次都会被新密码的当前格式哈希整体替换。
+                bool needsRehash = false;
+                bool oldOk = false;
+                try {
+                    oldOk = PasswordHash::verify(oldPassword, stored, &needsRehash);
+                }
+                catch (const std::exception& e) {
+                    logger->error("修改密码：校验当前密码异常: 用户={}, 错误={}", username, e.what());
+                    finish(PasswordChangeResult::Error);
+                    return;
+                }
+                if (!oldOk) {
+                    finish(PasswordChangeResult::BadCredentials);
+                    return;
+                }
+
+                string upgraded;
+                try {
+                    upgraded = PasswordHash::hash(newPassword);
+                }
+                catch (const std::exception& e) {
+                    logger->error("修改密码：生成新哈希失败: 用户={}, 错误={}", username, e.what());
+                    finish(PasswordChangeResult::Error);
+                    return;
+                }
+
+                // 落盘回单写线程：与注册/迁移的文件操作串行，flock 仍然保护跨进程
+                {
+                    std::lock_guard<std::mutex> lock(queueMutex);
+                    writeQueue.push([username, upgraded, finish]() {
+                        DataFileLock fileLock(true);
+                        if (rewriteStoredCredential(username, upgraded)) {
+                            updateCredentialInMemory(username, upgraded);
+                            logger->info("账号密码已修改: {}", username);
+                            finish(PasswordChangeResult::Ok);
+                        }
+                        else {
+                            logger->warn("修改密码落盘失败，保留原密码: {}", username);
+                            finish(PasswordChangeResult::Error);
+                        }
+                        });
+                }
+                queueCondition.notify_one();
+            })) {
+            finish(PasswordChangeResult::Busy);
+        }
+        };
+
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        writeQueue.push(task);
+    }
+    queueCondition.notify_one();
+}
+
 // 修改loadPlayerData使用缓存
 bool Filedata::loadPlayerData() {
     // 共享锁：避免读到别的进程正在写入的半行

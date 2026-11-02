@@ -70,8 +70,8 @@ def login(port, user, password, note):
         conn.close()
 
 
-def login_must_fail(port, user, note):
-    """反向校验：不存在的账号必须被拒绝，确认不是"什么都放行"。"""
+def login_must_fail(port, user, password, note):
+    """反向校验：错误的密码必须被拒绝，确认不是"什么都放行"。"""
     global STAGE
     STAGE = "%s（端口 %d）" % (note, port)
 
@@ -82,8 +82,40 @@ def login_must_fail(port, user, note):
         expect(conn, "请输入用户名")
         conn.sendline(user)
         expect(conn, "请输入密码")
-        conn.sendline(user + "-wrong")
+        conn.sendline(password)
         expect(conn, "登录失败")
+    finally:
+        conn.close()
+
+
+def change_password(port, user, old_password, new_password):
+    """在某个进程里改密：登录 -> 5 -> 当前密码 -> 新密码。
+
+    改密走的是"临时文件 + rename"的整行改写，这里同时验证它没把文件写坏
+    （改完之后另一个进程必须能用新密码登录，见调用处）。
+    """
+    global STAGE
+    STAGE = "在端口 %d 修改 %s 的密码" % (port, user)
+
+    conn = it.Conn("127.0.0.1", port)
+    try:
+        expect(conn, "1. 注册帐号")
+        conn.sendline("2")
+        expect(conn, "请输入用户名")
+        conn.sendline(user)
+        expect(conn, "请输入密码")
+        conn.sendline(old_password)
+        expect(conn, "3. 开始游戏")
+
+        conn.sendline("5")
+        expect(conn, "请输入当前密码")
+        conn.sendline(old_password)
+        expect(conn, "请输入新密码")
+        conn.sendline(new_password)
+        expect(conn, "密码修改成功")
+        expect(conn, "请按3返回主菜单")
+        conn.sendline("3")
+        expect(conn, "1. 我最近的成绩")
     finally:
         conn.close()
 
@@ -101,6 +133,7 @@ def main():
     user_b = "xpB" + suffix
     pwd_a = "pa" + str(random.randint(100000, 999999))
     pwd_b = "pb" + str(random.randint(100000, 999999))
+    pwd_a2 = "pa2" + str(random.randint(100000, 999999))
     print("测试账号: %s / %s" % (user_a, user_b), flush=True)
 
     checks = [
@@ -112,8 +145,14 @@ def main():
             register(args.port_b, user_b, pwd_b, args.userdata),
             login(args.port_a, user_b, pwd_b, "另一个进程登录 B 注册的账号"),
         )),
+        ("A 改密 -> B 用新密码登录", lambda: (
+            change_password(args.port_a, user_a, pwd_a, pwd_a2),
+            login(args.port_b, user_a, pwd_a2, "B 用新密码登录"),
+        )),
+        ("改密后旧密码失效", lambda: login_must_fail(
+            args.port_b, user_a, pwd_a, "旧密码必须被拒绝")),
         ("不存在的账号必须被拒绝", lambda: login_must_fail(
-            args.port_a, "nobody" + suffix, "拒绝不存在的账号")),
+            args.port_a, "nobody" + suffix, "wrong-password", "拒绝不存在的账号")),
     ]
 
     failed = 0

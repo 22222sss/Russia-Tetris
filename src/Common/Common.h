@@ -85,7 +85,13 @@ enum GameStatus
 
     // 密码校验在异步线程进行（PBKDF2），期间连接处于这个"等待"状态。
     // 追加在末尾，避免改动已有状态值。
-    STATUS_VERIFYING_PASSWORD
+    STATUS_VERIFYING_PASSWORD,
+
+    // 修改密码（登录后从主菜单进入）：先收当前密码，再收新密码，
+    // 校验/落盘同样在异步线程进行（期间复用 STATUS_VERIFYING_PASSWORD）。
+    // 追加在末尾，避免改动已有状态值。
+    STATUS_CHANGE_PASSWORD_OLD,
+    STATUS_CHANGE_PASSWORD_NEW
 };
 
 

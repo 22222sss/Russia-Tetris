@@ -74,6 +74,17 @@ public:
 		Busy
 	};
 
+	// 修改密码的结果。与登录分开是因为多了一个"内部错误"：
+	// 哈希/写盘失败既不是"密码错"（不能计入退避），也不是"忙"（用户重试也没用）。
+	//   Ok 成功；BadCredentials 当前密码不对（要计入退避与按 IP 兜底）；
+	//   Busy 哈希队列满、本次没校验；Error 生成哈希或落盘失败。
+	enum class PasswordChangeResult {
+		Ok,
+		BadCredentials,
+		Busy,
+		Error
+	};
+
 	// 初始化异步写入系统
 	static bool initializeAsyncSystem();
 	static void shutdownAsyncSystem();
@@ -101,6 +112,14 @@ public:
 	// callback 在事件循环线程上执行，参数是本次校验结果（Ok/BadCredentials/Busy）。
 	static void loginAsync(const std::string& username, const std::string& password,
 		std::function<void(LoginResult)> callback);
+
+	// 修改密码：校验当前密码 -> 生成新密码的加盐哈希 -> 在 flock 临界区内原地改写
+	// 该行（临时文件 + rename，多进程安全）-> 同步本进程缓存。
+	// 旧密码校验失败回 BadCredentials（上层必须计入退避，否则改密流程就成了
+	// 绕过登录限流猜密码的旁路）；callback 在事件循环线程上执行。
+	static void changePasswordAsync(const std::string& username,
+		const std::string& oldPassword, const std::string& newPassword,
+		std::function<void(PasswordChangeResult)> callback);
 
 	// 🔥 新增：异步读取方法（带callback）
 	static void readRecentGradesAsync(const shared_ptr<User>& user,std::function<void(bool success, vector<string> result)> callback);

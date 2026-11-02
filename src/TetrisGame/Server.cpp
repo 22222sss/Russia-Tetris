@@ -396,6 +396,190 @@ int Server::receive_password_load(shared_ptr<User>& user)
     return 2;
 }
 
+int Server::receive_changepassword_old(shared_ptr<User>& user)
+{
+    string password = "";
+
+    int temp = Server::ReceiveData(user);
+
+    if (temp == -1)
+    {
+        return -1;
+    }
+    else if (temp == 1)
+    {
+        if (user->getReceivedata() != "")
+        {
+            password = user->getReceivedata();
+            user->setReceivedata("");
+        }
+        else
+        {
+            if (!UImanage::show_Password_Empty_Error(WINDOW_ROW_COUNT / 2 + 2, user))
+            {
+                return -1;
+            }
+            user->setReceivedata("");
+        }
+    }
+
+    if (password != "")
+    {
+        // 暂存在 password 字段里：新密码收齐后一起交给 changePasswordAsync。
+        // 不单独加字段是因为 User 有 2KB 预算（现在 1992B），一个 string 就是 32B。
+        user->setPassword(password);
+
+        if (!UImanage::show_Receive_New_Password(user))
+        {
+            return -1;
+        }
+        return 1;
+    }
+
+    return 2;
+}
+
+int Server::receive_changepassword_new(shared_ptr<User>& user)
+{
+    string newPassword = "";
+
+    int temp = Server::ReceiveData(user);
+
+    if (temp == -1)
+    {
+        return -1;
+    }
+    else if (temp == 1)
+    {
+        if (user->getReceivedata() != "")
+        {
+            newPassword = user->getReceivedata();
+            user->setReceivedata("");
+        }
+        else
+        {
+            if (!UImanage::show_Password_Empty_Error(WINDOW_ROW_COUNT / 2 + 4, user))
+            {
+                return -1;
+            }
+            user->setReceivedata("");
+        }
+    }
+
+    if (newPassword == "")
+    {
+        return 2;
+    }
+
+    // 新密码与注册走同一套策略；不满足时留在"输入新密码"，可以重输
+    if (!PasswordPolicy::check(newPassword))
+    {
+        user->setReceivedata("");
+        if (!UImanage::show_Password_Too_Short_Error(WINDOW_ROW_COUNT / 2 + 2, user))
+        {
+            return -1;
+        }
+        return 0;
+    }
+
+    // 和当前密码相同就没必要改：既省一次写盘，也避免用户以为改了
+    if (newPassword == user->getPassword())
+    {
+        user->setReceivedata("");
+        if (!UImanage::show_Password_Unchanged_Error(user))
+        {
+            return -1;
+        }
+        return 0;
+    }
+
+    // 改密也是一次凭据校验：不接退避的话，它就是绕过登录限流猜密码的旁路
+    const auto now = std::chrono::steady_clock::now();
+    const auto ipDecision = IpThrottle::check(user->getPeerIp(), now);
+    int retryAfterSeconds = 0;
+    if (ipDecision.throttled)
+    {
+        retryAfterSeconds = ipDecision.retryAfterSeconds;
+    }
+    else
+    {
+        const auto throttle = AuthThrottle::check(user->getUsername(), now);
+        if (throttle.throttled)
+        {
+            retryAfterSeconds = throttle.retryAfterSeconds;
+        }
+    }
+    if (retryAfterSeconds > 0)
+    {
+        user->setPassword("");
+        user->setReceivedata("");
+        if (!UImanage::show_Change_Password_Error(
+                "修改密码尝试过于频繁，请 " + to_string(retryAfterSeconds) + " 秒后再试：", user))
+        {
+            return -1;
+        }
+        return 3;   // 回主菜单（见 process_STATUS_CHANGE_PASSWORD_NEW）
+    }
+
+    const string username = user->getUsername();
+    const string oldPassword = user->getPassword();
+    const std::uint32_t peerIp = user->getPeerIp();
+
+    user->setStatus(STATUS_VERIFYING_PASSWORD);
+
+    Filedata::changePasswordAsync(username, oldPassword, newPassword,
+        [user, username, peerIp](Filedata::PasswordChangeResult result)
+        {
+            // 校验期间连接可能已断开（甚至对象已被池复用），状态一变就不能再渲染
+            if (user->getStatus() != STATUS_VERIFYING_PASSWORD)
+            {
+                logger->warn("改密回调到达时状态已变化（{}），丢弃本次结果",
+                             static_cast<int>(user->getStatus()));
+                return;
+            }
+
+            // 无论结果如何都别把明文密码留在连接对象里（对象会回池复用）
+            user->setPassword("");
+            user->setReceivedata("");
+
+            switch (result)
+            {
+            case Filedata::PasswordChangeResult::Ok:
+                AuthThrottle::onSuccess(username);
+                UImanage::show_Password_Changed(user);
+                user->setStatus(STATUS_LOGIN_OVER);   // 按 3 回主菜单
+                logger->info("用户修改密码成功: {}", username);
+                break;
+
+            case Filedata::PasswordChangeResult::BadCredentials:
+            {
+                const auto failedAt = std::chrono::steady_clock::now();
+                AuthThrottle::onFailure(username, failedAt);
+                IpThrottle::onFailure(peerIp, failedAt);
+                UImanage::show_Change_Password_Error("当前密码错误，密码未修改。", user);
+                user->setStatus(STATUS_LOGIN_OVER);
+                logger->info("用户修改密码失败（当前密码错误）: {}", username);
+                break;
+            }
+
+            case Filedata::PasswordChangeResult::Busy:
+                // 根本没校验，不能计失败
+                UImanage::show_Change_Password_Error("服务繁忙，密码未修改，请稍后重试。", user);
+                user->setStatus(STATUS_LOGIN_OVER);
+                logger->warn("修改密码被限流（哈希队列已满）: {}", username);
+                break;
+
+            case Filedata::PasswordChangeResult::Error:
+                UImanage::show_Change_Password_Error("修改失败（服务端暂时无法写盘），密码未修改。", user);
+                user->setStatus(STATUS_LOGIN_OVER);
+                logger->error("修改密码失败（存储错误）: {}", username);
+                break;
+            }
+        });
+
+    return 1;
+}
+
 int Server::loginUser(shared_ptr<User>& user)
 {
     int temp = Server::ReceiveData(user);
@@ -441,6 +625,16 @@ int Server::loginUser(shared_ptr<User>& user)
             }
 
             return 4;
+        }
+        else if (user->getReceivedata() == "5")
+        {
+            // 修改密码（只在登录后有意义）。返回 6 而不是 1~4，避开上面的"输入错误"分支。
+            if (!UImanage::show_Change_Password_Old(user))
+            {
+                return -1;
+            }
+
+            return 6;
         }
         else
         {
@@ -593,6 +787,11 @@ bool Server::process_STATUS_LOGIN(shared_ptr<User>& user)
         user->setReceivedata("");
         user->setStatus(STATUS_NOTSTART);
     }
+    else if (key == 6)
+    {
+        user->setReceivedata("");
+        user->setStatus(STATUS_CHANGE_PASSWORD_OLD);
+    }
     return true;
 }
 
@@ -623,6 +822,42 @@ bool Server::process_STATUS_REGISTER_OR_LOAD_OVER(shared_ptr<User>& user)
     {
         user->setStatus(STATUS_NOTSTART);
         user->setReceivedata("");
+    }
+    return true;
+}
+
+bool Server::process_STATUS_CHANGE_PASSWORD_OLD(shared_ptr<User>& user)
+{
+    int key = Server::receive_changepassword_old(user);
+
+    if (key == -1)
+    {
+        return false;
+    }
+    else if (key == 1)
+    {
+        user->setStatus(STATUS_CHANGE_PASSWORD_NEW);
+    }
+    return true;
+}
+
+bool Server::process_STATUS_CHANGE_PASSWORD_NEW(shared_ptr<User>& user)
+{
+    int key = Server::receive_changepassword_new(user);
+
+    if (key == -1)
+    {
+        return false;
+    }
+    else if (key == 1)
+    {
+        // 校验/落盘已交给异步线程，主菜单/失败提示由回调渲染
+        outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "正在修改密码...");
+    }
+    else if (key == 3)
+    {
+        // 被退避拒绝：提示里已经让用户"按 3 返回主菜单"
+        user->setStatus(STATUS_LOGIN_OVER);
     }
     return true;
 }
@@ -790,6 +1025,20 @@ void Server::handleClientData(int clientSocket, short events, void* arg)
     else if (user->getStatus() == STATUS_REGISTER_OR_LOAD_OVER)
     {
         if (!Server::process_STATUS_REGISTER_OR_LOAD_OVER(user))
+        {
+            return;
+        }
+    }
+    else if (user->getStatus() == STATUS_CHANGE_PASSWORD_OLD)
+    {
+        if (!Server::process_STATUS_CHANGE_PASSWORD_OLD(user))
+        {
+            return;
+        }
+    }
+    else if (user->getStatus() == STATUS_CHANGE_PASSWORD_NEW)
+    {
+        if (!Server::process_STATUS_CHANGE_PASSWORD_NEW(user))
         {
             return;
         }

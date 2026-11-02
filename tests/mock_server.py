@@ -27,6 +27,7 @@ LOAD_MENU = ("\x1b[2J\x1b[H\x1b[12;14H\x1b[37m请选择操作："
              "\x1b[16;14H\x1b[37m2. 全服top成绩"
              "\x1b[18;14H\x1b[37m3. 开始游戏"
              "\x1b[20;14H\x1b[37m4. 返回服务"
+             "\x1b[22;14H\x1b[37m5. 修改密码"
              "\x1b[24;14H\x1b[37m你的选择是：")
 DIFF = ("\x1b[2J\x1b[H\x1b[12;14H\x1b[37m1. 简单模式"
         "\x1b[14;14H\x1b[37m2. 普通模式"
@@ -223,9 +224,11 @@ def write_csv(name, password):
         sys.exit(1)
 
 
-def migrate_credential(name, password):
-    """模拟服务端"旧明文账号登录成功后迁移成加盐哈希"：只替换该行的第 2 个字段。"""
-    new_credential = credential.hash_password(password)
+def rewrite_credential(name, new_credential, only_if_plaintext=False):
+    """替换某一行第 2 个字段（改密 / 旧明文迁移共用）。
+
+    真服务端是"临时文件 + rename"、并在 flock 里做；mock 单进程，用 os.replace 等价。
+    """
     tmp = USERDATA + ".mock.tmp"
     try:
         with open(USERDATA, "r", encoding="utf-8") as src, \
@@ -233,18 +236,23 @@ def migrate_credential(name, password):
             for line in src:
                 parts = line.split(",")
                 if (len(parts) >= 2 and parts[0] == name
-                        and not credential.is_hashed(parts[1])):
+                        and (not only_if_plaintext or not credential.is_hashed(parts[1]))):
                     parts[1] = new_credential
                     dst.write(",".join(parts))
                 else:
                     dst.write(line)
         os.replace(tmp, USERDATA)
     except OSError as exc:
-        print("migrate error:", exc)
+        print("rewrite error:", exc)
         try:
             os.remove(tmp)
         except OSError:
             pass
+
+
+def migrate_credential(name, password):
+    """模拟服务端"旧明文账号登录成功后迁移成加盐哈希"。"""
+    rewrite_credential(name, credential.hash_password(password), only_if_plaintext=True)
 
 
 def serve(conn):
@@ -256,6 +264,8 @@ def serve(conn):
     state = "menu"
     buf = b""
     downs = 0
+    pending_user = ""
+    pending_old = ""
     try:
         while True:
             chunk = conn.recv(65536)
@@ -349,9 +359,55 @@ def serve(conn):
                     elif cmd == "3":
                         conn.sendall(DIFF.encode())
                         state = "diff"
+                    elif cmd == "5":
+                        # 修改密码（与真服务端一致：先收当前密码，再收新密码，
+                        # 两个都收齐了才校验——所以"当前密码错"要等新密码也发完才提示）
+                        conn.sendall("\x1b[2J\x1b[H\x1b[12;14H\x1b[37m修改密码"
+                                     "\x1b[14;14H\x1b[37m请输入当前密码：".encode())
+                        state = "change_old"
                     else:
                         conn.sendall(MENU.encode())
                         state = "menu"
+                elif state == "change_old":
+                    pending_old = cmd
+                    conn.sendall("\x1b[16;14H\x1b[37m"
+                                 "请输入新密码（至少 8 个字符，不能全是空格）：".encode())
+                    state = "change_new"
+                elif state == "change_new":
+                    if not password_policy_ok(cmd):
+                        conn.sendall("\x1b[12;14H\x1b[37m密码至少需要 8 个字符（不能全是空格），"
+                                     "请重新输入密码：".encode())
+                        continue
+                    if cmd == pending_old:
+                        conn.sendall("\x1b[12;14H\x1b[37m新密码不能与当前密码相同，"
+                                     "请重新输入新密码：".encode())
+                        continue
+                    wait = ip_throttle_wait(peer_ip)
+                    if wait == 0:
+                        wait = throttle_wait(pending_user)
+                    if wait > 0:
+                        conn.sendall(("\x1b[2J\x1b[H\x1b[12;14H\x1b[37m"
+                                      "修改密码尝试过于频繁，请 %d 秒后再试：\r\n"
+                                      "\x1b[14;14H\x1b[37m请按3返回主菜单：" % wait).encode())
+                        state = "after_change"
+                        continue
+                    stored = read_users().get(pending_user)
+                    if stored is not None and credential.verify(pending_old, stored):
+                        rewrite_credential(pending_user, credential.hash_password(cmd))
+                        conn.sendall("\x1b[2J\x1b[H\x1b[12;14H\x1b[37m密码修改成功！\r\n"
+                                     "\x1b[13;14H\x1b[37m下次登录请使用新密码。\r\n"
+                                     "\x1b[15;14H\x1b[37m请按3返回主菜单：".encode())
+                        state = "after_change"
+                    else:
+                        throttle_failure(pending_user)
+                        ip_throttle_failure(peer_ip)
+                        conn.sendall("\x1b[2J\x1b[H\x1b[12;14H\x1b[37m"
+                                     "当前密码错误，密码未修改。\r\n"
+                                     "\x1b[14;14H\x1b[37m请按3返回主菜单：".encode())
+                        state = "after_change"
+                elif state == "after_change":
+                    conn.sendall(LOAD_MENU.encode())
+                    state = "load_menu"
                 elif state in ("score_view", "top_view"):
                     conn.sendall(LOAD_MENU.encode())
                     state = "load_menu"

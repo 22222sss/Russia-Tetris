@@ -29,6 +29,12 @@ public:
     //接收登录密码
     static int receive_password_load(shared_ptr<User>& user);
 
+    //接收"修改密码"的当前密码（暂存在 user->password 里，等新密码一起提交）
+    static int receive_changepassword_old(shared_ptr<User>& user);
+
+    //接收"修改密码"的新密码，提交异步校验/落盘
+    static int receive_changepassword_new(shared_ptr<User>& user);
+
     //处理用户登录成功后的逻辑
     static int loginUser(shared_ptr<User>& user);
 
@@ -55,6 +61,12 @@ public:
 
     //STATUS_REGISTER_OR_LOAD_OVER
     static bool process_STATUS_REGISTER_OR_LOAD_OVER(shared_ptr<User>& user);
+
+    //STATUS_CHANGE_PASSWORD_OLD
+    static bool process_STATUS_CHANGE_PASSWORD_OLD(shared_ptr<User>& user);
+
+    //STATUS_CHANGE_PASSWORD_NEW
+    static bool process_STATUS_CHANGE_PASSWORD_NEW(shared_ptr<User>& user);
     
     //处理新用户的连接
     static void handleNewClientConnection(int serverSocket, short events, void* arg);

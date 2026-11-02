@@ -697,6 +697,71 @@ def test_fast_reconnect(args):
         second.close()
 
 
+def test_change_password(args):
+    """改密：当前密码错误要拒绝、新密码走同一套策略、改完旧密码失效。
+
+    用独立账号，避免把主用例的密码改掉影响后面的检查（游戏结束等）。
+    """
+    global STAGE
+
+    user = new_account_name() + "cp"
+    old_pw = "old-pw-" + str(random.randint(10000, 99999))
+    new_pw = "new-pw-" + str(random.randint(10000, 99999))
+
+    STAGE = "改密：注册并登录"
+    conn = Conn(args.host, args.port, args.timeout)
+    try:
+        expect(conn, "1. 注册帐号")
+        conn.sendline("1")
+        expect(conn, "请输入用户名")
+        conn.sendline(user)
+        expect(conn, "请输入密码")
+        conn.sendline(old_pw)
+        expect(conn, "注册成功")
+        if not wait_for_userdata(args.userdata, user, args.timeout):
+            raise Failure("[%s] 账号 %r 未落盘（超时 %ss）" % (STAGE, user, args.timeout))
+        conn.sendline("3")
+        expect(conn, "2. 登录")
+        conn.sendline("2")
+        expect(conn, "请输入用户名")
+        conn.sendline(user)
+        expect(conn, "请输入密码")
+        conn.sendline(old_pw)
+        expect(conn, "3. 开始游戏")
+
+        STAGE = "改密：当前密码错误时必须拒绝（且不改动密码）"
+        conn.sendline("5")
+        expect(conn, "请输入当前密码")
+        conn.sendline(old_pw + "-wrong")
+        expect(conn, "请输入新密码")
+        conn.sendline(new_pw)
+        expect(conn, "当前密码错误")
+        expect(conn, "请按3返回主菜单")
+        conn.sendline("3")
+        expect(conn, "1. 我最近的成绩")
+
+        STAGE = "改密：新密码过短要被拒（与注册同一套策略）"
+        conn.sendline("5")
+        expect(conn, "请输入当前密码")
+        conn.sendline(old_pw)
+        expect(conn, "请输入新密码")
+        conn.sendline("short")
+        expect(conn, "密码至少需要 8 个字符")
+        conn.sendline(new_pw)
+        expect(conn, "密码修改成功")
+        expect(conn, "请按3返回主菜单")
+        conn.sendline("3")
+        expect(conn, "1. 我最近的成绩")
+    finally:
+        conn.close()
+
+    STAGE = "改密：新密码可以登录"
+    login_expect_success(args, user, new_pw, "改密：新密码登录")
+
+    STAGE = "改密：旧密码必须失效"
+    login_expect_failure(args, user, old_pw, "改密：旧密码被拒绝")
+
+
 def test_game_over(args, user, password):
     """游戏结束流程：困难模式把棋盘堆满 -> GAME OVER -> 按 n 回主菜单。
 
@@ -767,6 +832,7 @@ def main():
         ("注册密码过短被拒绝", lambda: test_short_password_rejected(args)),
         ("未知账号与错误密码提示一致", lambda: test_unknown_user_login(args)),
         ("失败退避与等待后放行", lambda: test_login_throttled(args)),
+        ("修改密码", lambda: test_change_password(args)),
         ("旧明文账号登录即迁移", lambda: test_legacy_migration(args)),
         ("快速重连后仍能响应输入", lambda: test_fast_reconnect(args)),
         ("游戏结束流程", lambda: test_game_over(args, user, password)),

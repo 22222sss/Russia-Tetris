@@ -52,6 +52,21 @@ public:
 	//展示"服务繁忙"（哈希队列已满，本次没有校验）
 	static bool show_Server_Busy(const shared_ptr<User>& user);
 
+	//展示"修改密码：请输入当前密码"（见 TetrisGame/Filedata.h 的 changePasswordAsync）
+	static bool show_Change_Password_Old(const shared_ptr<User>& user);
+
+	//展示"请输入新密码（至少 8 个字符）"
+	static bool show_Receive_New_Password(const shared_ptr<User>& user);
+
+	//新密码与当前密码相同：留在"输入新密码"状态
+	static bool show_Password_Unchanged_Error(const shared_ptr<User>& user);
+
+	//密码修改成功（按 3 回主菜单）
+	static bool show_Password_Changed(const shared_ptr<User>& user);
+
+	//修改密码失败（当前密码错 / 服务繁忙 / 存储错误 / 被退避拒绝），按 3 回主菜单
+	static bool show_Change_Password_Error(const string& message, const shared_ptr<User>& user);
+
 	//展示登录界面
 	static bool showLoadMenu(const shared_ptr<User>& user);
 
