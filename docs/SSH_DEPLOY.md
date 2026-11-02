@@ -136,8 +136,10 @@ ssh -p 2222 tetris@<IP>         # 非默认端口
 - **`ForceCommand` 不是沙箱**：它只保证登录后跑不了别的命令，不限制进程能看到什么。
   所以登录账号本身要尽量穷（不要给它读服务端目录/数据库的权限）；
 - sshd 片段里已关掉 `AllowTcpForwarding` / `AllowAgentForwarding` /
-  `AllowStreamLocalForwarding` / `X11Forwarding` / `PermitTunnel` / `PermitUserEnvironment` /
-  `PermitUserRC`，并限制 `MaxSessions 1`（防止 ControlMaster 复用出第二条游戏会话）；
+  `AllowStreamLocalForwarding` / `X11Forwarding` / `PermitTunnel` / `PermitUserRC`，
+  并限制 `MaxSessions 1`（防止 ControlMaster 复用出第二条游戏会话）；
+  注意 `PermitUserEnvironment` **不能在 Match 块里写**（sshd 会拒绝加载整个片段），
+  它只能在全局设，Ubuntu/Debian 默认就是 `no`；
 - 共享口令意味着"知道口令就能进到登录界面"，真正的门是游戏账号密码 + 三层限流；
   建议在 sshd 全局开 `MaxAuthTries 3`、`LoginGraceTime 20`，公网机器再挂 fail2ban 之类；
 - 想彻底不要共享口令，可以换成"每个玩家一个 SSH key"（`AuthorizedKeysCommand` 由游戏侧签发），
@@ -182,9 +184,10 @@ CI 里对应两步：`SSH bridge test`（桥的 8 项自检 + 穿过桥的真协
 
 ## 11. 本轮没做的（下一步）
 
-- **每会话内存**：桥是 Python 解释器 + 标准库，每会话一个进程（10MB 量级；
-  `tests/bridge_test.py` 在 Linux 上会把实测 RSS 打成 `::notice::`）。
-  SSH 本身每会话也有一个 sshd 进程，所以并发天花板主要是内存。
-  要压更多并发，值得把桥改成一个几十行的 C 程序（预期 1~2MB/会话）；
+- **每会话内存**：桥是 Python 解释器 + 标准库，每会话一个进程，**CI 实测 RSS 16.8 MB**
+  （`tests/bridge_test.py` 在 Linux 上会把这个数打成 `::notice::`）。
+  200 个并发玩家光桥就是 ~3.4 GB，再加每会话一个 sshd 会话进程 —— **SSH 承载的并发
+  天花板是内存**，适合几十人的规模。要压更多并发，值得把桥改成一个几十行的 C 程序
+  （预期 1~2 MB/会话）；服务端本身不用再优化（1 万按键/秒只用 0.1~0.15 核）；
 - **不用共享口令**：`AuthorizedKeysCommand` + 游戏侧签发 key，让每个玩家一条独立 SSH 身份；
 - 管理员 CLI / 备份、Docker / systemd 单元（见 `docs/HANDOVER.md` 第 8 节）。

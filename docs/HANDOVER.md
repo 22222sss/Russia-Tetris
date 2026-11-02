@@ -517,9 +517,10 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 - **测试**：`tests/bridge_test.py` 8 项（含 Linux 真 pty：断言桥把 ICANON/ECHO 关掉、
   方向键不按回车就到达服务端）+ `--server` 的"穿过桥跑真协议"；CI 另加 `sshd -t` 与
   `sshd -T -C user=tetris`，把"改别人的配置"也纳入验证（写错了不是 CI 挂，是线上 sshd 起不来）；
-- **代价**：每会话多一个 Python 进程（10MB 量级，实测值由 `bridge_test.py` 在 Linux 上以
-  `::notice::` 回传），SSH 自己也每会话一个 sshd 进程 —— 并发天花板主要在内存，
-  不在服务端 CPU。要抬高上限就把桥换成几十行的 C（预期 1~2MB/会话），见第 8 节。
+- **代价**：每会话多一个 Python 进程（CI 实测 RSS **16.8 MB**，由 `bridge_test.py` 在
+  Linux 上以 `::notice::` 回传），SSH 自己也每会话一个 sshd 进程 —— 200 个并发玩家光桥
+  就是 ~3.4GB，并发天花板主要在内存，不在服务端 CPU。要抬高上限就把桥换成几十行的 C
+  （预期 1~2MB/会话），见第 8 节。
 
 ### 存储层（SQLite，2026-11-02）
 
@@ -854,7 +855,7 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     `--source-ip default`）要按"全站额度"重新估阈值，或者干脆调大它。
 
 36. **SSH 承载的并发上限是内存，不是 CPU**：每会话 = 一个 sshd 会话进程 + 一个 Python 桥进程
-    （10MB 量级）+ 服务端一个 `User`（3KB）。200 玩家光前两项就是 GB 级。
+    （CI 实测 **16.8 MB**）+ 服务端一个 `User`（3KB）。200 个并发玩家光桥就是 ~3.4GB。
     服务端自己的 CPU 仍然只占 0.1~0.15 核/万按键 —— 要提并发就换 C 版桥，别再动服务端。
 
 37. **Windows 上 `SO_REUSEADDR` 会把"端口被残留进程占着"伪装成正常**：第二次 bind 会成功，
@@ -893,7 +894,7 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     导入后不再同步——想重跑导入得先删库（见 6.31）；
   - **SSH 承载已完成**（`deploy/` + `TETRIS_BIND` + `docs/SSH_DEPLOY.md`，见 5.SSH 承载）：
     sshd `ForceCommand` 把会话直接交给桥，公网只开 22、9999 只绑回环；
-    桥现在是 Python 进程（每会话 10MB 量级，见 6.36），换 C 的收益见第 8 节；
+    桥现在是 Python 进程（CI 实测 16.8 MB/会话，见 6.36），换 C 的收益见第 8 节；
   - **没有管理员 CLI，也没有备份脚本**：重置密码只能手工改库（`sqlite3` 或
     `UPDATE accounts SET password=...`），备份只能手工 `.backup`（见 6.31）；
   - 远程压测脚本与手册已就绪（`play_remote.sh` / `REMOTE_BENCH.md`），尚未在真实云主机上跑过；
@@ -909,7 +910,7 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 | **管理员 CLI + 备份（上线必需）** | `tetris-admin reset-password <user>`（没邮箱，"找回"只能这样）/ `backup`（`sqlite3 .backup`）；顺便启动时打印生效配置 | **高**：线上忘密码的用户目前无自救路径 |
 | **打包/部署（上线必需）** | Dockerfile（多阶段、非 root、HEALTHCHECK）+ systemd unit + 日志轮转 | **高**：别人无法按 README 一把部署 |
 | **注册限流（公网时做）** | 方案 A：按 IP（20 次/5 分钟）+ 全局（200 次/小时），提交密码前挡掉；方案 B（更重）：把注册哈希挪进哈希线程池，队满回 Busy | 中：见 6.30，是现在唯一无上限的 PBKDF2 路径 |
-| 桥换成 C 版 | 现在每会话一个 Python 进程（10MB 量级），换几十行 C 可降到 1~2MB；SSH 承载的并发上限目前就是这项内存（见 6.36） | 中：真上量时才值得 |
+| 桥换成 C 版 | 现在每会话一个 Python 进程（CI 实测 16.8 MB），换几十行 C 可降到 1~2MB；SSH 承载的并发上限目前就是这项内存（见 6.36） | 中：真上量时才值得 |
 | 认证状态跨进程 | 用户名退避 / IP 兜底的计数都在各 worker 内存里，阈值实际 ×N；要统一得放共享内存或落文件 | 低：只有真的开多 worker 才值得 |
 | `-flto` | 跨 TU 内联（UImanage/Utility 的小函数），预期几个点；用 bench.yml 的 A/B 步骤量 | 低~中：CPU |
 | 连接建立路径 | accept 时 `showInitMenu` 也批量，并把固定菜单预渲染成静态字符串 | 低~中：10 万连接场景的 CPU（当前不是瓶颈） |
