@@ -105,6 +105,22 @@ def resolve_account(name):
     return entry.pw_uid, entry.pw_gid
 
 
+def chown_tree(path, uid, gid):
+    """把演练目录还给服务账号：协议测试是以 root 跑的，SQLite 可能建出 root 属主的新文件。"""
+    if not hasattr(os, "chown"):
+        return
+    for base, dirs, files in os.walk(path):
+        try:
+            os.chown(base, uid, gid)
+        except OSError:
+            pass
+        for name in dirs + files:
+            try:
+                os.chown(os.path.join(base, name), uid, gid)
+            except OSError:
+                pass
+
+
 def wait_for_port(port, proc, timeout):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -287,13 +303,17 @@ def run_drill(args):
                 info("5/%d 跑完整协议（%s）" % (TOTAL_STEPS, os.path.basename(proto)))
                 cmd = [sys.executable, proto,
                        "--host", "127.0.0.1", "--port", str(port), "--db", drill_db]
+                # 协议测试**以调用者身份**跑（通常就是 root），不切到服务账号：
+                # 它要往演练库里写"旧明文账号"，而仓库可能在 /home/xxx 下，
+                # 服务账号本来就读不到（线上更该如此）。临时实例才是 tetrisd 身份。
                 result = subprocess.run(
                     cmd, cwd=workdir, env=env, text=True, timeout=args.protocol_timeout,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    **({"user": uid, "group": gid} if drill_user else {}))
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
                 if result.returncode != 0:
                     raise DrillError("协议测试失败（rc=%d）；输出尾部：\n%s"
                                      % (result.returncode, result.stdout[-1500:]))
+                if drill_user:
+                    chown_tree(workdir, uid, gid)
                 protocol_ran = True
                 ok("协议测试通过（注册/登录/进游戏都不依赖生产库）")
         else:

@@ -1127,6 +1127,14 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     `... --target 127.0.0.1:<端口>` 再 `sshd -t && systemctl reload ssh`。
     这条是写恢复演练文档时踩出来的：`--keep` 第一版打印的正是那句不能用的命令。
 
+52. **别以服务账号身份去跑仓库里的脚本**：CI 上
+    `sudo -u tetrisd python3 /home/runner/work/.../tests/integration_test.py` 直接被拒
+    （`can't open file ... Permission denied`）—— `/home/runner` 是 0750，服务账号进不去，
+    而线上更该如此（`tetrisd` 不该能读你的 home）。恢复演练因此规定：
+    只有**临时实例**用 `tetrisd`，**协议测试用调用者（root）身份**跑，测完再把演练目录
+    `chown` 回服务账号。以后写"以服务账号执行某个脚本"的工具时，要么先把脚本 stage 到
+    它读得到的地方（比如演练目录），要么就别切身份。
+
 ## 7. 仓库现状
 
 - `main` 干净，CI 全绿；无 tag；
