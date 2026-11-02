@@ -345,7 +345,12 @@ def test_pty_raw_mode():
 
     server = RecorderServer(greeting=b"hello").start()
     master, slave = pty.openpty()
-    proc = subprocess.Popen(bridge_command(server.port),
+    # 必须从 **slave** 取设备名：`os.ttyname(master)` 拿到的是 /dev/ptmx，
+    # 那是另一台 pty，查到的 termios 永远是默认值（CI 第一次就是这么假失败的）。
+    slave_name = os.ttyname(slave)
+    log_path = tempfile.mktemp(prefix="bridge-pty-")
+
+    proc = subprocess.Popen(bridge_command(server.port, args=("--log", log_path)),
                             stdin=slave,
                             stdout=slave,
                             stderr=subprocess.DEVNULL,
@@ -353,18 +358,27 @@ def test_pty_raw_mode():
                             start_new_session=True)
     os.close(slave)                     # 桥已经继承了这份 fd
 
-    slave_fd = os.open(os.ttyname(master), os.O_RDWR | os.O_NOCTTY)
+    def diagnostics():
+        detail = "桥进程%s" % ("已退出(%r)" % proc.poll() if proc.poll() is not None else "仍在运行")
+        if os.path.exists(log_path):
+            with open(log_path, "r", encoding="utf-8", errors="replace") as handle:
+                detail += "；桥日志：%r" % handle.read()[-300:]
+        return detail
+
+    slave_fd = os.open(slave_name, os.O_RDWR | os.O_NOCTTY)
     try:
         # 1) 桥要把 pty 切到 raw：ICANON（行缓冲）和 ECHO（内核回显）都得关掉。
         #    ECHO 留着的话玩家会看到"内核回显 + 桥回显"两份字符。
-        deadline = time.time() + 10
+        deadline = time.time() + 15
+        lflag = termios.tcgetattr(slave_fd)[3]
         while time.time() < deadline:
             lflag = termios.tcgetattr(slave_fd)[3]
             if not (lflag & termios.ICANON) and not (lflag & termios.ECHO):
                 break
             time.sleep(0.05)
         else:
-            raise Failure("桥没有把 pty 切到 raw（ICANON/ECHO 仍然开着）")
+            raise Failure("桥没有把 pty 切到 raw（lflag=0x%x，ICANON/ECHO 仍在）；%s"
+                          % (lflag, diagnostics()))
 
         # 2) 关键回归：方向键不按回车也必须立刻到达服务端。
         os.write(master, b"\x1b[B")
@@ -372,14 +386,13 @@ def test_pty_raw_mode():
         while time.time() < deadline and b"\x1b[B" not in server.received:
             time.sleep(0.05)
         if b"\x1b[B" not in server.received:
-            raise Failure("方向键没有即时到达服务端（pty 还在行缓冲）")
+            raise Failure("方向键没有即时到达服务端（pty 还在行缓冲）；服务端收到 %r；%s"
+                          % (bytes(server.received), diagnostics()))
 
         # 3) 回车要翻成 CRLF（raw 模式下终端只发一个 CR）。
         os.write(master, b"\r")
-        buffer = bytearray()
         deadline = time.time() + 10
-        while time.time() < deadline and b"\r\n" not in buffer:
-            buffer += bytes(server.received)
+        while time.time() < deadline and b"\r\n" not in bytes(server.received):
             time.sleep(0.05)
         if b"\r\n" not in bytes(server.received):
             raise Failure("回车没有被翻成 CRLF：%r" % bytes(server.received))
@@ -397,8 +410,11 @@ def test_pty_raw_mode():
             proc.kill()
             proc.wait()
         server.wait()
+        if os.path.exists(log_path):
+            os.unlink(log_path)
 
-    if proc.returncode not in (0, -15):
+    if proc.returncode not in (0, -15, -1):
+        # 0 = 正常；-15/-1 = 关掉 pty 时被 SIGHUP/SIGTERM 收走（sshd 断连也是这个路径）
         raise Failure("关掉 pty 之后桥的退出码异常：%r" % proc.returncode)
     return "ok"
 
@@ -408,7 +424,13 @@ def test_pty_raw_mode():
 # ---------------------------------------------------------------------------
 
 class BridgeSession:
-    """一条"SSH 会话"：桥的 stdin/stdout 就是本进程的管道。"""
+    """一条"SSH 会话"：桥的 stdin/stdout 就是本进程的管道。
+
+    和 integration_test.py 的 `Conn` 一样用 **mark**：`wait_for` 只看上次发送之后
+    新到达的输出。不这么做的话，后面那句 `expect("2. 登录")` 会直接命中开头的初始
+    菜单 —— 于是把两条命令一次发出去，而服务端的 `ReceiveData` 一次 recv 只取
+    `\\r\\n` 之前那段、把后面的丢掉（见 6.10 那类多行合并坑）。
+    """
 
     def __init__(self, target, args=(), env=None):
         self.proc = subprocess.Popen(
@@ -419,6 +441,7 @@ class BridgeSession:
             env=bridge_env(env))
         self.buffer = bytearray()
         self.lock = threading.Lock()
+        self.mark = 0
         self.eof = False
         threading.Thread(target=self._read, daemon=True).start()
 
@@ -438,23 +461,38 @@ class BridgeSession:
         with self.lock:
             return bytes(self.buffer).decode("utf-8", "replace")
 
+    def tail(self, limit=400):
+        return self.text()[-limit:]
+
+    def _find(self, needle_bytes):
+        with self.lock:
+            return bytes(self.buffer).find(needle_bytes, self.mark)
+
     def wait_for(self, needle, timeout=20.0):
+        """等 mark 之后出现 needle；命中后把 mark 推到它末尾。"""
+        needle_bytes = needle.encode("utf-8")
         deadline = time.time() + timeout
-        while time.time() < deadline:
-            if needle in self.text():
+        while True:
+            index = self._find(needle_bytes)
+            if index >= 0:
+                with self.lock:
+                    self.mark = index + len(needle_bytes)
                 return True
+            if time.time() > deadline:
+                return False
             if self.eof:
                 return False
             time.sleep(0.05)
-        return False
 
     def expect(self, needle, timeout=20.0):
         if not self.wait_for(needle, timeout):
-            raise Failure("等不到 %r；桥的输出：%r" % (needle, self.text()[-400:]))
+            raise Failure("等不到 %r；桥的输出：%r" % (needle, self.tail()))
 
     def send(self, data):
         if isinstance(data, str):
             data = data.encode("utf-8")
+        with self.lock:
+            self.mark = len(self.buffer)     # 之后的断言只看新输出
         self.proc.stdin.write(data)
         self.proc.stdin.flush()
 
