@@ -166,7 +166,7 @@ docker compose up -d --build
 装完必须验的四件事（漏了就是线上故障）：
 
 ```bash
-systemctl show tetris-game -p LimitNOFILE   # 300000:300000（默认值会变成连接数天花板）
+systemctl show tetris-game -p LimitNOFILE -p LimitNOFILESoft   # 软/硬都应是 300000
 ss -ltn | grep 9999                         # 只有 127.0.0.1:9999
 systemctl list-timers tetris-backup.timer   # 每天 04:15 在线备份，保留 14 份
 journalctl -u tetris-game -n 40             # 启动打印的"生效配置"

@@ -30,8 +30,9 @@
 **部署**
 
 - [ ] `sudo deploy/install-systemd.sh`（会建 `tetrisd` 账号、目录、单元、sysctl，并开机自启）
-- [ ] **fd 上限生效**：`systemctl show tetris-game -p LimitNOFILE` → `LimitNOFILE=300000:300000`
-      （再看进程：`awk '/Max open files/' /proc/$(systemctl show tetris-game -p MainPID --value)/limits`）
+- [ ] **fd 上限生效**：`systemctl show tetris-game -p LimitNOFILE -p LimitNOFILESoft` → 两个都是 `300000`，
+      再看进程里真正生效的值：
+      `awk '/Max open files/' /proc/$(systemctl show tetris-game -p MainPID --value)/limits` → `300000 300000`
 - [ ] **只绑回环**：`ss -ltn | grep 9999` → 只有 `127.0.0.1:9999`，没有 `0.0.0.0:9999` / `*:9999`
 - [ ] `sudo deploy/install-ssh-bridge.sh` + `sudo passwd tetris`（登录账号与 `tetrisd` 分开）
 - [ ] `sudo sshd -t` 通过；`sshd -T -C user=tetris | grep -i forcecommand` → `/usr/local/bin/tetris-bridge`
@@ -134,7 +135,9 @@ LimitNOFILE=300000:300000
 验证（**上线必查**，这是最容易"看起来都在跑、其实只能接 1024 个连接"的地方）：
 
 ```bash
-systemctl show tetris-game -p LimitNOFILE          # LimitNOFILE=300000:300000
+# systemd 把软/硬限制拆成两个属性，两个都应该是 300000
+systemctl show tetris-game -p LimitNOFILE -p LimitNOFILESoft
+# 进程里真正生效的值（比上面的"配置值"更可信）
 PID=$(systemctl show tetris-game -p MainPID --value)
 awk '/Max open files/' /proc/$PID/limits           # 300000  300000  files
 ```

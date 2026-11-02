@@ -294,9 +294,10 @@ CI 步骤（`build.yml`，每次 push `main` 都跑，顺序如下）：
 → 20. **管理命令测试**（`tests/admin_test.py`：对真库跑 reset-password / backup / list-users /
 stats，外加服务端启动打印的生效配置）
 → 21. **部署形态测试**（`tests/deploy_test.py` 9 项静态断言 + `log_rotation_test.py` 日志轮转 +
-**真的装一遍 systemd 服务**：`systemctl show -p LimitNOFILE` 与 `/proc/<pid>/limits` 都是
-300000、`ss -ltn` 只绑 127.0.0.1、真跑一次备份并检查 600 + `integrity_check`、
-`kill -9` 后等到**新的 MainPID**、`systemctl stop` 在 5 秒内完成）
+**真的装一遍 systemd 服务**：`/proc/<pid>/limits` 的软/硬都是 300000（systemd 的
+`LimitNOFILE`/`LimitNOFILESoft` 一并打出来对照——它把软硬拆成两个属性，别去比
+`300000:300000` 这个字符串）、`ss -ltn` 只绑 127.0.0.1、真跑一次备份并检查 600 +
+`integrity_check`、`kill -9` 后等到**新的 MainPID**、`systemctl stop` 在 5 秒内完成）
 → 22. **Docker 镜像**（真 `docker build` + 真跑容器：`HEALTHCHECK` 变 healthy、`id -u` 非 0、
 容器内 nofile=300000、从宿主读到 9999 的首屏字节、容器内 `tetris-admin stats` 可用）。
 整个 job 现在 **24 步**（原 22 步），`timeout-minutes` 从 15 提到 30。

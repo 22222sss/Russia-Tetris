@@ -108,16 +108,20 @@ fi
 systemctl enable --now tetris-backup.timer >/dev/null
 
 info "7/7 自检"
-LIMIT=$(systemctl show tetris-game.service -p LimitNOFILE --value 2>/dev/null || true)
+MAIN_PID="$(systemctl show tetris-game.service -p MainPID --value 2>/dev/null || true)"
+# systemd 把软/硬限制拆成两个属性（LimitNOFILE / LimitNOFILESoft），
+# "进程里真正生效"的值只能看 /proc/<pid>/limits —— 很多"改了没生效"就是没 daemon-reload。
+FD_SOFT_HARD="$(awk '/Max open files/ {print $4"/"$5}' "/proc/${MAIN_PID}/limits" 2>/dev/null || true)"
+FD_SHOW="$(systemctl show tetris-game.service -p LimitNOFILE -p LimitNOFILESoft --value 2>/dev/null | tr '\n' '/' || true)"
 LISTEN_AFTER="$(ss -ltn 2>/dev/null | awk '$4 ~ /:9999$/ {print $4}' || true)"
-echo "    服务的 LimitNOFILE = ${LIMIT:-未知}（期望 300000:300000 —— 这是连接数的天花板）"
-echo "    实际进程限制       = $(awk '/Max open files/ {print $4"/"$5}' "/proc/$(systemctl show tetris-game.service -p MainPID --value)/limits" 2>/dev/null || echo 未知)"
+echo "    进程 fd 上限       = ${FD_SOFT_HARD:-未知}（软/硬，期望 300000/300000 —— 这是连接数的天花板）"
+echo "    systemd 报的限制   = ${FD_SHOW:-未知}"
 echo "    监听地址           = ${LISTEN_AFTER:-未知}"
 echo "    服务单元文件       = /etc/systemd/system/tetris-game.service"
 echo "    启动打印的生效配置 = journalctl -u tetris-game -n 40 --no-pager"
 
-if [ -z "$LIMIT" ] || [ "$LIMIT" = "infinity" ]; then
-    warn "没能确认 LimitNOFILE，请手工核对：systemctl show tetris-game -p LimitNOFILE"
+if [ "$FD_SOFT_HARD" != "300000/300000" ]; then
+    warn "进程 fd 上限不是 300000/300000（当前 '${FD_SOFT_HARD:-未知}'）：检查单元的 LimitNOFILE 并 systemctl daemon-reload"
 fi
 case "$LISTEN_AFTER" in
     127.0.0.1:9999) ;;

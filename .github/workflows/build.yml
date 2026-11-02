@@ -665,13 +665,18 @@ jobs:
 
           RC_RUNTIME=0
           if [ "$RC_INSTALL" -eq 0 ]; then
-            # 3.1 fd 上限 —— systemd 默认值就是连接数的隐藏天花板
-            LIMIT=$(systemctl show tetris-game -p LimitNOFILE --value)
+            # 3.1 fd 上限 —— systemd 默认值就是连接数的隐藏天花板。
+            # 注意 systemd 把软/硬限制分成两个属性（LimitNOFILE / LimitNOFILESoft），
+            # 所以别去比 "300000:300000" 这个字符串；/proc/<pid>/limits 才是进程里真正
+            # 生效的值，systemctl 的输出只当参考信息打出来。
             PID=$(systemctl show tetris-game -p MainPID --value)
-            PROC_LIMIT=$(awk '/Max open files/ {print $4}' /proc/"$PID"/limits 2>/dev/null)
-            if [ "$LIMIT" != "300000:300000" ] || [ "$PROC_LIMIT" != "300000" ]; then
-              echo "::error::LimitNOFILE 没生效：单元=$LIMIT 进程=$PROC_LIMIT（期望 300000:300000 / 300000）"
+            PROC_FD=$(awk '/Max open files/ {print $4"/"$5}' /proc/"$PID"/limits 2>/dev/null)
+            SHOW_FD=$(systemctl show tetris-game -p LimitNOFILE -p LimitNOFILESoft --value 2>/dev/null | tr '\n' '/')
+            if [ "$PROC_FD" != "300000/300000" ]; then
+              echo "::error::进程的 fd 上限是 '${PROC_FD:-未知}'（期望 300000/300000，软/硬）；systemd 报的是 $SHOW_FD"
               RC_RUNTIME=1
+            else
+              echo "::notice::fd 上限生效：/proc/$PID/limits = $PROC_FD（systemd: $SHOW_FD）"
             fi
 
             # 3.2 只绑回环（否则玩家能绕过 sshd 直连明文端口）
@@ -743,7 +748,7 @@ jobs:
             echo "::error::部署形态测试失败（static=$RC_STATIC rotate=$RC_ROTATE install=$RC_INSTALL runtime=$RC_RUNTIME）"
             exit 1
           fi
-          echo "::notice::部署形态测试通过：LimitNOFILE=300000/只绑回环/备份 600+integrity ok/kill -9 自动拉起/stop 及时"
+          echo "::notice::部署形态测试通过：fd 上限 300000/只绑回环/备份 600+integrity ok/kill -9 自动拉起/stop 及时"
 
       - name: Docker image build and health check
         run: |
