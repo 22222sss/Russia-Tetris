@@ -32,7 +32,7 @@
    `HEALTHCHECK` 真的连 `127.0.0.1:9999` 并**读到首屏字节**才算健康；
    容器里 `TETRIS_BIND=0.0.0.0` + 宿主 `-p 127.0.0.1:9999:9999`（原因见 6.47），
    `docker-compose.yml` 用 host 网络回到"绑 127.0.0.1"的形态；
-7. **测试/CI**：新增 `tests/deploy_test.py`（9 项静态断言：单元关键项、环境变量拼写、
+7. **测试/CI**：新增 `tests/deploy_test.py`（10 项静态断言：单元关键项、环境变量拼写、
    Dockerfile、.dockerignore、compose、脚本语法、备份脚本行为、文档不漂移）与
    `tests/log_rotation_test.py`（真二进制，500 条连接逼出多次轮转，断言 `log.N.txt` 出现、
    份数/大小不超限、日志落在 `TETRIS_LOG_DIR`）；CI 末尾新增「Deploy artifacts test
@@ -44,7 +44,7 @@
    "怎么验"（`ss -ltn` 只绑回环、`/proc/<pid>/limits`、`systemctl --failed`、恢复演练……），
    另有升级/回滚、日志、备份恢复、排错表、安全边界各一节。
 
-> **CI 实测（SHA `c23d1e1`，一轮全绿）**：`deploy_test` 9/9；日志轮转真的轮了
+> **CI 实测（SHA `c23d1e1`，一轮全绿）**：`deploy_test` 9/9（之后加入恢复演练工具，变成 10 项）；日志轮转真的轮了
 > （`TETRIS_LOG_MAX_BYTES=4096` × 3 份历史 → `log.1/2/3.txt` + `log.txt`，合计 15 KB）；
 > `install-systemd.sh` 真的装成功：`/proc/<pid>/limits` = 300000/300000、`systemctl show`
 > 的两个 nofile 属性都是 300000、`ss -ltn` 只有 127.0.0.1:9999、`tetris-backup` 跑出
@@ -262,7 +262,7 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 | `tests/merge_results.py` | 合并多分片 JSON 与采样数据，生成 `result.json` |
 | `tests/bridge_test.py` | SSH 桥的自动化测试（**8 项**，不需要服务端）：字节透传 / 回车翻译 / 本地回显 / ESC 序列不回显 / stdin EOF 半关闭 / 服务端断开后桥自行退出 / 连不上时的提示与退出码 / 来源地址映射，外加**真 pty 的 raw 模式**（仅 Linux，顺带回传每会话 RSS）；给 `--server --db` 时再加一条**穿过桥跑真协议**（注册→登录→进游戏→按键） |
 | `tests/admin_test.py` | `tetris-admin` 的自动化测试（**10 项**，对真库跑）：reset-password 的四种结果（哈希账号 / 旧明文即迁移 / 短密码退出码 3 / 未知账号退出码 2 / 与当前密码相同不写库）、backup 的内容一致 + `integrity_check` + 600 权限 + 拒绝覆盖 + `--force`、list-users 的"明文未迁移"标记、stats、用法退出码；`--server-bin` 时再加一条**服务端启动打印生效配置**（含一个非默认 `TETRIS_AUTH_IP_*` 必须是生效值） |
-| `tests/deploy_test.py` | 部署形态检查（**9 项**，纯标准库，本地也能跑）：systemd 单元的关键项（`LimitNOFILE`/`TETRIS_BIND`/`Restart`/非 root/目录分离/加固项）、备份单元 + timer（ExecStart 脚本存在、`Unit=`、`OnCalendar`、`ReadWritePaths`）、**单元/Dockerfile 里的每个 `TETRIS_*` 都必须在 `src/` 里被 `getenv` 到**（防拼错）、Dockerfile（多阶段/非 root/HEALTHCHECK 连 127.0.0.1/钉版本/运行阶段不带 `-dev`）、`.dockerignore`（库/日志/旧 CSV 不进镜像）、compose（host 网络 + 127.0.0.1 + nofile 对齐）、`deploy/*.sh` 语法、**备份脚本行为**（失败不留半成品、按 KEEP 清理）、`docs/DEPLOY.md` 与单元不漂移 |
+| `tests/deploy_test.py` | 部署形态检查（**10 项**，纯标准库，本地也能跑）：systemd 单元的关键项（`LimitNOFILE`/`TETRIS_BIND`/`Restart`/非 root/目录分离/加固项）、备份单元 + timer（ExecStart 脚本存在、`Unit=`、`OnCalendar`、`ReadWritePaths`）、**单元/Dockerfile 里的每个 `TETRIS_*` 都必须在 `src/` 里被 `getenv` 到**（防拼错）、Dockerfile（多阶段/非 root/HEALTHCHECK 连 127.0.0.1/钉版本/运行阶段不带 `-dev`）、`.dockerignore`（库/日志/旧 CSV 不进镜像）、compose（host 网络 + 127.0.0.1 + nofile 对齐）、`deploy/*.sh` 语法、**备份脚本行为**（失败不留半成品、按 KEEP 清理）、**恢复演练工具**（`--help` + 三类必须拒绝的输入：拿生产库当备份/备份不存在/坏文件）、`docs/DEPLOY.md` 与单元不漂移 |
 | `tests/log_rotation_test.py` | 日志轮转（需要真二进制）：用 `TETRIS_LOG_MAX_BYTES=4096`/`_MAX_FILES=3`/`TETRIS_LOG_LEVEL=info` 起服务端，灌 500 条连接逼出多次轮转，断言 `log.1.txt` 出现、份数不超上限、单文件不超上限的 1.5 倍、日志落在 `TETRIS_LOG_DIR`（工作目录里不能有 `log.txt`） |
 
 `deploy/` 是部署入口（不参与服务端编译）：`tetris-bridge.py`（桥）、`sshd-tetris.conf`
@@ -300,11 +300,12 @@ CI 步骤（`build.yml`，每次 push `main` 都跑，顺序如下）：
 再用 `sshd -T -C user=tetris` 核对生效的 `ForceCommand`、并断言片段以 `Match all` 收尾）
 → 20. **管理命令测试**（`tests/admin_test.py`：对真库跑 reset-password / backup / list-users /
 stats，外加服务端启动打印的生效配置）
-→ 21. **部署形态测试**（`tests/deploy_test.py` 9 项静态断言 + `log_rotation_test.py` 日志轮转 +
+→ 21. **部署形态测试**（`tests/deploy_test.py` 10 项静态断言 + `log_rotation_test.py` 日志轮转 +
 **真的装一遍 systemd 服务**：`/proc/<pid>/limits` 的软/硬都是 300000（systemd 的
 `LimitNOFILE`/`LimitNOFILESoft` 一并打出来对照——它把软硬拆成两个属性，别去比
 `300000:300000` 这个字符串）、`ss -ltn` 只绑 127.0.0.1、真跑一次备份并检查 600 +
-`integrity_check`、`kill -9` 后等到**新的 MainPID**、`systemctl stop` 在 5 秒内完成）
+`integrity_check`、**用那份备份跑一次恢复演练（临时端口 + 完整协议）**、
+`kill -9` 后等到**新的 MainPID**、`systemctl stop` 在 5 秒内完成）
 → 22. **Docker 镜像**（真 `docker build` + 真跑容器：`HEALTHCHECK` 变 healthy、`id -u` 非 0、
 容器内 nofile=300000、从宿主读到 9999 的首屏字节、容器内 `tetris-admin stats` 可用）。
 整个 job 现在 **24 步**（原 22 步），`timeout-minutes` 从 15 提到 30。
@@ -595,10 +596,19 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
   （只测 listen 会漏掉"进程活着但事件循环卡死"）；容器内 `TETRIS_BIND=0.0.0.0` +
   宿主 `-p 127.0.0.1:9999:9999`（原因见 6.47）；`docker-compose.yml` 用 `network_mode: host`
   回到"绑 127.0.0.1"的形态，并带 `ulimits.nofile=300000`、两个卷、json-file 日志上限；
-- **测试/CI**：`tests/deploy_test.py`（9 项，纯 stdlib，**本地可跑**；其中 `deploy/*.sh`
+- **测试/CI**：`tests/deploy_test.py`（10 项，纯 stdlib，**本地可跑**；其中 `deploy/*.sh`
   语法与备份脚本行为两项在没有 POSIX shell 的机器上会跳过，可用 `TETRIS_TEST_SH` 指定）、
   `tests/log_rotation_test.py`（真二进制）；CI 末尾两步分别是"真装一遍 systemd 并跑一次备份"
   和"真 build 镜像并跑容器"，见第 3 节；
+- **恢复演练工具**（`deploy/restore-drill.py`，装成 `/usr/local/bin/tetris-restore-drill`）：
+  把备份复制到临时目录（`chown` 给 `tetrisd`、`chmod 600`）→ `PRAGMA integrity_check` +
+  账号/成绩条数并与生产库对比（副本比生产还多就拒绝：那说明备份不是这台机器的）→
+  以 `tetrisd` 身份在**另一个端口**起临时实例（独立工作目录/日志目录）→ 确认首屏菜单真的发出来 →
+  找得到 `tests/integration_test.py` 时跑完整协议（12 项：注册/登录/进游戏/改密/迁移）→
+  关实例、清目录。`--keep` 保留实例，用
+  `sudo -u tetris TETRIS_BRIDGE_TARGET=127.0.0.1:<端口> script -q -c /usr/local/bin/tetris-bridge /dev/null`
+  亲手玩副本（**桥在服务器侧**，从客户端 ssh 传环境变量 sshd 默认不收，见 6.51）；
+  它只读生产库，所以可以随时演练，不必等出事；
 - **`docs/DEPLOY.md`**：上线 checklist（每条都带验证命令）+ systemd/Docker 两种形态 +
   环境变量/上限 + 日志 + 备份恢复 + 升级回滚 + 巡检 + 排错表 + 安全边界；
 - **CI 实测（SHA `c23d1e1`，一轮全绿）**：这一轮共 4 次 push 才绿——前三次都是只读注释
@@ -1108,6 +1118,15 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     —— 本轮 CI 第一次跑就抓到了这个（本地没有 g++，只能靠 CI）。改 logger 相关代码后，
     先看 Build 步骤的 `::error::` 注解（它回传前几条编译错误），别等后面的测试步骤。
 
+51. **`TETRIS_BRIDGE_TARGET=... ssh tetris@host` 不生效**：那是**服务器侧**桥的环境变量，
+    而 sshd 默认不接收客户端环境变量（`AcceptEnv` 默认是关的，我们的片段里也没有），
+    所以在你笔记本上 `ssh` 时传的变量根本到不了桥。想临时把桥指向别的端口（恢复演练、
+    排障）有两个办法：在服务器上起桥
+    （`sudo -u tetris TETRIS_BRIDGE_TARGET=127.0.0.1:<端口> script -q -c /usr/local/bin/tetris-bridge /dev/null`，
+    `script` 给它一个 pty，raw 模式/回显才正常），或临时把 `ForceCommand` 改成
+    `... --target 127.0.0.1:<端口>` 再 `sshd -t && systemctl reload ssh`。
+    这条是写恢复演练文档时踩出来的：`--keep` 第一版打印的正是那句不能用的命令。
+
 ## 7. 仓库现状
 
 - `main` 干净，CI 全绿；无 tag；
@@ -1141,7 +1160,9 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     见 5.管理命令行），服务端启动也会打印一遍生效配置；
   - **打包/部署已完成**（5.打包/部署）：`Dockerfile` + `docker-compose.yml` +
     `deploy/systemd/`（`LimitNOFILE=300000`、只绑回环、加固、`Restart=always`）+
-    `install-systemd.sh` + 每日备份 timer + 进程内日志轮转 + `docs/DEPLOY.md` 的上线 checklist；
+    `install-systemd.sh` + 每日备份 timer + 进程内日志轮转 + **恢复演练工具
+    `tetris-restore-drill`（7.5 节：临时端口把备份恢复出来跑完整协议）** +
+    `docs/DEPLOY.md` 的上线 checklist；
     CI 会**真装一遍 systemd 服务并跑一次备份**、**真 build 镜像并跑健康检查**；
     还没在真实云主机上走过一遍（本地只有 Windows + 沙箱，见 6.7）；
   - 远程压测脚本与手册已就绪（`play_remote.sh` / `REMOTE_BENCH.md`），尚未在真实云主机上跑过；
@@ -1189,10 +1210,12 @@ systemd 单元 + 每日备份 timer + 日志轮转 + docs/DEPLOY.md 的上线 ch
 
 上线前真正缺的（按优先级）：
 1. 注册限流（公网开放前必做）：注册的 PBKDF2 跑在唯一写线程上且无上限（6.30）；
-2. 真机走一遍 docs/DEPLOY.md 第 0 节的 checklist（systemd 装法 + 恢复演练），
-   把"CI 里装过"变成"这台机器上装过"。
+2. 真机走一遍 docs/DEPLOY.md 第 0 节的 checklist（systemd 装法 + `tetris-restore-drill`
+   恢复演练），把"CI 里装过"变成"这台机器上装过"。
 
 要点：
+- 恢复演练不用等出事：`sudo tetris-restore-drill <备份>` 会把备份在临时目录/临时端口恢复出来，
+  跑 integrity + 条数对比 + 完整协议（第 7.5 节）；`--keep` 后能起桥亲手玩副本；
 - 数据在 tetris.db（SQLite，WAL，三件套），旧 userdata.csv 只用于首次导入；测试脚本统一用
   --db；schema 在 src/TetrisGame/Db.cpp 与 tests/db.py 两处，改结构要同时改；
 - 部署入口：deploy/install-systemd.sh（服务端 + 备份 timer + sysctl，幂等）、
@@ -1204,7 +1227,7 @@ systemd 单元 + 每日备份 timer + 日志轮转 + docs/DEPLOY.md 的上线 ch
   它默认读**当前目录**的 tetris.db，手工用带 TETRIS_DB 绝对路径（6.49）；
   改环境变量后先看启动打印的"生效配置"，别猜默认值；
 - 沙箱里跑不了 WSL/g++/systemd/docker/bash，C++/deploy/CI 改动只能 push main 让 CI 验证；
-  失败细节靠 ::notice::/::error:: 注解。本地能跑的是 Python：tests/deploy_test.py（9 项静态
+  失败细节靠 ::notice::/::error:: 注解。本地能跑的是 Python：tests/deploy_test.py（10 项静态
   断言，其中 2 项 shell 相关在本机会跳过）、tests/bridge_test.py（8 项）、tests/admin_test.py
   （10 项）、tests/mock_server.py + 集成 12 项 / 跨进程 5 项 / IP 兜底 —— 别浪费 CI 轮次；
 - CI 现在 24 步，末尾三步是「Admin CLI test」「Deploy artifacts test (systemd)」
@@ -1216,5 +1239,5 @@ systemd 单元 + 每日备份 timer + 日志轮转 + docs/DEPLOY.md 的上线 ch
 - 不要再做这些已完成的事：WSL 安装、README 数据清理、GIF 处理、死代码清理、质量工程、
   多核化、密码加盐哈希 + 迁移、登录吞吐、输出批量、-O2、User int8、池子 2048、
   注册密码策略、假 PBKDF2、用户名退避 + 队列上限、按 IP 兜底、改密、连接池 trim、
-  SQLite 存储层、SSH 承载、管理命令行、打包/部署（Docker/systemd/日志轮转/备份 timer）。
+  SQLite 存储层、SSH 承载、管理命令行、打包/部署（Docker/systemd/日志轮转/备份 timer/恢复演练）。
 ```

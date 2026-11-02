@@ -40,11 +40,16 @@ for f in "$HERE/systemd/tetris-game.service" "$HERE/systemd/tetris-backup.servic
          "$HERE/systemd/tetris-backup.timer" "$HERE/tetris-backup.sh"; do
     [ -f "$f" ] || die "找不到 $f（deploy/ 不完整？）"
 done
+for f in "$HERE/tetris-bridge.py" "$HERE/restore-drill.py"; do
+    [ -f "$f" ] || die "找不到 $f（deploy/ 不完整？）"
+done
 
 info "1/7 安装二进制到 /usr/local/bin"
 install -m 0755 "$BIN_DIR/tetris_game" /usr/local/bin/tetris_game
 install -m 0755 "$BIN_DIR/tetris-admin" /usr/local/bin/tetris-admin
 install -m 0755 "$HERE/tetris-backup.sh" /usr/local/bin/tetris-backup
+# 恢复演练工具：一台机器上真的把备份"恢复出来跑一遍"（docs/DEPLOY.md 第 7.5 节）
+install -m 0755 "$HERE/restore-drill.py" /usr/local/bin/tetris-restore-drill
 
 info "2/7 检查服务账号 $SERVICE_USER"
 if id "$SERVICE_USER" >/dev/null 2>&1; then

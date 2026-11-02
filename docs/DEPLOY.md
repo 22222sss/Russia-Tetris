@@ -54,7 +54,8 @@
 - [ ] 备份 timer 已启用：`systemctl list-timers tetris-backup.timer` → 下一次 04:15
 - [ ] **手动跑一次备份并检查产物**：`sudo systemctl start tetris-backup.service` →
       `sudo ls -l /var/backups/tetris`（600、非空）、`sudo journalctl -u tetris-backup -n 20`（integrity ok）
-- [ ] **恢复演练过一次**（第 7.4 节）：拿一份备份在另一台机器/另一个目录上真正起过一次服务
+- [ ] **恢复演练过一次**（第 7.5 节，一条命令）：`sudo tetris-restore-drill /var/backups/tetris/<最新>.db`
+      → 结尾必须是 `恢复演练通过`；再（可选）`--keep` 后用 `script` 起桥亲手玩一遍副本
 - [ ] 记录本次上线的 commit：`git rev-parse HEAD`，写进你的运维记录（出问题才知道回滚到哪）
 
 ---
@@ -91,7 +92,7 @@
 |---|---|---|
 | 系统 | Ubuntu 22.04 / Debian 12（systemd ≥ 245） | 任何跑得动 Docker 的 Linux |
 | 运行库 | 二进制动态链接 `libevent`/`spdlog`/`fmt`/`libcrypto`/`sqlite3` | 镜像里已带（`debian:bookworm-slim`） |
-| Python 3 | 桥需要（`deploy/tetris-bridge.py`） | 宿主侧需要（桥不在容器里） |
+| Python 3 | 桥和恢复演练工具需要（`deploy/tetris-bridge.py`、`restore-drill.py`） | 宿主侧需要（桥不在容器里；演练可以直接用宿主装的工具） |
 | 端口 | 22（sshd）、**9999 只对本机** | 同左；容器额外占用一个宿主回环端口 |
 | 账号 | `tetrisd`（跑服务）、`tetris`（SSH 登录，只能跑桥） | 容器内 `tetris`（uid 10001） |
 | 磁盘 | 库 + 日志（默认 ≤60 MiB）+ 备份（库大小 × 14） | 两个卷（`/data`、`/var/log/tetris`） |
@@ -115,7 +116,7 @@ sudo passwd tetris                       # 玩家用这个共享口令进来
 
 | 装到哪 | 内容 |
 |---|---|
-| `/usr/local/bin/tetris_game`、`tetris-admin`、`tetris-backup` | 两个二进制 + 备份脚本 |
+| `/usr/local/bin/tetris_game`、`tetris-admin`、`tetris-backup`、`tetris-restore-drill` | 两个二进制 + 备份脚本 + 恢复演练工具 |
 | `/etc/systemd/system/tetris-game.service` 等三个单元 | 服务端 + 备份 service/timer |
 | `/etc/sysctl.d/99-tetris.conf` | `somaxconn` / `tcp_max_syn_backlog` / `fs.file-max` |
 | `/var/lib/tetris`（0700 `tetrisd`） | `tetris.db`（含 `-wal`/`-shm`），旧 `userdata.csv` 也放这里 |
@@ -362,6 +363,64 @@ sudo -u tetrisd env TETRIS_DB=/var/lib/tetris/tetris.db tetris-admin stats
 > 只覆盖 `.db` 而不清 `-wal`：SQLite 会把 WAL 里"更新但已不存在于库"的页回放上去，
 > 恢复出来的数据可能既不是备份也不是现状。**这是恢复流程里最容易漏的一步。**
 > 恢复完照着第 0 节再走一遍关键检查（尤其 `ss -ltn` 和 fd 上限）。
+> 上面这套"真出事"的流程**不要**拿生产库练手；要验证备份能不能用，用下面的 7.5。
+
+### 7.5 恢复演练（一条命令，不碰生产库）
+
+"备份文件能打开"和"恢复之后能玩"是两件事：属主不对、`-wal` 没清、端口起不来、
+这份备份其实是另一台机器的 —— 这些只有**真恢复一次**才会暴露。`tetris-restore-drill`
+在一台已经装好的机器上，用临时目录 + 临时端口把整套流程走一遍：
+
+```bash
+sudo tetris-restore-drill /var/backups/tetris/tetris-20261102T041500Z.db
+```
+
+它做五步，每步打印 `ok`，任何一步失败都非 0 退出并**保留现场**：
+
+1. 把备份复制到临时目录，`chown` 给服务账号、`chmod 600` —— 和真恢复一样的落盘方式；
+2. `PRAGMA integrity_check` + 账号/成绩条数，并与 `/var/lib/tetris/tetris.db` 对比：
+   副本比生产库还多 → 直接失败（说明这份备份不是这台机器上的）；
+3. 用副本起一个**临时服务端**：另一个端口、另一个工作目录和日志目录，生产实例毫发无损；
+4. 连上去确认首屏菜单真的发出来了（不是"进程在跑"就算数）；
+5. 找到仓库里的 `tests/integration_test.py` 时再跑一遍完整协议（12 项：注册 / 登录 /
+   进游戏 / 改密 / 旧明文迁移……），证明这份数据确实能玩。
+
+期望输出（中间几步省略）：
+
+```
+==> 2/5 检查副本：integrity_check + 条数（并与生产库对比）
+  ok  integrity_check = ok；账号 128 个 / 成绩 3021 条
+  ok  与生产库的差值符合预期：备份 128 账号/3021 成绩，生产 131/3104（备份之后的新数据，恢复会丢掉这部分）
+...
+  ok  协议测试通过（注册/登录/进游戏都不依赖生产库）
+
+恢复演练通过：这份备份可以直接拿去恢复（integrity ok、临时实例能服务、完整协议通过）。
+```
+
+**亲手玩一遍副本**（脚本替不了"终端里真的能操作"这一段）：
+
+```bash
+# 1) 演练后保留临时实例，记下打印的端口（比如 41234）和 pid
+sudo tetris-restore-drill <备份文件> --keep
+
+# 2) 在当前终端直接玩这个副本（桥跑在服务器侧，所以要 sudo -u tetris + 环境变量；
+#    从你笔记本 ssh 时传的环境变量 sshd 默认不收，见排错表最后一条）
+sudo -u tetris TETRIS_BRIDGE_TARGET=127.0.0.1:41234 \
+    script -q -c /usr/local/bin/tetris-bridge /dev/null
+
+# 3) 玩完停掉临时实例
+sudo kill <脚本打印的 pid>
+```
+
+注意：
+
+- 工具由 `install-systemd.sh` 装到 `/usr/local/bin/tetris-restore-drill`；
+- 它**只读**生产库（对比条数），不改生产库、不需要停服；临时目录默认在 `/tmp` 下，
+  演练成功即删（失败会保留并在输出里给出路径）；
+- `--server-cmd` 只是调试用（可以指向 `tests/mock_server.py`），真机别用；
+- 演练通过 ≠ 恢复流程没问题：第 7.4 节那几步（停服 → 挪走旧库 → 删 `-wal`/`-shm` →
+  放备份 → `chown tetrisd` → 起服）仍然要按顺序手工做，工具只替你证明**文件本身能恢复**；
+- 建议**每次升级前**、以及至少每月一次，在备份 timer 跑完之后演练一遍（几十秒）。
 
 ---
 
@@ -433,6 +492,9 @@ df -h /var/lib/tetris /var/backups/tetris             # 库和备份的盘都别
 | Docker 一直 `unhealthy` | 容器绑在了 `127.0.0.1` 而 healthcheck 用宿主网络除外的情况 / 进程卡死 | `docker logs tetris`、`docker exec tetris ss -ltn`；看是不是事件循环起来了 |
 | `docker stop` 要等 10 秒 | 没有 init（PID 1 不处理默认动作的信号） | compose 里有 `init: true`；`docker run` 加 `--init`，或依赖服务端自己装的 SIGTERM 处理器 |
 | 重启后服务没起来 | 只 `start` 没 `enable` | `systemctl enable tetris-game tetris-backup.timer` |
+| 演练时想玩副本，`TETRIS_BRIDGE_TARGET=... ssh tetris@host` 没反应 | 环境变量是给**服务器侧**的桥用的；sshd 默认不收客户端环境变量（`AcceptEnv` 是关的） | 在服务器上起桥：`sudo -u tetris TETRIS_BRIDGE_TARGET=127.0.0.1:<端口> script -q -c /usr/local/bin/tetris-bridge /dev/null`（见 7.5）；或临时把 `ForceCommand` 加上 `--target 127.0.0.1:<端口>`，`sshd -t` 后 reload |
+| `tetris-restore-drill` 报"读不到备份" | 备份是 0600、目录 0700（service 账号） | 用 `sudo` 跑；非 root 演练只能读自己的文件 |
+| `tetris-restore-drill` 报"副本比生产库还多" | 这份备份不是这台机器的（或生产库被换过） | 先确认备份来源；别拿它去恢复 |
 
 ---
 

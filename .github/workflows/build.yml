@@ -713,7 +713,22 @@ jobs:
               fi
             fi
 
-            # 3.5 崩溃自动拉起：要等到**新的** MainPID，别被"还没死透"的旧状态骗过去
+            # 3.5 恢复演练：拿刚才那份备份，在另一个端口上真的恢复出来跑一遍。
+            #     内置的 integration_test 会在副本上注册/登录/进游戏/改密/迁移，
+            #     证明的不只是"文件能打开"，而是"恢复之后能玩"。
+            sudo python3 ../deploy/restore-drill.py "$BK" \
+              --db /var/lib/tetris/tetris.db \
+              --server-bin /usr/local/bin/tetris_game \
+              --protocol-test "$(pwd)/../tests/integration_test.py" > /tmp/drill.log 2>&1
+            RC_DRILL=$?
+            if [ "$RC_DRILL" -ne 0 ]; then
+              echo "::error::恢复演练失败（rc=$RC_DRILL）: $(tail -14 /tmp/drill.log | tr '\n' '|' | cut -c1-1600)"
+              RC_RUNTIME=1
+            else
+              echo "::notice::$(grep -a '恢复演练通过' /tmp/drill.log | tail -1 | cut -c1-300)"
+            fi
+
+            # 3.6 崩溃自动拉起：要等到**新的** MainPID，别被"还没死透"的旧状态骗过去
             OLD_PID=$(systemctl show tetris-game -p MainPID --value)
             sudo kill -9 "$OLD_PID"
             NEW_PID=""
@@ -732,7 +747,7 @@ jobs:
               echo "::notice::kill -9 后已自动拉起：pid $OLD_PID -> $NEW_PID"
             fi
 
-            # 3.6 stop 要及时（SIGTERM 被处理；否则容器/重启会等到 TimeoutStopSec）
+            # 3.7 stop 要及时（SIGTERM 被处理；否则容器/重启会等到 TimeoutStopSec）
             START=$(date +%s)
             sudo systemctl stop tetris-game
             ELAPSED=$(( $(date +%s) - START ))

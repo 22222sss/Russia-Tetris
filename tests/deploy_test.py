@@ -20,7 +20,9 @@ systemd 单元只在真机器上才被解析。写错一个字符，CI 全绿、
 6. docker-compose.yml：host 网络 + TETRIS_BIND=127.0.0.1 的组合自洽，
    ulimits/nofile 与 systemd 的 LimitNOFILE 对齐；
 7. deploy/*.sh 的语法，以及备份脚本的两条行为：失败不留半成品、按 KEEP 清理旧备份；
-8. docs/DEPLOY.md 存在，且包含每个环境变量的说明（文档和单元不漂移）。
+8. 恢复演练工具 deploy/restore-drill.py：能跑 --help，且三类输入必须被拒绝
+   （拿生产库当备份 / 备份不存在 / 坏文件）——它平时只在演练和真出事时用；
+9. docs/DEPLOY.md 存在，且包含每个环境变量的说明、恢复演练入口（文档和单元不漂移）。
 
 用法（仓库根目录或任意位置都行，路径按脚本位置推算）：
     python3 tests/deploy_test.py
@@ -29,6 +31,7 @@ systemd 单元只在真机器上才被解析。写错一个字符，CI 全绿、
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -485,6 +488,73 @@ def test_backup_script_behaviour():
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def test_restore_drill():
+    """恢复演练工具：语法 + --help + 两个"必须拒绝"的输入。
+
+    它平时只在"真出事/演练"时才跑，坏了正好是最需要它的时候；而且它碰的是备份文件
+    和生产库，参数校验错一次就可能对着生产库演练。所以这里把三类"必须拦住"的情况
+    钉死（都在本地可跑，不需要服务端）。
+    """
+    script = repo_path("deploy", "restore-drill.py")
+    if not os.path.isfile(script):
+        raise Failure("缺少 deploy/restore-drill.py（恢复演练工具）")
+    try:
+        compile(read(script), script, "exec")
+    except SyntaxError as exc:
+        raise Failure("deploy/restore-drill.py 语法错误：%s" % exc)
+
+    workdir = make_workdir("drill")
+    try:
+        db_path = os.path.join(workdir, "prod.db")
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            "CREATE TABLE accounts (username TEXT PRIMARY KEY, password TEXT, created_at INTEGER);"
+            "CREATE TABLE scores (id INTEGER PRIMARY KEY, username TEXT, difficulty INTEGER,"
+            " score INTEGER, played_at INTEGER);")
+        conn.commit()
+        conn.close()
+
+        env = dict(os.environ)
+        env.pop("TETRIS_LOG_LEVEL", None)
+        # 子进程输出（argparse 的 --help、演练日志）统一按 UTF-8 读，
+        # 免得 Windows 上按 cp936 编码写出、这边按 UTF-8 解码成乱码
+        env["PYTHONIOENCODING"] = "utf-8"
+
+        def run(*args):
+            return subprocess.run([sys.executable, script] + list(args),
+                                  cwd=REPO_ROOT, env=env, timeout=120,
+                                  capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace")
+
+        helped = run("--help")
+        if helped.returncode != 0 or "恢复" not in helped.stdout:
+            raise Failure("--help 跑不起来或没说明用途（rc=%d）：%r"
+                          % (helped.returncode, helped.stdout[:300]))
+
+        # 1) 拿生产库当备份 —— 必须拒绝（否则演练就是在读生产库写快照）
+        same = run(db_path, "--db", db_path)
+        if same.returncode == 0 or "生产库" not in (same.stdout + same.stderr):
+            raise Failure("把生产库当备份传进去时必须拒绝，实际 rc=%d：%s"
+                          % (same.returncode, (same.stdout + same.stderr)[-400:]))
+
+        # 2) 备份不存在 —— 必须拒绝
+        missing = run(os.path.join(workdir, "nope.db"))
+        if missing.returncode == 0 or "找不到备份" not in (missing.stdout + missing.stderr):
+            raise Failure("备份不存在时必须拒绝，实际 rc=%d：%s"
+                          % (missing.returncode, (missing.stdout + missing.stderr)[-400:]))
+
+        # 3) 坏文件（不是 SQLite）—— 必须拒绝并说清是哪一步
+        broken = os.path.join(workdir, "broken.db")
+        with open(broken, "wb") as handle:
+            handle.write(b"not a sqlite database at all" * 100)
+        bad = run(broken, "--db", db_path)
+        if bad.returncode == 0:
+            raise Failure("坏备份必须拒绝，实际退出码 0")
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    return "--help 可用；生产库/不存在的备份/坏文件都被拒绝"
+
+
 def test_docs():
     path = repo_path("docs", "DEPLOY.md")
     if not os.path.isfile(path):
@@ -494,6 +564,7 @@ def test_docs():
         "LimitNOFILE": "300000",
         "TETRIS_BIND": "127.0.0.1",
         "备份": "tetris-backup",
+        "恢复演练": "tetris-restore-drill",
         "回滚/升级": "回滚",
         "checklist": "checklist",
     }
@@ -516,7 +587,9 @@ def test_docs():
             raise Failure("install-systemd.sh 没有安装 %s" % name)
         if not os.path.isfile(repo_path("deploy", "systemd", name)):
             raise Failure("deploy/systemd/%s 不存在" % name)
-    return "DEPLOY.md 覆盖 %d 个环境变量，安装脚本的单元文件都在" % len(keys)
+    if "restore-drill.py" not in installer:
+        raise Failure("install-systemd.sh 没有安装恢复演练工具（deploy/restore-drill.py）")
+    return "DEPLOY.md 覆盖 %d 个环境变量，安装脚本的单元文件/演练工具都在" % len(keys)
 
 
 CHECKS = []
@@ -536,6 +609,7 @@ def main():
         ("docker-compose.yml", test_compose),
         ("deploy/*.sh 语法", test_shell_syntax),
         ("备份脚本行为", test_backup_script_behaviour),
+        ("恢复演练工具", test_restore_drill),
         ("docs/DEPLOY.md 与单元一致", test_docs),
     ]
 

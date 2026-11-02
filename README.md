@@ -59,6 +59,7 @@ Russia-Tetris/
 │   ├── sshd-tetris.conf      # sshd Match 片段（ForceCommand 只跑桥）
 │   ├── install-ssh-bridge.sh # 幂等安装：桥 + 片段 + 登录账号
 │   ├── install-systemd.sh    # 幂等安装：账号 / 目录 / 单元 / sysctl / 开机自启
+│   ├── restore-drill.py      # 恢复演练：备份 → 临时实例 → 完整协议（不碰生产库）
 │   ├── systemd/              # tetris-game.service + 每日备份 service/timer
 │   ├── tetris-backup.sh      # 备份脚本（在线备份 + 保留 N 份）
 │   └── sysctl.d/             # listen backlog / 系统 fd 上限
@@ -170,6 +171,7 @@ systemctl show tetris-game -p LimitNOFILE -p LimitNOFILESoft   # 软/硬都应�
 ss -ltn | grep 9999                         # 只有 127.0.0.1:9999
 systemctl list-timers tetris-backup.timer   # 每天 04:15 在线备份，保留 14 份
 journalctl -u tetris-game -n 40             # 启动打印的"生效配置"
+sudo tetris-restore-drill /var/backups/tetris/<最新>.db   # 恢复演练（临时端口，不碰生产库）
 ```
 
 - 日志按大小轮转（`TETRIS_LOG_DIR` / `TETRIS_LOG_MAX_BYTES` / `TETRIS_LOG_MAX_FILES`，
