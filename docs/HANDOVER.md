@@ -1,94 +1,86 @@
-# 交接文档（HANDOVER）
-
-> 给"下一个会话/下一个人"看的现状说明。读完这份就不需要翻历史聊天记录。
-
 ## 0. 当前状态（截至 2026-11-02）
 
-> 本次会话（2026-11-02）四轮：**① 按来源 IP 兜底** → **② 改密/重置**
-> → **③ 连接池 trim** → **④ 存储层 CSV → SQLite**。前几轮：`-O2`（4.7）→ `User` 棋盘 int8（4.8）
-> → 连接池预创建 2048（4.9）→ 认证加固第一/二批。每轮的实现细节见第 5 节，性能数据见第 4 节。
+> 本次会话（2026-11-02）六轮：**① 按来源 IP 兜底** → **② 改密/重置** → **③ 连接池 trim**
+> → **④ 存储层 CSV → SQLite** → **⑤ SSH 承载** → **⑥ 管理员 CLI + 备份**。
+> 更早：`-O2`（4.7）→ `User` 棋盘 int8（4.8）→ 连接池预创建 2048（4.9）→ 认证加固第一/二批。
+> 每轮实现细节见第 5 节，性能数据见第 4 节。
 
-**本轮做完了存储层：`userdata.csv` → SQLite**（`TetrisGame/Db.{h,cpp}`）
+**本轮做完了管理命令行：`tetris-admin`**（`src/tetris_admin.cpp`）
 
-1. **为什么换**：注册是往文件追加一行，但**改密/成绩更新要整表重写**（临时文件 + rename），
-   而且每个进程的缓存一失效就要把整张表重新解析；账号/成绩一多，写放大和解析成本都是 O(n)，
-   多进程还得靠 `flock` 串行。SQLite 一条 `UPDATE`/`INSERT` 就够，WAL 下多进程并发读、
-   写按行加锁；排行榜直接用索引取前 N；
-2. **表结构**：`accounts(username PK, password, created_at)` +
-   `scores(id, username, difficulty, score, played_at)` + 三个索引（按用户取最近 20 条、
-   按难度取最高分、每用户每难度的最高分）；难度固定 `EASY/NORMAL/DIFFICULT`；
-3. **旧数据一次性导入**：库里 `accounts` 为空、目录里还有 `userdata.csv` 时，启动自动导入
-   （账号 + 三个难度的最高分 + 最近成绩对），写 `meta.csv_imported=1` 后不再重复；
-   旧明文密码原样导入，登录时照旧迁移成哈希；
-4. **缓存失效换信号**：原来的"文件 mtime/size"换成 `Db::cacheStamp()`（本进程写次数 +
-   SQLite `data_version`，别的进程提交过就会变）；`loadPlayerData()` 只在变了才重建，
-   凭据查询直接走主键——`playerCache` 那套缓存整个删掉了；
-5. **线程/多进程**：每进程一个连接 + 内部递归锁，慢操作（PBKDF2）仍在锁外；
-   WAL + `busy_timeout=5000`；首次多 worker 同时建库有重试；
-6. **配置**：`TETRIS_DB`（默认 `tetris.db`）。`userdata.csv` 只在导入时读一次，之后不再写；
-7. **测试/CI**：新增 `tests/db.py`（统一 schema 与查询，mock 与各测试脚本共用）；
-   mock/集成/跨进程/IP 兜底/压测 seed 全部改用 SQLite（`--userdata` → `--db`）；
-   新增「Legacy CSV import test」（旧文件 -> 导入 -> 明文登录 -> 迁移成哈希）；
-   CI 装 `libsqlite3-dev`，每个步骤先删库。本地 mock 已跑通 12/12、跨进程 5/5、IP 兜底；
-8. **CI 实测**（SHA `e17f1da`）：编译 **0 告警**（`Db.cpp` 一次通过）；旧 CSV 导入用例通过
-   （账号/成绩入库 → 明文登录 → 迁移为哈希）；集成 **12/12**（单/双 worker）、跨进程 **5/5**、
-   IP 兜底与连接池 trim（`2799 -> 256`）都通过、`sizeof(User)` 仍 **1992**；
-   登录基准 128/128（1 worker 1.15~1.21s / 106~112 次/秒，2 worker 0.95~0.96s / 133~134 次/秒，
-   0 错误）—— **换存储后登录吞吐没有退化**。
+1. **为什么要它**：没有邮箱，"忘记密码"就没有自救路径（6.28），以前只能手工 `sqlite3` 改库；
+   备份也一直靠记命令。现在 `make` 会一次编出 `tetris_game` 和 `tetris-admin` 两个二进制，
+   后者只链 `Db` / `PasswordHash`，不拖网络与游戏逻辑；
+2. **子命令**：`reset-password`（交互输两次 / `--password-stdin`）、`backup`（Online Backup API）、
+   `list-users`（带"还是旧明文"标记）、`stats`；退出码 `0` 成功 / `1` 内部错误 /
+   `2` 用法错误或账号不存在 / `3` 新密码不满足策略；
+3. **不另造第三套格式**：新密码走同一套 `PasswordPolicy` + `PasswordHash`，落盘一条
+   `UPDATE accounts.password` —— 和用户在主菜单 5 改密完全等价；**服务端不用停**
+   （`Db::cacheStamp()` 内含 SQLite `data_version`，别的进程立刻能看到）；也不踢已登录会话；
+4. **备份**：SQLite **Online Backup API**（不依赖外部 `sqlite3`），WAL 下运行中也能拿到一致
+   快照；完成后跑 `integrity_check` + 统计条数 + `chmod 600`（里面是密码哈希）；
+   备份期间库里有写入只在输出里说明，**不算失败**；
+5. **启动打印生效配置**（`main.cpp::printEffectiveConfig`）：fork 之前打一次，二十来个环境
+   变量一目了然；值全部取自各模块自己的 `configFromEnv()`/访问器，**不另抄默认值**（6.42）；
+6. **测试/CI**：新增 `tests/admin_test.py`（**10 项**，对真库跑，含"启动配置印的是生效值"）；
+   CI 新增「Admin CLI test」一步，整个 job **23 步**；
+7. **CI 实测**（SHA `b358db2`，一轮全绿）：`make` 一次编出两个二进制、**编译 0 告警**、
+   `admin_test` **10/10**（含"非默认 `TETRIS_AUTH_IP_MAX_FAILURES=77` 打印的确实是 77"），
+   其余 20 步照旧通过。这一轮被 CI 抓到两个错：`ConnectionPool::MAX_POOL_SIZE` 是 private
+   （6.42）、`Popen(cwd=...)` 下相对路径失效（6.43）。
 
-**上一轮：连接池 trim**（`ConnectionPool::maybeTrim`）：空闲缓存压回 4096 个（默认 5 秒检查一次），
-跑过 10 万连接后的 ~300MB 不再常驻；只丢空闲对象，CI 用 3000 连接断言过。细节见 5.连接池收缩。
+**上一轮做完了 SSH 承载：公网只开 sshd、9999 只绑回环**（`deploy/` + `TETRIS_BIND`）
 
-**再往前：改密/重置**：主菜单 5 + `changePasswordAsync`，新密码走同一套策略，旧密码错误计入
-退避/IP 兜底，落盘复用迁移路径。集成 12 项、跨进程 5 项。细节见 5.认证加固第四批。
+- `deploy/tetris-bridge.py`：把一条 SSH 会话的 stdin/stdout 接到 `127.0.0.1:9999`，
+  补 **raw 模式 / CR→CRLF / 本地回显**（`telnet` 行模式那三个坑），stdout 只留游戏字节；
+- `deploy/sshd-tetris.conf`：`Match User tetris` + `ForceCommand`，关掉全部转发、
+  `MaxSessions 1`、`ClientAlive*`，**末尾必须 `Match all`**（6.33）；
+- `deploy/install-ssh-bridge.sh`：幂等安装（账号 / 片段 / `sshd -t` 校验 + 失败自动还原），
+  顺带把 nologin 的 shell 改回 `/bin/sh`（6.32）；
+- `src/main.cpp` 新增 `TETRIS_BIND`（默认 `0.0.0.0`，生产设 `127.0.0.1`）；
+- **来源 IP 保真**：桥用 `SSH_CLIENT` 把真实客户端映射成专属 `127.b.c.d`，避免按 IP 限流
+  退化成"全站共享一份额度"（6.35）；代价是每会话一个 Python 进程
+  （CI 实测 **16.8~17.0 MB**），所以 SSH 承载的并发上限是内存、不是 CPU（6.36）；
+- 测试/CI：`tests/bridge_test.py`（**8 项** + `--server` 的"穿过桥跑真协议"）、CI 加
+  「SSH bridge test」（含 `ss -ltn` 断言只绑回环）与「Verify sshd snippet」（真 `sshd -t` +
+  `sshd -T -C user=tetris` 核对 `ForceCommand`）；CI 实测 SHA `c143749` 全绿。
 
-**再往前：按来源 IP 兜底**：5 槽滑动窗口、300 次/5 分钟，拒绝不记账、成功不清零。
-细节见 5.认证加固第三批。
-
-**更早**：登录失败退避 + 哈希队列上限；再往前是注册密码策略 + 未知账号假 PBKDF2、
-连接池 2048（4.9）、`User` 棋盘 int8（4.8）、构建优化 -O2（4.7）。
+**再往前**（细节见第 5 节）：SQLite 存储层（`userdata.csv` 首次启动一次性导入）、
+按 IP 兜底、改密/重置（主菜单 5）、连接池 trim、登录失败退避 + 哈希队列上限、
+注册密码策略 + 未知账号假 PBKDF2、连接池预创建 2048（4.9）、`User` 棋盘 int8（4.8）、
+构建 `-O2`（4.7）。
 
 **下一步建议（按顺序，详见第 8 节）**：
 
-1. **SSH 承载**（上线必需）：sshd `ForceCommand`，解决"明文密码过网"，零协议改造；
-2. **管理员 CLI + 备份**（上线必需）：`reset-password`（没邮箱，"找回"只能这样）/
-   `backup`（`sqlite3 .backup`）；顺便启动时打印生效配置；
-3. **打包/部署**（上线必需）：Dockerfile（多阶段、非 root、HEALTHCHECK）+ systemd unit；
-4. **注册限流**（公网开放后）：注册的 PBKDF2 在唯一写线程上且无上限（见 6.30）；
-5. **认证状态跨进程**（可选，多 worker 才值得）；`-flto` / 连接建立路径（性能线，收益有限）。
+1. **打包/部署**（上线必需）：Dockerfile（多阶段、非 root、HEALTHCHECK）+ systemd unit。
+   重点不只是"能起来"：**`LimitNOFILE=300000`**（systemd 默认硬限制会成为隐藏的连接天花板，
+   `SystemOptimizer` 只能把软限制升到硬限制）、只绑回环、`log.txt` 轮转（现在无限增长）、
+   重启拉起、备份定时任务，以及一份上线 checklist；
+2. **注册限流**（公网开放后）：注册的 PBKDF2 跑在唯一写线程上且没有任何上限（6.30）；
+3. 认证状态跨进程（可选，只有真开多 worker 才值得）；
+4. 桥换成 C 版（每会话 16.8~17MB → 预期 1~2MB；SSH 承载的并发上限就是这项内存）——
+   只有真上量才值得；
+5. `-flto` / 连接建立路径（性能线，收益有限，服务端本来就不是瓶颈）。
 
 **最有用的结论**（细节见后文）：
 
-- **认证侧现在有三层，按代价从低到高**：IP 兜底（300 次/5 分钟，单源 ≈1 次哈希/秒）
-  → 用户名退避（前 5 次免延迟、1s 起翻倍、30s 封顶，单账号 ≈2 次/分钟）
-  → 哈希队列上限 1024（兜内存/延迟，队满回"服务繁忙"且不计失败）；
-- **登录失败按用户名退避**：同一账号的爆破速度从 ~65 次/秒降到 **~2 次/分钟**；
-  窗口内尝试不延长等待（防锁号 DoS）；未知用户名同样计数；
-- **按 IP 兜底**：滑动窗口 5 槽、300 次/5 分钟、拒绝不记账、成功不清零；
-  **两层退避状态都是每进程的**：多 worker 时阈值实际 ×N（默认 1 worker 不受影响）；
-- **新注册密码 ≥ 8 个字符**（UTF-8 码点）且不能全空白；**老账号不受限**；
-- **登录后可以改密**（主菜单 5）：新密码走同一套策略，旧密码错误计入退避/IP 兜底
-  （不然它就是绕限流猜密码的旁路），落盘是一条 `UPDATE accounts`（不再是整表重写），
-  改完另一个 worker 立即可用；**存量短密码由此有了出路**；
-- **账号不存在与密码错误耗时同量级**（未知账号也跑一次假 PBKDF2）；
-
-- **存储层是 SQLite**（`TetrisDB`）：每局一条 `INSERT`、改密一条 `UPDATE`，不再整表重写；
-  WAL 下多进程并发读写；旧 `userdata.csv` 在首次启动时一次性导入，之后不再使用；
-- **`sizeof(User)` = 1992 字节**（棋盘 int8 + 来源 IP 4 字节 + 对齐填充）；10 万连接用户对象 ~190MB；
-  实测 8.5 万连接 RSS ~330MB、200 玩家 ~41MB（int8 + 池子瘦身之后；之前 397MB）；
-- **连接池启动只预创建 2048 个 `User`**（`INITIAL_POOL_SIZE`），空闲内存 ~6MiB；
-  池子空闲时会**定期 trim 回 4096 个**（`TETRIS_POOL_TRIM_TARGET`），所以跑过 10 万连接后的
-  ~300MB 缓存只会保留几秒，不会再一直占着；
-- 每次按键约 **12~15 µs CPU**（游戏窗口口径，不含登录）；-O2 比 -O0 省 28%；
-  1 万按键/秒 ≈ **0.10~0.15 单核**；
-- 10 万空闲连接只占 **21%~30% 单核** —— 服务端在纯建连场景从来不是瓶颈；
-- 单机 4 核**无法**证明多核收益（压测端和服务端抢同一批核心），要证必须多机压测；
-- 128 并发登录在 CI 上 **1.2~1.7s 完成**（74~108 次/秒，1 worker + 2 哈希线程），
-  runner 慢的时候只有 65 次/秒——绝对值别跨 runner 比；
-- **30 万连接未达成**：免费 4 核/16G runner 上最高 182,375（60.8%），失败全是客户端超时，
-  服务端只用了 1.27GB / 53% 单核——瓶颈在压测端（见 4.5）；
-- **输出批量把同负载 CPU 减半**：1 worker 114.2% → 51.4%（8.3k 按键/秒，下行还略升）；
-- **-O2 把每按键 CPU 再降 28%**：14.8 µs → 10.7 µs（同 runner 交错 A/B，见 4.7）。
+- **认证侧三层，按代价从低到高**：IP 兜底（300 次/5 分钟）→ 用户名退避（前 5 次免延迟、
+  1s 起翻倍、30s 封顶）→ 哈希队列上限 1024（队满回"服务繁忙"且不计失败）；
+  两层退避状态都是**每进程**的，多 worker 时阈值实际 ×N（默认 1 worker 不受影响）；
+- 登录失败按用户名退避，把单账号爆破速度从 ~65 次/秒压到 **~2 次/分钟**；按 IP 兜底挡
+  "换用户名喷洒"；两层都不因成功登录清零（防重置）；
+- **公网入口只剩 sshd**：玩家 `ssh tetris@host` 直接进游戏，9999 只绑 `127.0.0.1`
+  （`docs/SSH_DEPLOY.md`）；桥每会话 16.8~17MB，**并发上限是内存**；
+- **运维有工具了**：`tetris-admin reset-password / backup / list-users / stats`，不用停服；
+  服务端启动会打印一遍生效配置，改环境变量后先看那段输出；
+- **存储层是 SQLite**（`TetrisDb`）：注册一条 `INSERT`、改密一条 `UPDATE`、一局一条
+  `INSERT scores`，不再整表重写；旧 `userdata.csv` 只在首次启动（空库）时导入一次；
+- **`sizeof(User)` = 1992 字节**（棋盘 int8 + `peerIp` + 对齐填充），10 万连接的用户对象
+  ~190MB；实测 8.5 万连接 RSS ~330MB、200 玩家 ~41MB；
+- 连接池启动只预创建 2048 个，跑过大流量后空闲缓存会被 trim 回 4096 个；
+- 每次按键约 **12~15 µs CPU**（游戏窗口口径）；1 万按键/秒 ≈ 0.10~0.15 单核；
+  `-O2` 比 `-O0` 省 28%；10 万空闲连接只占 21%~30% 单核 —— 服务端在两种场景下都不是瓶颈；
+- 30 万连接未达成（瓶颈在压测客户端）；单机 4 核无法证明多核收益；
+- 输出批量把同负载 CPU 减半；128 并发登录在 CI 上 0.95~1.7s（runner 间波动大，别跨 run 比）。
 
 ## 1. 仓库与本地环境
 
@@ -102,7 +94,7 @@
 | SSH key | `D:\dev\.ssh\id_ed25519`（无口令），`known_hosts` 预置 GitHub 官方指纹 |
 | SSH 包装器 | `D:\dev\tools\ssh-github.exe`（源码 `ssh-github.cs`） |
 | WSL 发行版 | Ubuntu-22.04，磁盘在 `D:\wsl\Ubuntu-22.04\ext4.vhdx`（约 2.3 GB） |
-| 游戏客户端 | `D:\dev\tools\tetris_client.py` |
+| 游戏客户端 | `D:\dev\tools\tetris_client.py`（**裸 TCP 时代**，只用于本机调试；走 SSH 后玩家只要 `ssh tetris@host`） |
 | DSH 自带 Python | `C:\Users\13482\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe`（**沙箱里唯一可用的解释器**，见 6.7） |
 
 说明：
@@ -118,10 +110,12 @@
 ## 2. 构建与运行（WSL）
 
 ```bash
-sudo apt update && sudo apt install -y build-essential libevent-dev libspdlog-dev libfmt-dev libssl-dev telnet
+sudo apt update && sudo apt install -y build-essential libevent-dev libspdlog-dev libfmt-dev \
+    libssl-dev libsqlite3-dev telnet
 cd ~/Russia-Tetris && git pull --ff-only
-cd src && make -j"$(nproc)"
-./tetris_game          # 监听 0.0.0.0:9999
+cd src && make -j"$(nproc)"    # 产出两个二进制：tetris_game（服务端）+ tetris-admin（运维工具）
+./tetris_game                  # 调试/内网：监听 0.0.0.0:9999
+# 生产：TETRIS_BIND=127.0.0.1 ./tetris_game，公网入口只开 sshd（docs/SSH_DEPLOY.md）
 ```
 
 所有可调项都是环境变量：
@@ -176,7 +170,9 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 - 用 `tetris_client.py` 而不是 `telnet`：telnet 默认行模式，方向键要按回车才发，且回车不是 CRLF；
 - 客户端连的是 `127.0.0.1:9999`，所以**服务端必须跑在 WSL 里**；
 - 账号和成绩存在服务端工作目录的 SQLite 库 `tetris.db`（已 gitignore；WAL 会带出 `-wal`/`-shm` 两个文件）；
-  旧版本的 `userdata.csv` 会在首次启动（空库）时自动导入一次，之后不再使用。
+  旧版本的 `userdata.csv` 会在首次启动（空库）时自动导入一次，之后不再使用；
+- **这只适合本机调试**。公网/生产走 SSH：玩家直接 `ssh tetris@host`，不需要额外客户端程序
+  （`deploy/` + `docs/SSH_DEPLOY.md`）；那时服务端记得 `TETRIS_BIND=127.0.0.1`。
 
 ## 3. 测试与压测工具链
 
@@ -210,7 +206,7 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 （sshd Match 片段）、`install-ssh-bridge.sh`（幂等安装 + `sshd -t` 校验 + 失败还原）。
 安装步骤、来源 IP 映射、安全边界和排错表在 `docs/SSH_DEPLOY.md`。
 
-两个 C++ 自检（`password_hash_test.cpp` / `auth_throttle_test.cpp` / `ip_throttle_test.cpp`）都能在
+三个 C++ 自检（`password_hash_test.cpp` / `auth_throttle_test.cpp` / `ip_throttle_test.cpp`）都能在
 `src/` 下单独编译运行，文件头里有完整的 `g++ ...` 命令；CI 里各占一步，失败细节走 `::error::` 注解。
 集成测试的退避用例会"连续失败直到出现提示"，不依赖环境变量——但服务端必须是默认阈值
 （5 次免延迟、1s 起），把 `TETRIS_AUTH_*` 调得太大它就会超时失败。
@@ -943,9 +939,6 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 
 ## 7. 仓库现状
 
-> 第 0 节和第 9 节按约定没有随本轮改动（仍描述 SQLite 那一轮）；本轮（SSH 承载）的
-> 完成情况见 5.SSH 承载、本节和第 8 节。
-
 - `main` 干净，CI 全绿；无 tag；
 - `bench-run` 分支已删除（需触发 bench 时重建并 push，用完删）；
 - 远程另有 `Russia-Tetris_1.0` 分支（历史版本，未维护）；
@@ -1012,25 +1005,36 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 读 docs/HANDOVER.md 了解现状，然后我们继续做 <方向>。
 
 方向已定：**A（终端原生，SSH 承载）+ SQLite**，目标是把现在的服务端做成能上线的产品。
-功能与加固线都已收口（认证三层 / 改密 / 连接池 trim / 存储层 SQLite + 旧 CSV 导入），
-不要再重复做，也别再堆性能优化（两种场景服务端都不是瓶颈）。
+功能、加固、上线入口都已经收口：认证三层 / 改密 / 连接池 trim / SQLite 存储层 + 旧 CSV 导入 /
+SSH 承载（sshd ForceCommand + 桥 + TETRIS_BIND）/ 管理命令行（reset-password / backup /
+list-users / stats + 启动打印生效配置）。不要再重复做，也别再堆性能优化
+（建连和游戏两种场景服务端都不是瓶颈）。
 
 上线前真正缺的（按优先级）：
-1. SSH 承载：sshd ForceCommand，解决"明文密码过网"（不解决就不能公网开放）；
-2. 管理员 CLI + 备份：reset-password / backup（忘密码的用户没有别的出路）；
-3. Dockerfile / systemd：部署交付；
-4. 注册限流（公网开放后）：注册的 PBKDF2 跑在唯一写线程上且无上限，见 6.30。
+1. 打包/部署：Dockerfile（多阶段、非 root、HEALTHCHECK）+ systemd unit。
+   重点：LimitNOFILE=300000（systemd 默认硬限制是隐藏的连接天花板）、只绑回环、
+   日志轮转（log.txt 现在无限增长）、重启拉起、备份定时任务 + 一份上线 checklist；
+2. 注册限流（公网开放后）：注册的 PBKDF2 跑在唯一写线程上且无上限，见 6.30。
 
 要点：
-- 数据在 `tetris.db`（SQLite，WAL，三件套），旧 `userdata.csv` 只用于首次导入；
-  测试脚本统一用 `--db`；schema 在 `src/TetrisGame/Db.cpp` 与 `tests/db.py` 两处，**改结构要同时改**；
-- 沙箱里跑不了 WSL/g++，C++ 改动只能 push main 让 CI 验证；失败细节靠 ::notice::/::error:: 注解
-  （Build 步骤现在会把前几条 error 一起回传）；
-- 沙箱里有 Python：改测试脚本先用 tests/mock_server.py（它也用 SQLite）本地跑通，
-  集成 12 项 + 跨进程 5 项 + IP 兜底都能在本地跑，别浪费 CI 轮次；
+- 数据在 tetris.db（SQLite，WAL，三件套），旧 userdata.csv 只用于首次导入；测试脚本统一用
+  --db；schema 在 src/TetrisGame/Db.cpp 与 tests/db.py 两处，改结构要同时改；
+- 部署入口在 deploy/：tetris-bridge.py（SSH 桥）、sshd-tetris.conf（Match 片段）、
+  install-ssh-bridge.sh（幂等安装）；玩家侧只要 ssh tetris@host，细节见 docs/SSH_DEPLOY.md
+  （含来源 IP 映射、安全边界、排错表）；服务端记得 TETRIS_BIND=127.0.0.1；
+- 运维工具是 tetris-admin（make 一起编）：reset-password / backup / list-users / stats；
+  改环境变量后先看启动打印的"生效配置"，别猜默认值；
+- 沙箱里跑不了 WSL/g++，C++ 改动只能 push main 让 CI 验证；失败细节靠 ::notice::/::error::
+  注解（Build 步骤会把前几条 error 一起回传）。本地能跑的是 Python：
+  tests/bridge_test.py（8 项）、tests/admin_test.py（10 项，没有二进制时可以先写个桩验证脚本本身）、
+  tests/mock_server.py + 集成 12 项 / 跨进程 5 项 / IP 兜底 —— 别浪费 CI 轮次；
+- CI 现在 23 步，末尾三步是「SSH bridge test」「Verify sshd snippet」「Admin CLI test」，
+  守的是"部署形态"（只绑回环、sshd 片段能被真实 sshd 解析、管理工具能对真库工作），
+  改 deploy/ 或 tetris_admin.cpp 一定会碰到它们，别删；
 - 压测数字的读法：CPU 看「游戏窗口 CPU / 每按键 µs」，「全程 CPU」被登录 PBKDF2 污染；
   内存看「服务端 RSS」；跨 run/跨 runner 的绝对值不要直接相除；
 - 不要再做这些已完成的事：WSL 安装、README 数据清理、GIF 处理、死代码清理、质量工程、
-  多核化、密码加盐哈希 + 迁移、登录吞吐、输出批量、`-O2`、`User` int8、池子 2048、
-  注册密码策略、假 PBKDF2、用户名退避 + 队列上限、按 IP 兜底、改密、连接池 trim、SQLite 存储层。
+  多核化、密码加盐哈希 + 迁移、登录吞吐、输出批量、-O2、User int8、池子 2048、
+  注册密码策略、假 PBKDF2、用户名退避 + 队列上限、按 IP 兜底、改密、连接池 trim、
+  SQLite 存储层、SSH 承载、管理命令行。
 ```
