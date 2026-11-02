@@ -12,12 +12,6 @@ private:
     static std::mutex pool_mutex;                       // 保护池的线程安全
     static std::atomic<size_t> pool_size;               // 当前池大小（原子操作）
 
-    // 配置参数 - 增加到支持10万连接
-    static const constexpr size_t MAX_POOL_SIZE = 100000;          // 最大池大小
-
-    //INITIAL_POOL_SIZE 和 MAX_POOL_SIZE 是静态常量成员，需要在源文件中定义
-    //将静态常量成员改为 constexpr 或 inline才能直接定义
-
     // 性能监控
     static std::atomic<long> peak_usage;
     static std::atomic<long> allocation_failures;
@@ -36,6 +30,11 @@ public:
     // 200 个玩家，也要常驻这么多内存。改为 2048（约 6 MiB）：能用上池子复用，
     // 又不为"可能到来的十万连接"提前买单（池空时 acquire 会按需创建，峰值不受影响）。
     static const constexpr size_t INITIAL_POOL_SIZE = 2048;
+
+    // 池子最多缓存多少个 User：release() 会把对象还回池子，跑过一次 10 万连接后
+    // 池子就会涨到这个上限（~300MB），由 trim 定期压回 trimTarget()。
+    // 放在 public 是因为启动时的"生效配置"要打印它（和 INITIAL_POOL_SIZE 一起）。
+    static const constexpr size_t MAX_POOL_SIZE = 100000;
 
     // 初始化连接池 - 预创建对象
     static void initialize(size_t initial_size = INITIAL_POOL_SIZE);

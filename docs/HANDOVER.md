@@ -925,10 +925,10 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 42. **启动打印配置必须取"生效值"，不能另抄一份默认值**：`printEffectiveConfig()` 里每个数都来自
     `AuthThrottle::configFromEnv()` / `IpThrottle::configFromEnv()` / `Filedata::hash*()` /
     `ConnectionPool::trim*()` / `Db::configuredPath()`。这也是把
-    `Filedata::hashThreadCount()/hashQueueLimit()` 从 private 挪到 public 的原因 ——
-    想打印就得有访问器，**别在 main.cpp 里重写一遍解析逻辑**（那份迟早和模块对不上，
-    照着一个错的默认值排查比不打印更糟）。打印发生在 fork 之前（只打一遍），期间用临时的
-    bootstrap logger 接住 `configFromEnv()` 的非法值告警，打完就 drop。
+    `Filedata::hashThreadCount()/hashQueueLimit()` 和 `ConnectionPool::MAX_POOL_SIZE`
+    从 private 挪到 public 的原因 —— 想打印就得有访问器，**别在 main.cpp 里重写一遍解析逻辑**
+    （那份迟早和模块对不上，照着一个错的默认值排查比不打印更糟）。打印发生在 fork 之前
+    （只打一遍），期间用临时的 bootstrap logger 接住 `configFromEnv()` 的非法值告警，打完就 drop。
 
 ## 7. 仓库现状
 
