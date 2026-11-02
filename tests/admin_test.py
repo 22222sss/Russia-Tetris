@@ -310,6 +310,9 @@ def test_startup_config(server_bin, workdir):
     stage("服务端启动打印生效配置")
     if not server_bin or not os.path.exists(server_bin):
         raise Failure("找不到服务端二进制：%r（用 --server-bin 指定）" % server_bin)
+    # 下面 Popen 的 cwd 是 workdir（让服务端在自己的目录里建库/写日志），
+    # 所以二进制路径必须先转成绝对路径，否则 ./tetris_game 会相对 workdir 找不到。
+    server_bin = os.path.abspath(server_bin)
 
     db_path = os.path.join(workdir, "server.db")
     env = dict(os.environ)
