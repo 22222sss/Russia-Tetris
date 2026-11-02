@@ -500,3 +500,104 @@ jobs:
           fi
           count=$(echo "$plan" | grep -c -- ' -c ' || true)
           echo "::notice::头文件依赖跟踪正常：touch User.h 触发 ${count} 个源文件重编"
+
+      - name: SSH bridge test (bridge + TETRIS_BIND)
+        working-directory: src
+        run: |
+          # SSH 承载里唯一的新代码是 deploy/tetris-bridge.py：它把一条 SSH 会话的
+          # stdin/stdout 接到 127.0.0.1:9999，并补上 raw 模式 / CRLF 翻译 / 本地回显。
+          # 这三件任意一件做错，玩家看到的现象都和"telnet 不能用"那个老坑一样，
+          # 所以这里逐条断言；另加一条"穿过桥跑真协议"，证明确实能玩。
+          # 最后守住 TETRIS_BIND=127.0.0.1 真的把 9999 关在回环里（否则 SSH 承载白做）。
+          set +e
+
+          for f in ../deploy/tetris-bridge.py ../tests/bridge_test.py; do
+            if ! python3 -m py_compile "$f" 2> /tmp/pyc_bridge.txt; then
+              echo "::error::$f 语法错误: $(tr '\n' '|' < /tmp/pyc_bridge.txt | cut -c1-800)"
+              exit 1
+            fi
+          done
+          for s in ../deploy/*.sh; do
+            if ! bash -n "$s" 2> /tmp/sh_bridge.txt; then
+              echo "::error::shell 语法错误 $s: $(tr '\n' '|' < /tmp/sh_bridge.txt | cut -c1-800)"
+              exit 1
+            fi
+          done
+
+          # 1) 桥自身（不需要服务端）
+          python3 ../tests/bridge_test.py
+          RC_UNIT=$?
+
+          # 2) 穿过桥跑一遍真协议（服务端只绑回环，模拟生产形态）
+          rm -f tetris.db tetris.db-wal tetris.db-shm log.txt userdata.csv userdata.csv.lock
+          TETRIS_BIND=127.0.0.1 TETRIS_PORT=10014 ./tetris_game > /tmp/bridge_server.log 2>&1 &
+          echo $! > /tmp/bridge_server.pid
+          for i in $(seq 1 120); do
+            if (exec 3<>/dev/tcp/127.0.0.1/10014) 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          python3 ../tests/bridge_test.py --server 127.0.0.1:10014 --db tetris.db --skip-unit
+          RC_E2E=$?
+
+          # 3) TETRIS_BIND 必须真的生效：监听地址只能是 127.0.0.1:10014
+          BOUND=$(ss -ltn 2>/dev/null | awk '$4 ~ /:10014$/ {print $4; exit}')
+          RC_BIND=0
+          if [ "$BOUND" = "127.0.0.1:10014" ]; then
+            echo "::notice::监听地址 $BOUND（9999 只对本机的桥可见）"
+          else
+            echo "::error::TETRIS_BIND 没生效：监听地址是 '${BOUND:-空}'，期望 127.0.0.1:10014"
+            RC_BIND=1
+          fi
+
+          kill "$(cat /tmp/bridge_server.pid)" 2>/dev/null
+          wait "$(cat /tmp/bridge_server.pid)" 2>/dev/null
+          sleep 1
+
+          if [ "$RC_UNIT" -ne 0 ] || [ "$RC_E2E" -ne 0 ] || [ "$RC_BIND" -ne 0 ]; then
+            echo "::error::SSH 桥测试失败（unit=$RC_UNIT e2e=$RC_E2E bind=$RC_BIND）；服务端输出尾部: $(tail -12 /tmp/bridge_server.log | tr '\n' '|' | cut -c1-900)"
+            exit 1
+          fi
+
+      - name: Verify sshd snippet
+        run: |
+          # deploy/sshd-tetris.conf 是"改别人配置"的东西：写错了不是 CI 挂，而是线上
+          # sshd 起不来。用真的 sshd 解析一遍（-t 只查语法，不动本机 sshd），
+          # 再用 -T 把 tetris 用户生效的 ForceCommand 打出来核对。
+          sudo apt-get install -y --no-install-recommends openssh-server
+          sudo mkdir -p /run/sshd
+          sudo ssh-keygen -q -t ed25519 -N '' -f /tmp/ssh_host_ed25519_key
+          id tetris >/dev/null 2>&1 || sudo useradd --system --shell /bin/sh tetris
+
+          sudo cp deploy/sshd-tetris.conf /tmp/tetris.conf
+          sudo tee /tmp/sshd_test.conf > /dev/null <<'EOF'
+          Port 2222
+          HostKey /tmp/ssh_host_ed25519_key
+          PidFile /tmp/sshd_test.pid
+          UsePAM no
+          Include /tmp/tetris.conf
+          EOF
+
+          if ! sudo sshd -t -f /tmp/sshd_test.conf 2> /tmp/sshd_err.txt; then
+            echo "::error::sshd 拒绝了这个片段: $(tr '\n' '|' < /tmp/sshd_err.txt | cut -c1-1200)"
+            exit 1
+          fi
+
+          # 片段是 Include 到主配置中间的：Match 块必须以 "Match all" 收尾，
+          # 否则它后面的全局选项会被这个 Match 吞掉（最容易踩、最难查的错）
+          last=$(tail -n 1 deploy/sshd-tetris.conf)
+          if [ "$last" != "Match all" ]; then
+            echo "::error::deploy/sshd-tetris.conf 最后一行必须是 'Match all'，当前是 '$last'"
+            exit 1
+          fi
+
+          cmd=$(sudo sshd -T -f /tmp/sshd_test.conf \
+                -C user=tetris,host=localhost,addr=127.0.0.1 2>/dev/null \
+                | awk 'tolower($1)=="forcecommand" {print $2; exit}')
+          if [ "$cmd" != "/usr/local/bin/tetris-bridge" ]; then
+            echo "::error::tetris 用户生效的 ForceCommand 是 '${cmd:-空}'，期望 /usr/local/bin/tetris-bridge"
+            exit 1
+          fi
+          echo "::notice::sshd 片段语法通过，tetris 用户生效 ForceCommand=$cmd"

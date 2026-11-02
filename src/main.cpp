@@ -10,6 +10,7 @@
 #include"../Utility/SystemOptimizer.h"
 #include <spdlog/async.h>
 #include <sys/wait.h>
+#include <arpa/inet.h>   // inet_pton：TETRIS_BIND 解析（netinet/in.h 不保证带上它）
 
 // 全局 logger。
 // 注意：异步 logger 内部带线程池，fork 出来的子进程里并没有那些线程，
@@ -119,17 +120,27 @@ static int run_worker(int listen_port, int workers, size_t pool_size, int reusep
         logger->warn("setsockopt SO_RCVTIMEO failed: {}", strerror(errno));
     }
 
-    // 绑定地址
+    // 绑定地址：默认 0.0.0.0（保持旧行为）。生产上走 SSH 承载时设
+    // TETRIS_BIND=127.0.0.1，让 9999 只对本机的 tetris-bridge 可见 ——
+    // 公网入口只剩 sshd，明文协议不再有被直接连上的机会。
+    const char* bind_env = std::getenv("TETRIS_BIND");
+    const std::string bind_addr = (bind_env && *bind_env) ? bind_env : "0.0.0.0";
+
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons(listen_port);
+    if (inet_pton(AF_INET, bind_addr.c_str(), &addr.sin_addr) != 1) {
+        close(serverSocket);
+        logger->error("TETRIS_BIND 不是合法的 IPv4 地址: {}", bind_addr);
+        std::cerr << "❌ TETRIS_BIND 不是合法的 IPv4 地址: " << bind_addr << std::endl;
+        return -1;
+    }
 
     if (bind(serverSocket, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
         close(serverSocket);
         logger->error("bind Error: {} (errno: {})", strerror(errno), errno);
-        std::cerr << "❌ 绑定端口失败（端口 " << listen_port << "）" << std::endl;
+        std::cerr << "❌ 绑定失败（" << bind_addr << ":" << listen_port << "）" << std::endl;
         return -1;
     }
 
@@ -141,7 +152,7 @@ static int run_worker(int listen_port, int workers, size_t pool_size, int reusep
         return -1;
     }
 
-    std::cout << "✅ 服务器初始化完成，监听端口: " << listen_port << std::endl;
+    std::cout << "✅ 服务器初始化完成，监听 " << bind_addr << ":" << listen_port << std::endl;
     std::cout << "   监听队列大小: 65535" << std::endl;
 
     // 初始化libevent

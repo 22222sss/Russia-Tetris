@@ -129,6 +129,7 @@ cd src && make -j"$(nproc)"
 | 变量 | 默认 | 作用 |
 |---|---|---|
 | `TETRIS_PORT` | 9999 | 换监听端口（同机跑多实例、跨进程测试用） |
+| `TETRIS_BIND` | `0.0.0.0` | 监听地址；走 SSH 承载时设 `127.0.0.1`，让 9999 只对本机的桥可见 |
 | `TETRIS_WORKERS` | 1 | 多进程 worker 数；>1 时用 `SO_REUSEPORT` 抢同一端口 |
 | `TETRIS_REUSEPORT` | 跟随 worker 数 | 强制开/关 `SO_REUSEPORT`（做对照实验用） |
 | `TETRIS_HASH_THREADS` | 2 | 密码校验（PBKDF2）线程数；`0`/`1` 关闭线程池、退回文件线程串行（对照实验用） |
@@ -148,6 +149,10 @@ cd src && make -j"$(nproc)"
 
 注意：改了**头文件**之后 `make` 现在会自动重编依赖它的源文件（`-MMD -MP`）。
 如果 `obj/` 是旧规则时代留下的，建议先 `make clean` 一次。
+
+SSH 桥（`deploy/tetris-bridge.py`）有自己的一套环境变量（`TETRIS_BRIDGE_TARGET` /
+`_CONNECT_TIMEOUT` / `_SOURCE_IP` / `_ECHO` / `_LOG`），见 `docs/SSH_DEPLOY.md` 第 5 节；
+它们和服务端的变量互不相干，桥是独立进程。
 
 **默认编译选项是 `-O2 -g`**（2026-11-01 起）。`-O0` 时代的历史数据只能用于当时那一轮的对比，
 **不要和 -O2 的数字混比**：
@@ -195,6 +200,11 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 | `tests/bench.sh` | 一键连接压测：调 `ulimit`/sysctl、编译、起服务、采样、分片、合并报告；`BENCH_OPT` 指定优化级别、`BENCH_BIN` 跳过编译直接跑指定二进制（同机 A/B 用） |
 | `tests/sample_proc.py` | 采样服务端**进程树**的 RSS/fd/CPU（多 worker 必须按树采样） |
 | `tests/merge_results.py` | 合并多分片 JSON 与采样数据，生成 `result.json` |
+| `tests/bridge_test.py` | SSH 桥的自动化测试（**8 项**，不需要服务端）：字节透传 / 回车翻译 / 本地回显 / ESC 序列不回显 / stdin EOF 半关闭 / 服务端断开后桥自行退出 / 连不上时的提示与退出码 / 来源地址映射，外加**真 pty 的 raw 模式**（仅 Linux，顺带回传每会话 RSS）；给 `--server --db` 时再加一条**穿过桥跑真协议**（注册→登录→进游戏→按键） |
+
+`deploy/` 是部署入口（不参与服务端编译）：`tetris-bridge.py`（桥）、`sshd-tetris.conf`
+（sshd Match 片段）、`install-ssh-bridge.sh`（幂等安装 + `sshd -t` 校验 + 失败还原）。
+安装步骤、来源 IP 映射、安全边界和排错表在 `docs/SSH_DEPLOY.md`。
 
 两个 C++ 自检（`password_hash_test.cpp` / `auth_throttle_test.cpp` / `ip_throttle_test.cpp`）都能在
 `src/` 下单独编译运行，文件头里有完整的 `g++ ...` 命令；CI 里各占一步，失败细节走 `::error::` 注解。
@@ -217,7 +227,11 @@ CI 步骤（`build.yml`，每次 push `main` 都跑，顺序如下）：
 → 12. 登录吞吐基准（1/2 worker 各 2 轮，只回传 `::notice::`，不做时间断言）
 → 13. 200 连接冒烟 → 14. `bench.sh` 100 连接冒烟 → 15. **连接池 trim（3000 连接后断言池子被压回
 目标值、且之后仍能接新连接）** → 16. `sizeof(User)` → 17. 头文件依赖跟踪自检
-（`touch User.h` + `make -n`）。CI 的 apt 依赖里已加 `libssl-dev`、`libsqlite3-dev`。
+（`touch User.h` + `make -n`）→ 18. **SSH 桥测试**（`tests/bridge_test.py` 的 8 项 +
+`--server` 的穿过桥真协议 + 用 `TETRIS_BIND=127.0.0.1` 起服务端后断言 `ss -ltn` 只监听回环）
+→ 19. **sshd 片段语法**（装 openssh-server，`sshd -t -f` 解析 `deploy/sshd-tetris.conf`，
+再用 `sshd -T -C user=tetris` 核对生效的 `ForceCommand`、并断言片段以 `Match all` 收尾）。
+CI 的 apt 依赖里已加 `libssl-dev`、`libsqlite3-dev`。
 
 `bench.yml` 只在 push 到 `bench-run` 分支或手动触发时跑，**用完记得删分支**。
 push 触发时它做两件事：**同机 -O0/-O2 交错 A/B**（`Build -O0 and -O2 binaries` +
@@ -464,6 +478,48 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 - **异步文件回调收回事件循环线程**：三个 `*Async` 回调原来在异步文件线程上直接改 `User`（data race）。
   现在用 `EventLoop::post()` 经**自管道**投递回循环线程——没用 `evthread_use_pthreads()`（会给每个 event
   操作加全局锁）；回调里加了"状态已变化就丢弃"的守卫。
+
+### SSH 承载（2026-11-02）
+
+目标：**公网只开 sshd，9999 只对本机**。加密/认证/账号隔离交给 SSH，**协议一行没改**。
+
+- **为什么是桥**：服务端本来就是"渲染终端"的程序（ANSI 全屏 + 方向键），一条 SSH 会话
+  天然提供 stdin/stdout。于是让 sshd 用 `ForceCommand` 把会话交给一个小桥，桥再连
+  `127.0.0.1:9999`：服务端仍是一进程多连接的事件循环，一个玩家 = 一条 TCP 连接 =
+  一个 `User` 对象，和直连没有区别（连接池、限流、SQLite 全部照旧）；
+- **`deploy/sshd-tetris.conf`**：`Match User tetris` + `ForceCommand /usr/local/bin/tetris-bridge`，
+  关掉所有转发（`AllowTcpForwarding` / `AllowAgentForwarding` / `AllowStreamLocalForwarding` /
+  `X11Forwarding` / `PermitTunnel` / `PermitUserEnvironment` / `PermitUserRC`）、
+  `MaxSessions 1`（防 ControlMaster 复用出第二条游戏会话）、`ClientAliveInterval 300`
+  （收掉掉线会话，否则死会话会一直占着桥进程 + `User`）；
+  **末尾必须 `Match all`**（原因见 6.33）；
+- **桥要替终端做三件事**（都是 6.1 那个 telnet 坑的变种）：
+  1. `termios.setraw(stdin)` —— canonical 模式下方向键要按回车才发出去，游戏没法玩；
+  2. CR → CRLF —— raw 终端按回车只发 `0x0D`，而 `Server::ReceiveData` 按 `"\r\n"` 分帧；
+  3. 本地回显 —— 服务端不逐字符回显、raw 又关了 pty 的 echo，不补的话登录时看不见自己
+     输入了什么；只回显可打印字符（含 UTF-8 多字节），**含 ESC 的整块不回显**
+     （否则方向键会把整屏弄乱）；
+- **stdout 只能是游戏字节**：sshd 把 stderr 也接到同一个 pty，桥的任何日志都会花屏 ——
+  诊断只走 syslog 或 `TETRIS_BRIDGE_LOG` 指定的文件，永不写 stdout/stderr；
+- **收尾**：stdin EOF → `shutdown(SHUT_WR)`（服务端立刻看到 EOF、释放 `User`），
+  再给 2 秒把最后那屏收完；服务端先断开时桥自己退出（不会把 SSH 会话挂住）；
+- **两个守护线程而不是 `select`**：Windows 的 `select` 只认 socket、不认管道/文件描述符，
+  用线程同一份代码在 Windows 上也能跑测试（本地先跑通再推 CI，见 6.7）；
+- **来源 IP 保真**：服务端按 accept 的源地址做 `IpThrottle` 限流，而桥接后全都来自
+  127.0.0.1 → 额度会退化成"全站共享一份"。桥用 `SSH_CLIENT` 把真实客户端映射成
+  **该客户端专属**的 127/8 源地址（IPv4 保留后三字节：`203.0.113.7` → `127.0.113.7`，
+  同一玩家恒定、不同玩家不同；IPv6 走摘要落到 `127.255.x.y`），服务端 `ntohl(sin_addr)`
+  拿到的就是一个稳定的伪匿名标识。bind 失败 / 目标不是回环时退回 127.0.0.1 并记一行日志，
+  那时按"全站额度"重新估 `TETRIS_AUTH_IP_MAX_FAILURES`（见 6.35）；
+- **`TETRIS_BIND`（`main.cpp`）**：监听地址从写死的 `INADDR_ANY` 改成可配，默认 `0.0.0.0`
+  （旧行为不变）；生产设 `127.0.0.1` —— 否则玩家能绕过 sshd 直接 `telnet 9999`，
+  明文密码照样过网，SSH 承载就白做了；
+- **测试**：`tests/bridge_test.py` 8 项（含 Linux 真 pty：断言桥把 ICANON/ECHO 关掉、
+  方向键不按回车就到达服务端）+ `--server` 的"穿过桥跑真协议"；CI 另加 `sshd -t` 与
+  `sshd -T -C user=tetris`，把"改别人的配置"也纳入验证（写错了不是 CI 挂，是线上 sshd 起不来）；
+- **代价**：每会话多一个 Python 进程（10MB 量级，实测值由 `bridge_test.py` 在 Linux 上以
+  `::notice::` 回传），SSH 自己也每会话一个 sshd 进程 —— 并发天花板主要在内存，
+  不在服务端 CPU。要抬高上限就把桥换成几十行的 C（预期 1~2MB/会话），见第 8 节。
 
 ### 存储层（SQLite，2026-11-02）
 
@@ -778,7 +834,38 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     库里是密码哈希，权限按敏感数据处理。旧 `userdata.csv` 只在"空库 + 文件存在"时导入一次，
     导入后不再同步（想重导得先删库）；导入发生在 `Db::open()`，所以**服务端启动目录**决定导入哪份文件。
 
+32. **登录账号的 shell 不能是 `nologin`**：sshd 是用"用户自己的 shell -c ForceCommand"去执行
+    命令的，nologin 会先把会话拒掉，玩家看到 `This account is currently not available.`，
+    `ForceCommand` 根本没机会跑。`install-ssh-bridge.sh` 会自动 `chsh -s /bin/sh`
+    （第一次部署时踩过：账号为安全设成 nologin，结果游戏起不来）。
+
+33. **sshd 片段必须以 `Match all` 收尾**：`/etc/ssh/sshd_config.d/*.conf` 是被 `Include` 到
+    主配置**中间**的，而 Match 块会一直生效到"文件末尾或下一个 Match"。不重置的话，主配置里
+    后面的全局选项会全落进这个 Match 里 —— 看着"片段生效了"，实际行为变了，而且极难查。
+    CI 的 `Verify sshd snippet` 同时校验语法和这个收尾，别删那一步。
+
+34. **没有 pty 就没有游戏**：`ssh -T`（或 `PermitTTY no`）时 stdin 不是终端，桥不切 raw、
+    也不回显，方向键会攒到回车才发 —— 现象和"telnet 不能用"一模一样。玩家必须用
+    `ssh user@host`（不加 `-T`）。桥的 `--echo auto` 也是按"stdin/stdout 都是终端"判定的。
+
+35. **桥后面按 IP 限流会退化**：所有会话都来自 127.0.0.1 时，`TETRIS_AUTH_IP_MAX_FAILURES`
+    变成**全站**额度（几十个玩家正常输错就能把所有人一起锁住）。桥默认做 `127.b.c.d`
+    映射来避免（见 5.SSH 承载）；映射没生效时（目标不是回环 / 平台不允许 bind 127/8 /
+    `--source-ip default`）要按"全站额度"重新估阈值，或者干脆调大它。
+
+36. **SSH 承载的并发上限是内存，不是 CPU**：每会话 = 一个 sshd 会话进程 + 一个 Python 桥进程
+    （10MB 量级）+ 服务端一个 `User`（3KB）。200 玩家光前两项就是 GB 级。
+    服务端自己的 CPU 仍然只占 0.1~0.15 核/万按键 —— 要提并发就换 C 版桥，别再动服务端。
+
+37. **Windows 上 `SO_REUSEADDR` 会把"端口被残留进程占着"伪装成正常**：第二次 bind 会成功，
+    但连接仍然落到老进程。现象是"本地 mock 菜单能显示、注册却没反应"（老进程的库路径已被删，
+    写库失败后线程直接退出，而 mock 的 `print` 没有 flush，重定向的 stdout 里什么都看不到）。
+    本地跑脚本要么换端口，要么先确认端口上是自己的进程；调 mock 时用 `python3 -u`。
+
 ## 7. 仓库现状
+
+> 第 0 节和第 9 节按约定没有随本轮改动（仍描述 SQLite 那一轮）；本轮（SSH 承载）的
+> 完成情况见 5.SSH 承载、本节和第 8 节。
 
 - `main` 干净，CI 全绿；无 tag；
 - `bench-run` 分支已删除（需触发 bench 时重建并 push，用完删）；
@@ -804,6 +891,9 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     没有"按核数自动伸缩"；
   - 旧明文账号必须登录一次才会迁移（见 6.14）；旧 `userdata.csv` 只在首次启动（空库）时导入一次，
     导入后不再同步——想重跑导入得先删库（见 6.31）；
+  - **SSH 承载已完成**（`deploy/` + `TETRIS_BIND` + `docs/SSH_DEPLOY.md`，见 5.SSH 承载）：
+    sshd `ForceCommand` 把会话直接交给桥，公网只开 22、9999 只绑回环；
+    桥现在是 Python 进程（每会话 10MB 量级，见 6.36），换 C 的收益见第 8 节；
   - **没有管理员 CLI，也没有备份脚本**：重置密码只能手工改库（`sqlite3` 或
     `UPDATE accounts SET password=...`），备份只能手工 `.backup`（见 6.31）；
   - 远程压测脚本与手册已就绪（`play_remote.sh` / `REMOTE_BENCH.md`），尚未在真实云主机上跑过；
@@ -816,10 +906,10 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 
 | 方向 | 内容 | 价值 |
 |---|---|---|
-| **SSH 承载（上线必需）** | sshd `Match User tetris` + `ForceCommand`，`ssh tetris@host` 直接进游戏；零协议改造，顺带解决"明文密码过网" | **高**：现在裸 TCP 是明文，公网不能直接开 |
 | **管理员 CLI + 备份（上线必需）** | `tetris-admin reset-password <user>`（没邮箱，"找回"只能这样）/ `backup`（`sqlite3 .backup`）；顺便启动时打印生效配置 | **高**：线上忘密码的用户目前无自救路径 |
 | **打包/部署（上线必需）** | Dockerfile（多阶段、非 root、HEALTHCHECK）+ systemd unit + 日志轮转 | **高**：别人无法按 README 一把部署 |
 | **注册限流（公网时做）** | 方案 A：按 IP（20 次/5 分钟）+ 全局（200 次/小时），提交密码前挡掉；方案 B（更重）：把注册哈希挪进哈希线程池，队满回 Busy | 中：见 6.30，是现在唯一无上限的 PBKDF2 路径 |
+| 桥换成 C 版 | 现在每会话一个 Python 进程（10MB 量级），换几十行 C 可降到 1~2MB；SSH 承载的并发上限目前就是这项内存（见 6.36） | 中：真上量时才值得 |
 | 认证状态跨进程 | 用户名退避 / IP 兜底的计数都在各 worker 内存里，阈值实际 ×N；要统一得放共享内存或落文件 | 低：只有真的开多 worker 才值得 |
 | `-flto` | 跨 TU 内联（UImanage/Utility 的小函数），预期几个点；用 bench.yml 的 A/B 步骤量 | 低~中：CPU |
 | 连接建立路径 | accept 时 `showInitMenu` 也批量，并把固定菜单预渲染成静态字符串 | 低~中：10 万连接场景的 CPU（当前不是瓶颈） |
@@ -831,7 +921,8 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 **注册密码策略 + 未知账号假 PBKDF2**、**登录失败退避 + 哈希队列上限**、
 **按 IP 兜底（IpThrottle + 两套测试）**、**改密/重置（主菜单 5 + changePasswordAsync）**、
 **连接池 trim（空闲缓存压回 4096，CI 有 3000 连接用例）**、
-**存储层 SQLite（accounts/scores + WAL + 旧 CSV 一次性导入）**（本轮）、
+**存储层 SQLite（accounts/scores + WAL + 旧 CSV 一次性导入）**、
+**SSH 承载（sshd `ForceCommand` + `deploy/` 桥 + `TETRIS_BIND`，见 5.SSH 承载）**（本轮）、
 密码加盐哈希 + 迁移、登录吞吐、输出批量。
 
 ## 9. 给新会话的起步提示

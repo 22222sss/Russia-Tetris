@@ -53,8 +53,13 @@ Russia-Tetris/
 │   ├── main.cpp              # 程序入口
 │   ├── makefile              # 构建脚本
 │   └── optimize_system.sh    # 系统调优脚本
+├── deploy/                   # 部署入口：SSH 桥 / sshd 片段 / 安装脚本
+│   ├── tetris-bridge.py      # 把一条 SSH 会话接到本机 9999（raw/回显/CRLF）
+│   ├── sshd-tetris.conf      # sshd Match 片段（ForceCommand 只跑桥）
+│   └── install-ssh-bridge.sh # 幂等安装：桥 + 片段 + 登录账号
+├── docs/                     # 交接文档 / 远程压测手册 / SSH 承载部署
 ├── images-and-gif/           # 演示截图与 GIF
-├── tests/                    # 压测脚本（load_test.py / bench.sh）
+├── tests/                    # 测试与压测脚本（集成 / 跨进程 / 桥 / 压测）
 └── README.md                 # 项目说明
 ```
 
@@ -95,15 +100,28 @@ make
 
 ### 5. 客户端连接
 
-在客户端终端（cmd / PowerShell / Linux 终端）输入：
+**公网 / 生产环境：走 SSH（推荐）** —— 传输由 SSH 加密，服务端可以只绑回环地址：
+
+```bash
+ssh tetris@<服务器IP>
+```
+
+一次性的安装（sshd `ForceCommand` + 桥 + 登录账号）见
+[docs/SSH_DEPLOY.md](docs/SSH_DEPLOY.md)。装好之后玩家只需要上面这一条命令，
+不需要 telnet，也不需要额外客户端。
+
+**内网 / 本机调试：直连 TCP**（明文，只适合可信网络）：
 
 ```bash
 telnet <服务器IP> 9999
 ```
 
-- Windows 的 Telnet 客户端默认未启用，需先在「启用或关闭 Windows 功能」中勾选「Telnet 客户端」，或改用 Linux 终端 / PuTTY。
-- 查询服务器 IP：Linux 下执行 `ip addr`（`ifconfig` 需先安装 `net-tools`）。
-- 端口号位于 `src/Common/Common.h` 的 `DEFAULT_PORT` 宏定义中，默认 9999，可自行修改。
+- ⚠️ telnet 是**行模式**：方向键要按回车才会发出去，进游戏后基本没法玩，只适合看菜单；
+  要正经玩请用上面的 SSH 方式；
+- Windows 的 Telnet 客户端默认未启用，需先在「启用或关闭 Windows 功能」中勾选「Telnet 客户端」；
+- 查询服务器 IP：Linux 下执行 `ip addr`（`ifconfig` 需先安装 `net-tools`）；
+- 端口号位于 `src/Common/Common.h` 的 `DEFAULT_PORT` 宏定义中，默认 9999；
+  监听地址由环境变量 `TETRIS_BIND` 控制（默认 `0.0.0.0`，走 SSH 时设成 `127.0.0.1`）。
 
 ## 项目展示
 
