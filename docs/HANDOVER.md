@@ -517,10 +517,16 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 - **测试**：`tests/bridge_test.py` 8 项（含 Linux 真 pty：断言桥把 ICANON/ECHO 关掉、
   方向键不按回车就到达服务端）+ `--server` 的"穿过桥跑真协议"；CI 另加 `sshd -t` 与
   `sshd -T -C user=tetris`，把"改别人的配置"也纳入验证（写错了不是 CI 挂，是线上 sshd 起不来）；
-- **代价**：每会话多一个 Python 进程（CI 实测 RSS **16.8 MB**，由 `bridge_test.py` 在
+- **代价**：每会话多一个 Python 进程（CI 实测 RSS **16.8~16.9 MB**，由 `bridge_test.py` 在
   Linux 上以 `::notice::` 回传），SSH 自己也每会话一个 sshd 进程 —— 200 个并发玩家光桥
   就是 ~3.4GB，并发天花板主要在内存，不在服务端 CPU。要抬高上限就把桥换成几十行的 C
-  （预期 1~2MB/会话），见第 8 节。
+  （预期 1~2MB/会话），见第 8 节；
+- **CI 实测（SHA `c143749`，一轮全绿）**：桥的 8 项自检（含 Linux 真 pty：ICANON/ECHO
+  已关、方向键不按回车就即时到达）与"穿过桥跑真协议"都通过；用 `TETRIS_BIND=127.0.0.1`
+  起服务端后 `ss -ltn` 只有 `127.0.0.1:10014`；`deploy/sshd-tetris.conf` 通过真实
+  `sshd -t`，`sshd -T -C user=tetris` 打印的 `ForceCommand=/usr/local/bin/tetris-bridge`；
+  编译仍 0 告警。过程中被 CI 抓到的两个错：`PermitUserEnvironment` 不能写进 Match（6.38）、
+  测试断言没按 mark 只看新输出（6.39）。
 
 ### 存储层（SQLite，2026-11-02）
 
@@ -862,6 +868,18 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     但连接仍然落到老进程。现象是"本地 mock 菜单能显示、注册却没反应"（老进程的库路径已被删，
     写库失败后线程直接退出，而 mock 的 `print` 没有 flush，重定向的 stdout 里什么都看不到）。
     本地跑脚本要么换端口，要么先确认端口上是自己的进程；调 mock 时用 `python3 -u`。
+
+38. **sshd 的 `Match` 块只允许一部分指令**：把 `PermitUserEnvironment` 写进 Match 会让
+    **整个片段**被拒绝（`Directive 'PermitUserEnvironment' is not allowed within a Match block`），
+    也就是 sshd 起不来 —— 不是"这条不生效"，是全部不生效。`PermitUserEnvironment` 只能全局设
+    （Ubuntu/Debian 默认 `no`）。CI 的 `Verify sshd snippet` 用真的 sshd 解析片段，就是为了
+    拦住这类"看着像指令、其实不能放这"的错（第一次跑就抓到了）。
+
+39. **协议级测试的断言必须按 mark 只看新输出**：`tests/bridge_test.py` 第一版 `wait_for`
+    扫全缓冲区，于是 `expect("2. 登录")` 直接命中开头的初始菜单、把 "3" 和 "2" 一次发出去 ——
+    而服务端 `ReceiveData` 一次 `recv` 只保留第一个 `\r\n` 之前的内容，第二条命令被**静默丢弃**
+    （现象是"菜单停了、后面全超时"）。`integration_test.py` 的 `Conn` 从一开始就带 mark，
+    新写协议用例照它抄。
 
 ## 7. 仓库现状
 
