@@ -557,7 +557,12 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 - **不需要停服**：改密是一条 UPDATE，服务端其它进程靠 `Db::cacheStamp()`（内含 `data_version`）
   立刻能看到（跨进程测试已经证明"A 改密后 B 能用新密码登录"）；
 - **`Db` 只加了两样**：`listAccounts()`（一条 SQL 拿齐四列，哈希前缀判断在 SQL 里）和
-  `configuredPath()`（`TETRIS_DB` 或默认值，open 之前也能用）。schema 仍然只在 `Db.cpp`。
+  `configuredPath()`（`TETRIS_DB` 或默认值，open 之前也能用）。schema 仍然只在 `Db.cpp`；
+- **CI 实测（SHA `b358db2`，一轮全绿）**：`make` 一次编出两个二进制（**编译 0 告警**），
+  `tests/admin_test.py` **10/10**（含"启动打印生效配置"：故意设非默认
+  `TETRIS_AUTH_IP_MAX_FAILURES=77`，打印的确实是 77 而不是 300）；其余 20 步照旧通过。
+  这一轮被 CI 抓到两个错：`ConnectionPool::MAX_POOL_SIZE` 是 private（6.42）、
+  `Popen(cwd=...)` 下相对路径失效（6.43）。
 
 ### 存储层（SQLite，2026-11-02）
 
@@ -929,6 +934,12 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     从 private 挪到 public 的原因 —— 想打印就得有访问器，**别在 main.cpp 里重写一遍解析逻辑**
     （那份迟早和模块对不上，照着一个错的默认值排查比不打印更糟）。打印发生在 fork 之前
     （只打一遍），期间用临时的 bootstrap logger 接住 `configFromEnv()` 的非法值告警，打完就 drop。
+
+43. **`subprocess.Popen(cwd=...)` 下相对路径会失效**：`tests/admin_test.py` 的"启动配置"用例
+    把服务端的 cwd 设成临时工作目录（让它在自己目录里建库/写日志），于是
+    `--server-bin ./tetris_game` 解析到临时目录里去了（CI 报 `No such file or directory`）。
+    凡是"换了 cwd 起子进程"的地方，二进制/脚本路径要先 `os.path.abspath()`；
+    本地用桩跑同样会踩（我本地传的是绝对路径，所以没暴露）。
 
 ## 7. 仓库现状
 
