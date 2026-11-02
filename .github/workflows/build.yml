@@ -601,3 +601,31 @@ jobs:
             exit 1
           fi
           echo "::notice::sshd 片段语法通过，tetris 用户生效 ForceCommand=$cmd"
+
+      - name: Admin CLI test
+        working-directory: src
+        run: |
+          # tetris-admin 是"线上出事才用"的工具（忘密码、要备份），平时没人跑 ——
+          # 坏了正好是最需要它的时候。所以每条子命令都在真库上验证一遍，
+          # 并且用测试侧的 credential.py 复算哈希，确认写进去的确实是能通过校验的凭据。
+          set +e
+
+          if ! python3 -m py_compile ../tests/admin_test.py 2> /tmp/pyc_admin.txt; then
+            echo "::error::admin_test.py 语法错误: $(tr '\n' '|' < /tmp/pyc_admin.txt | cut -c1-800)"
+            exit 1
+          fi
+          if [ ! -x ./tetris-admin ]; then
+            echo "::error::缺少 ./tetris-admin（make 没编出管理工具？）"
+            exit 1
+          fi
+          if ! ./tetris-admin --help > /dev/null; then
+            echo "::error::tetris-admin --help 都跑不起来"
+            exit 1
+          fi
+
+          python3 ../tests/admin_test.py --bin ./tetris-admin --server-bin ./tetris_game
+          RC=$?
+          if [ "$RC" -ne 0 ]; then
+            echo "::error::管理命令测试失败（rc=$RC）"
+          fi
+          exit "$RC"

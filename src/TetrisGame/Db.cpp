@@ -114,6 +114,9 @@ public:
     int columnInt(int index) const {
         return sqlite3_column_int(stmt_, index);
     }
+    sqlite3_int64 columnInt64(int index) const {
+        return sqlite3_column_int64(stmt_, index);
+    }
 
 private:
     sqlite3_stmt* stmt_ = nullptr;
@@ -306,10 +309,13 @@ const char* Db::difficultyName(int index) {
     }
 }
 
-bool Db::openFromEnv() {
+std::string Db::configuredPath() {
     const char* raw = std::getenv("TETRIS_DB");
-    std::string path = (raw != nullptr && *raw != '\0') ? std::string(raw) : std::string("tetris.db");
-    return open(path);
+    return (raw != nullptr && *raw != '\0') ? std::string(raw) : std::string("tetris.db");
+}
+
+bool Db::openFromEnv() {
+    return open(configuredPath());
 }
 
 bool Db::open(const std::string& path) {
@@ -560,6 +566,34 @@ int Db::bestScore(const std::string& username, const std::string& difficulty) {
         return 0;
     }
     return st.columnInt(0);
+}
+
+bool Db::listAccounts(std::vector<AccountRow>& out, int limit) {
+    std::lock_guard<std::recursive_mutex> lock(gMutex);
+    out.clear();
+    if (!gDb) {
+        return false;
+    }
+    // 一条 SQL 拿齐四列：用户名 / 注册时间 / 成绩条数 / 是否已迁移成哈希。
+    // 哈希只用前缀判断（与 PasswordHash::isHashed 同一条规则），只给运维看
+    // "还有多少账号停留在旧明文"，不参与任何鉴权。
+    Stmt st;
+    if (!st.prepare("SELECT a.username, a.created_at,"
+        " (SELECT COUNT(*) FROM scores s WHERE s.username=a.username),"
+        " CASE WHEN a.password LIKE '$pbkdf2-sha256$%' THEN 1 ELSE 0 END"
+        " FROM accounts a ORDER BY a.created_at DESC, a.username LIMIT ?")) {
+        return false;
+    }
+    st.bindInt(1, limit > 0 ? limit : -1);      // SQLite 里 LIMIT -1 等于不限
+    while (st.step() == SQLITE_ROW) {
+        AccountRow row;
+        row.username = st.columnText(0);
+        row.createdAt = st.columnInt64(1);
+        row.scoreCount = st.columnInt(2);
+        row.hashed = st.columnInt(3) != 0;
+        out.push_back(row);
+    }
+    return true;
 }
 
 int Db::importLegacyCsv(const std::string& csvPath) {

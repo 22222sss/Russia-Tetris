@@ -38,18 +38,12 @@ private:
 	// 异步写入线程函数
 	static void asyncWriteWorker();
 
-	static int hashThreadCount();
 	static void ensureHashPool();
 	static void stopHashPool();
 	static void hashWorker();
 	// 有池就投递到池，没有就同步执行（同一份任务代码）。
 	// 返回 false 表示池里待处理任务已到上限、本次没有执行（上层回"系统繁忙"）。
 	static bool runHashTask(std::function<void()> task);
-	// 哈希队列待处理上限（TETRIS_AUTH_QUEUE_LIMIT，默认 1024）：
-	// PBKDF2 很慢，无界排队会让登录风暴把内存和延迟一起拖爆。
-	// 1024 约等于"2 线程 × 15 秒"的最坏排队，远高于正常突发（CI 的 128 并发登录），
-	// 又能挡住随机用户名喷洒的无界堆积。
-	static std::size_t hashQueueLimit();
 
 	// 缓存管理
 	// （已随 SQLite 迁移删除：addToCache / getFromCache / removeFromCache）
@@ -62,6 +56,15 @@ private:
 	static bool lookupCredential(const std::string& username, std::string& credential);
 
 public:
+	// 哈希线程数与队列上限（TETRIS_HASH_THREADS / TETRIS_AUTH_QUEUE_LIMIT）：
+	// 启动时打印"生效配置"要读它们，所以放在 public；语义见下面各自的注释。
+	// 密码校验线程数，默认 2；0/1 表示不开池（校验退回文件线程串行执行）。
+	static int hashThreadCount();
+	// 哈希队列待处理上限（默认 1024）：PBKDF2 很慢，无界排队会让登录风暴把内存
+	// 和延迟一起拖爆。1024 约等于"2 线程 × 15 秒"的最坏排队，远高于正常突发
+	// （CI 的 128 并发登录），又能挡住随机用户名喷洒的无界堆积。
+	static std::size_t hashQueueLimit();
+
 	// 登录校验结果：Busy 表示服务端哈希队列已满、本次根本没校验（不能算"密码错误"，
 	// 否则失败次数会被系统繁忙污染，退避会误伤正常用户）。
 	enum class LoginResult {

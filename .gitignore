@@ -1,6 +1,7 @@
 # 编译产物
 src/obj/
 src/tetris_game
+src/tetris-admin
 *.o
 *.out
 

@@ -37,6 +37,16 @@ public:
     static int difficultyIndex(const std::string& difficulty);
     static const char* difficultyName(int index);
 
+    // 管理命令行用：账号列表（用户名 + 注册时间 + 成绩条数 + 是否已迁移成哈希）。
+    // 只读，且只给运维看；`hashed=false` 表示这个账号还是旧版明文、一次都还没登录过。
+    struct AccountRow {
+        std::string username;
+        std::int64_t createdAt = 0;   // unix 秒（0 = 未知）
+        int scoreCount = 0;
+        bool hashed = false;
+    };
+    static bool listAccounts(std::vector<AccountRow>& out, int limit = 0);
+
     // 打开数据库（必要时建库/建表/导入旧 CSV）。
     // path 为空时读 TETRIS_DB（默认 "tetris.db"）。
     static bool openFromEnv();
@@ -44,6 +54,8 @@ public:
     static void close();
     static bool ready();
     static std::string path();
+    // TETRIS_DB 或默认路径；open 之前也能用（启动时打印生效配置用）
+    static std::string configuredPath();
 
     // 玩家表快照的失效标记：本进程写次数 + SQLite data_version（别的进程提交过就会变）。
     static std::uint64_t cacheStamp();

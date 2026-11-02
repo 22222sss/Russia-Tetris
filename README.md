@@ -51,6 +51,7 @@ Russia-Tetris/
 │   ├── UImanage/             # 界面管理（TUI）
 │   ├── Utility/              # 工具函数与系统优化
 │   ├── main.cpp              # 程序入口
+│   ├── tetris_admin.cpp      # 管理命令行（重置密码 / 在线备份 / 列表 / 统计）
 │   ├── makefile              # 构建脚本
 │   └── optimize_system.sh    # 系统调优脚本
 ├── deploy/                   # 部署入口：SSH 桥 / sshd 片段 / 安装脚本
@@ -98,7 +99,25 @@ make
 > 首次运行会在当前目录自动创建 SQLite 库 `tetris.db`（账号 + 成绩），无需手工准备；
 > 如果目录里有旧版本的 `userdata.csv`，会在**首次启动（空库）时一次性导入**，之后不再使用。
 
-### 5. 客户端连接
+### 5. 管理命令（重置密码 / 备份）
+
+`make` 会一并生成 `tetris-admin`（和 `tetris_game` 同目录）：
+
+```bash
+./tetris-admin reset-password alice     # 交互输入新密码（两次，不回显）
+./tetris-admin backup                   # 备份到 tetris-backup-<时间>.db（自动 chmod 600）
+./tetris-admin list-users               # 账号 / 注册时间 / 是否还是旧明文
+./tetris-admin stats                    # 账号数 / 成绩条数 / 各难度最高分
+```
+
+- 它和服务端读同一个库（`TETRIS_DB`），**不需要停服**：改密是一条 `UPDATE`，另一个进程
+  下次登录立刻生效；已登录的会话不会被踢下线；
+- 备份走 SQLite 在线备份接口，WAL 下也是一致快照，完成后会做 `integrity_check`。
+  备份文件里是密码哈希，按敏感数据对待；
+- 新密码与注册走同一套策略（至少 8 个字符、不能全是空格）；
+- 退出码：`0` 成功 / `1` 内部错误 / `2` 用法错误或账号不存在 / `3` 新密码不满足策略。
+
+### 6. 客户端连接
 
 **公网 / 生产环境：走 SSH（推荐）** —— 传输由 SSH 加密，服务端可以只绑回环地址：
 

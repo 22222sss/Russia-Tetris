@@ -154,6 +154,9 @@ SSH 桥（`deploy/tetris-bridge.py`）有自己的一套环境变量（`TETRIS_B
 `_CONNECT_TIMEOUT` / `_SOURCE_IP` / `_ECHO` / `_LOG`），见 `docs/SSH_DEPLOY.md` 第 5 节；
 它们和服务端的变量互不相干，桥是独立进程。
 
+运维侧的管理命令是另一个二进制 `tetris-admin`（`make` 会一起编出来），
+读同一个 `TETRIS_DB`，见 5.管理命令行。
+
 **默认编译选项是 `-O2 -g`**（2026-11-01 起）。`-O0` 时代的历史数据只能用于当时那一轮的对比，
 **不要和 -O2 的数字混比**：
 
@@ -201,6 +204,7 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 | `tests/sample_proc.py` | 采样服务端**进程树**的 RSS/fd/CPU（多 worker 必须按树采样） |
 | `tests/merge_results.py` | 合并多分片 JSON 与采样数据，生成 `result.json` |
 | `tests/bridge_test.py` | SSH 桥的自动化测试（**8 项**，不需要服务端）：字节透传 / 回车翻译 / 本地回显 / ESC 序列不回显 / stdin EOF 半关闭 / 服务端断开后桥自行退出 / 连不上时的提示与退出码 / 来源地址映射，外加**真 pty 的 raw 模式**（仅 Linux，顺带回传每会话 RSS）；给 `--server --db` 时再加一条**穿过桥跑真协议**（注册→登录→进游戏→按键） |
+| `tests/admin_test.py` | `tetris-admin` 的自动化测试（**10 项**，对真库跑）：reset-password 的四种结果（哈希账号 / 旧明文即迁移 / 短密码退出码 3 / 未知账号退出码 2 / 与当前密码相同不写库）、backup 的内容一致 + `integrity_check` + 600 权限 + 拒绝覆盖 + `--force`、list-users 的"明文未迁移"标记、stats、用法退出码；`--server-bin` 时再加一条**服务端启动打印生效配置**（含一个非默认 `TETRIS_AUTH_IP_*` 必须是生效值） |
 
 `deploy/` 是部署入口（不参与服务端编译）：`tetris-bridge.py`（桥）、`sshd-tetris.conf`
 （sshd Match 片段）、`install-ssh-bridge.sh`（幂等安装 + `sshd -t` 校验 + 失败还原）。
@@ -230,8 +234,9 @@ CI 步骤（`build.yml`，每次 push `main` 都跑，顺序如下）：
 （`touch User.h` + `make -n`）→ 18. **SSH 桥测试**（`tests/bridge_test.py` 的 8 项 +
 `--server` 的穿过桥真协议 + 用 `TETRIS_BIND=127.0.0.1` 起服务端后断言 `ss -ltn` 只监听回环）
 → 19. **sshd 片段语法**（装 openssh-server，`sshd -t -f` 解析 `deploy/sshd-tetris.conf`，
-再用 `sshd -T -C user=tetris` 核对生效的 `ForceCommand`、并断言片段以 `Match all` 收尾）。
-CI 的 apt 依赖里已加 `libssl-dev`、`libsqlite3-dev`。
+再用 `sshd -T -C user=tetris` 核对生效的 `ForceCommand`、并断言片段以 `Match all` 收尾）
+→ 20. **管理命令测试**（`tests/admin_test.py`：对真库跑 reset-password / backup / list-users /
+stats，外加服务端启动打印的生效配置）。CI 的 apt 依赖里已加 `libssl-dev`、`libsqlite3-dev`。
 
 `bench.yml` 只在 push 到 `bench-run` 分支或手动触发时跑，**用完记得删分支**。
 push 触发时它做两件事：**同机 -O0/-O2 交错 A/B**（`Build -O0 and -O2 binaries` +
@@ -527,6 +532,32 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
   `sshd -t`，`sshd -T -C user=tetris` 打印的 `ForceCommand=/usr/local/bin/tetris-bridge`；
   编译仍 0 告警。过程中被 CI 抓到的两个错：`PermitUserEnvironment` 不能写进 Match（6.38）、
   测试断言没按 mark 只看新输出（6.39）。
+
+### 管理命令行（tetris-admin，2026-11-02）
+
+上线必需的第二件：**没有邮箱，"忘记密码"就没有自救路径**（6.28），以前只能手工改库；
+备份也一直靠记 SQLite 命令。现在是一个独立的小工具 `src/tetris_admin.cpp`
+（`make` 会一起编出来），**只链 `Db` / `PasswordHash`**，不拖网络与游戏逻辑。
+
+- **`reset-password <user>`**：交互输入两次（tty 上关回显）；`--password-stdin` 从管道读一行
+  （脚本/CI 用）。走**同一套** `PasswordPolicy`（≥8 个 UTF-8 码点）与 `PasswordHash`
+  （PBKDF2-SHA256，10 万次迭代），落盘就是一条 `UPDATE accounts.password` ——
+  "管理员重置出来的密码"和用户在主菜单 5 改的没有任何区别，**不会出现第三套格式**；
+  与当前密码相同时直接返回、不写库（省一次无谓写入，也防手滑）；
+  退出码 `0` 成功 / `1` 内部错误 / `2` 用法错误或账号不存在 / `3` 新密码不满足策略；
+- **`backup [目标]`**：用 SQLite **Online Backup API**（不依赖外部 `sqlite3` 命令，线上只要
+  这一个二进制），WAL 下也能拿到一致快照；完成后跑 `PRAGMA integrity_check` 并统计条数，
+  最后 `chmod 600`（里面是密码哈希）；目标已存在必须 `--force`。
+  备份期间服务端可能还在写 —— 输出会说"快照 N / 当前 M"，**这不算失败**（快照本身一致）；
+- **`list-users` / `stats`**：用户名 + 注册时间 + 成绩条数 + **是否还是旧明文**（迁移进度
+  一眼可见）；stats 给账号数 / 成绩条数 / 各难度最高分；
+- **服务端启动打印生效配置**（`main.cpp::printEffectiveConfig`，fork 之前只打一次）：
+  二十来个环境变量，配错了只看行为很难查（`TETRIS_AUTH_IP_MAX_FAILURES` 少写一个 0，
+  表现是"偶尔莫名其妙锁人"）。值全部取自各模块自己的 `configFromEnv()`/访问器；
+- **不需要停服**：改密是一条 UPDATE，服务端其它进程靠 `Db::cacheStamp()`（内含 `data_version`）
+  立刻能看到（跨进程测试已经证明"A 改密后 B 能用新密码登录"）；
+- **`Db` 只加了两样**：`listAccounts()`（一条 SQL 拿齐四列，哈希前缀判断在 SQL 里）和
+  `configuredPath()`（`TETRIS_DB` 或默认值，open 之前也能用）。schema 仍然只在 `Db.cpp`。
 
 ### 存储层（SQLite，2026-11-02）
 
@@ -881,6 +912,24 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     （现象是"菜单停了、后面全超时"）。`integration_test.py` 的 `Conn` 从一开始就带 mark，
     新写协议用例照它抄。
 
+40. **"重置密码"不是"找回密码"**：`tetris-admin reset-password` 得管理员亲自跑，没有邮箱/密保
+    这条路（6.28）。它用注册同一套策略，所以**重置一个存量 5 位老密码时会被强制变长**
+    （老账号只要不重置就仍然能用短密码登录，6.21）；它也不会踢掉已登录会话
+    （服务端没有会话表），新密码从下次登录生效。
+
+41. **备份只有"在线"这一条路是安全的**：`tetris-admin backup` 走 Online Backup API，
+    运行中也能拿到一致快照；**直接 cp 三件套只能停机时做**，而且只拷 `.db` 会丢掉 WAL 里
+    还没 checkpoint 的数据（6.31）。备份文件里是密码哈希，工具会 `chmod 600`，
+    别放进 web 目录或公共下载区。
+
+42. **启动打印配置必须取"生效值"，不能另抄一份默认值**：`printEffectiveConfig()` 里每个数都来自
+    `AuthThrottle::configFromEnv()` / `IpThrottle::configFromEnv()` / `Filedata::hash*()` /
+    `ConnectionPool::trim*()` / `Db::configuredPath()`。这也是把
+    `Filedata::hashThreadCount()/hashQueueLimit()` 从 private 挪到 public 的原因 ——
+    想打印就得有访问器，**别在 main.cpp 里重写一遍解析逻辑**（那份迟早和模块对不上，
+    照着一个错的默认值排查比不打印更糟）。打印发生在 fork 之前（只打一遍），期间用临时的
+    bootstrap logger 接住 `configFromEnv()` 的非法值告警，打完就 drop。
+
 ## 7. 仓库现状
 
 > 第 0 节和第 9 节按约定没有随本轮改动（仍描述 SQLite 那一轮）；本轮（SSH 承载）的
@@ -901,7 +950,7 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     两层状态都是**每进程**的，多 worker 时阈值 ×N（见 6.23/6.25）；
   - IP 兜底不覆盖注册路径，也没有"跨进程共享计数"（要做得上共享内存/文件）；
   - 密码策略只在注册/改密时检查；**登录后可以改密**（主菜单 5），存量短密码由用户自己换；
-    没有"忘记密码"（没邮箱），忘记只能管理员直接改库（见 6.28，"管理员 CLI"还没做）；
+    没有"忘记密码"（没邮箱）——现在靠管理员跑 `tetris-admin reset-password`（见 5.管理命令行、6.28）；
   - `accept` 路径的 `showInitMenu` 还没走 `OutputBatch`，菜单也没预渲染缓存；
   - 两个 100ms 定时器仍扫全表（空闲连接 CPU 的主要来源），未做"游戏中/待发/待清理"分集合；
   - 游戏负载的绝对 CPU 数字以 4.7/4.8/4.9 的同机 A/B 为准；4.1~4.6 的 CPU 都是 -O0/全程口径，
@@ -913,8 +962,9 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
   - **SSH 承载已完成**（`deploy/` + `TETRIS_BIND` + `docs/SSH_DEPLOY.md`，见 5.SSH 承载）：
     sshd `ForceCommand` 把会话直接交给桥，公网只开 22、9999 只绑回环；
     桥现在是 Python 进程（CI 实测 16.8 MB/会话，见 6.36），换 C 的收益见第 8 节；
-  - **没有管理员 CLI，也没有备份脚本**：重置密码只能手工改库（`sqlite3` 或
-    `UPDATE accounts SET password=...`），备份只能手工 `.backup`（见 6.31）；
+  - **管理命令行已完成**（`tetris-admin`：`reset-password` / `backup` / `list-users` / `stats`，
+    见 5.管理命令行），服务端启动也会打印一遍生效配置；
+    备份目前是"想起来手工跑"的状态，定时任务/日志轮转随打包那一轮一起给（第 8 节）；
   - 远程压测脚本与手册已就绪（`play_remote.sh` / `REMOTE_BENCH.md`），尚未在真实云主机上跑过；
   - 连接数多机压测（`BENCH_REMOTE_CLIENTS`）修了源 IP 绑定，但 >6.4 万/台仍需加网卡 alias，未实测；
   - `output()` 的 1 MB 慢客户端上限是拍脑袋定的，未针对极端场景验证过；
@@ -925,8 +975,7 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 
 | 方向 | 内容 | 价值 |
 |---|---|---|
-| **管理员 CLI + 备份（上线必需）** | `tetris-admin reset-password <user>`（没邮箱，"找回"只能这样）/ `backup`（`sqlite3 .backup`）；顺便启动时打印生效配置 | **高**：线上忘密码的用户目前无自救路径 |
-| **打包/部署（上线必需）** | Dockerfile（多阶段、非 root、HEALTHCHECK）+ systemd unit + 日志轮转 | **高**：别人无法按 README 一把部署 |
+| **打包/部署（上线必需）** | Dockerfile（多阶段、非 root、HEALTHCHECK）+ systemd unit（`LimitNOFILE`、只绑回环、日志轮转、重启拉起）+ 上线 checklist | **高**：别人无法按 README 一把部署；systemd 默认 `LimitNOFILE` 会成隐藏天花板 |
 | **注册限流（公网时做）** | 方案 A：按 IP（20 次/5 分钟）+ 全局（200 次/小时），提交密码前挡掉；方案 B（更重）：把注册哈希挪进哈希线程池，队满回 Busy | 中：见 6.30，是现在唯一无上限的 PBKDF2 路径 |
 | 桥换成 C 版 | 现在每会话一个 Python 进程（CI 实测 16.8 MB），换几十行 C 可降到 1~2MB；SSH 承载的并发上限目前就是这项内存（见 6.36） | 中：真上量时才值得 |
 | 认证状态跨进程 | 用户名退避 / IP 兜底的计数都在各 worker 内存里，阈值实际 ×N；要统一得放共享内存或落文件 | 低：只有真的开多 worker 才值得 |
@@ -941,7 +990,9 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 **按 IP 兜底（IpThrottle + 两套测试）**、**改密/重置（主菜单 5 + changePasswordAsync）**、
 **连接池 trim（空闲缓存压回 4096，CI 有 3000 连接用例）**、
 **存储层 SQLite（accounts/scores + WAL + 旧 CSV 一次性导入）**、
-**SSH 承载（sshd `ForceCommand` + `deploy/` 桥 + `TETRIS_BIND`，见 5.SSH 承载）**（本轮）、
+**SSH 承载（sshd `ForceCommand` + `deploy/` 桥 + `TETRIS_BIND`，见 5.SSH 承载）**、
+**管理命令行（`tetris-admin`：reset-password / backup / list-users / stats + 启动打印生效配置，
+见 5.管理命令行）**（本轮）、
 密码加盐哈希 + 迁移、登录吞吐、输出批量。
 
 ## 9. 给新会话的起步提示

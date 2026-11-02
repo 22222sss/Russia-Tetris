@@ -4,11 +4,15 @@
 #include"../Utility/Utility.h"
 #include"../UImanage/UImanage.h"
 #include"../TetrisGame/Server.h"
+#include"../TetrisGame/AuthThrottle.h"
+#include"../TetrisGame/IpThrottle.h"
+#include"../TetrisGame/Db.h"
 #include"../EventLoop/EventLoop.h"
 #include"../TetrisGame/Filedata.h"
 #include"../TetrisGame/PlayerInfo.h"
 #include"../Utility/SystemOptimizer.h"
 #include <spdlog/async.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <sys/wait.h>
 #include <arpa/inet.h>   // inet_pton：TETRIS_BIND 解析（netinet/in.h 不保证带上它）
 
@@ -55,6 +59,59 @@ static int env_int(const char* name, int fallback, int lo, int hi) {
         return fallback;
     }
     return value;
+}
+
+// 监听地址：默认 0.0.0.0（旧行为）。走 SSH 承载时设 127.0.0.1，让 9999 只对本机的
+// tetris-bridge 可见 —— 公网入口只剩 sshd，明文协议没有机会被直接连上（docs/SSH_DEPLOY.md）。
+static std::string bindAddressFromEnv() {
+    const char* raw = std::getenv("TETRIS_BIND");
+    return (raw != nullptr && *raw != '\0') ? std::string(raw) : std::string("0.0.0.0");
+}
+
+// 启动时把"实际生效"的配置打一遍：二十来个环境变量，配错了只从行为上很难查出来
+// （比如 TETRIS_AUTH_IP_MAX_FAILURES 少写一个 0，表现是"偶尔莫名其妙锁人"）。
+//
+// 值都取自各模块自己的 configFromEnv()/访问器，**不在这里另抄一份默认值** ——
+// 抄一份早晚会和模块漂移，那比不打印更糟（照着一个错的默认值去排查）。
+static void printEffectiveConfig(int listen_port, int workers, int reuseport) {
+    // 各模块的 configFromEnv() 在环境变量非法时会 logger->warn，所以先建一个只写
+    // stderr 的 bootstrap logger；run_worker 会把它换成每进程的文件 logger。
+    spdlog::drop("bootstrap");
+    logger = spdlog::stderr_color_mt("bootstrap");
+    logger->set_level(spdlog::level::warn);
+
+    const AuthThrottle::Config auth = AuthThrottle::configFromEnv();
+    const IpThrottle::Config ip = IpThrottle::configFromEnv();
+    const int hashThreads = Filedata::hashThreadCount();
+    const char* level = std::getenv("TETRIS_LOG_LEVEL");
+
+    std::cout << "\n生效配置：" << std::endl;
+    std::cout << "  监听地址    TETRIS_BIND             = " << bindAddressFromEnv() << std::endl;
+    std::cout << "  监听端口    TETRIS_PORT             = " << listen_port << std::endl;
+    std::cout << "  worker 数   TETRIS_WORKERS          = " << workers << std::endl;
+    std::cout << "  REUSEPORT   TETRIS_REUSEPORT        = " << reuseport << std::endl;
+    std::cout << "  日志级别    TETRIS_LOG_LEVEL        = "
+              << (level != nullptr && *level != '\0' ? level : "warn（默认）") << std::endl;
+    std::cout << "  数据库      TETRIS_DB               = " << Db::configuredPath() << std::endl;
+    std::cout << "  哈希线程    TETRIS_HASH_THREADS     = " << hashThreads
+              << (hashThreads <= 1 ? "（不开线程池，校验退回文件线程串行）" : "") << std::endl;
+    std::cout << "  哈希队列    TETRIS_AUTH_QUEUE_LIMIT = "
+              << Filedata::hashQueueLimit() << std::endl;
+    std::cout << "  用户名退避  TETRIS_AUTH_*           = 前 " << auth.freeAttempts
+              << " 次失败免延迟，之后 " << auth.baseDelayMs << "ms 起翻倍、"
+              << auth.maxDelayMs << "ms 封顶；记录 " << auth.entryTtlMs / 1000
+              << "s 过期，最多跟踪 " << auth.maxEntries << " 个用户名" << std::endl;
+    std::cout << "  按 IP 兜底  TETRIS_AUTH_IP_*        = " << ip.maxFailures << " 次 / "
+              << ip.windowMs / 1000 << "s 滑动窗口（" << IpThrottle::kSlots << " 槽，每槽 "
+              << static_cast<double>(ip.windowMs) / IpThrottle::kSlots / 1000.0
+              << "s）；最多跟踪 " << ip.maxEntries << " 个 IP" << std::endl;
+    std::cout << "  连接池      预创建 " << ConnectionPool::INITIAL_POOL_SIZE
+              << " 个，上限 " << ConnectionPool::MAX_POOL_SIZE
+              << " 个，空闲 trim 目标 " << ConnectionPool::trimTarget()
+              << " 个（每 " << ConnectionPool::trimIntervalMs() << "ms 检查）" << std::endl;
+
+    logger.reset();
+    spdlog::drop("bootstrap");
 }
 
 // 一个 worker 的完整生命周期：日志 -> 连接池 -> 异步文件线程 -> 监听 socket -> 事件循环。
@@ -123,8 +180,7 @@ static int run_worker(int listen_port, int workers, size_t pool_size, int reusep
     // 绑定地址：默认 0.0.0.0（保持旧行为）。生产上走 SSH 承载时设
     // TETRIS_BIND=127.0.0.1，让 9999 只对本机的 tetris-bridge 可见 ——
     // 公网入口只剩 sshd，明文协议不再有被直接连上的机会。
-    const char* bind_env = std::getenv("TETRIS_BIND");
-    const std::string bind_addr = (bind_env && *bind_env) ? bind_env : "0.0.0.0";
+    const std::string bind_addr = bindAddressFromEnv();
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -218,6 +274,10 @@ int main()
     // 但允许强制打开/关闭 —— 压测时要能把"多进程"和"这个 socket 选项本身"
     // 拆开定位（单 worker + 开 reuseport 就能看出选项有没有代价）。
     int reuseport = env_int("TETRIS_REUSEPORT", (workers > 1) ? 1 : 0, 0, 1);
+
+    // 打印生效配置要放在 fork 之前：每个 worker 都会建自己的 logger，
+    // 放在里面会打印 N 遍（而配置本身在所有 worker 里是一样的）。
+    printEffectiveConfig(listen_port, workers, reuseport);
 
     // 注意：系统优化放在 run_worker 里做（它要写日志，而 logger 是每进程创建的）
 

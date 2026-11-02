@@ -31,18 +31,31 @@ SOURCES = \
 OBJECTS = $(SOURCES:.cpp=.o)
 OBJDIR = obj
 OBJS = $(addprefix $(OBJDIR)/, $(OBJECTS))
-DEPS = $(OBJS:.o=.d)
+
+# 管理命令行：只链 Db / PasswordHash（外加 spdlog / sqlite3 / OpenSSL），
+# 不拖进网络与游戏逻辑。默认一起编译 —— CI 的 Build 步骤顺便验证它，
+# 否则这种"平时没人跑"的运维工具最容易悄悄烂掉。
+ADMIN_TARGET = tetris-admin
+ADMIN_SOURCES = tetris_admin.cpp TetrisGame/Db.cpp TetrisGame/PasswordHash.cpp
+ADMIN_OBJECTS = $(addprefix $(OBJDIR)/, $(ADMIN_SOURCES:.cpp=.o))
+ADMIN_LDFLAGS = -lspdlog -lfmt -lcrypto -lsqlite3 -pthread
+
+DEPS = $(OBJS:.o=.d) $(ADMIN_OBJECTS:.o=.d)
 
 # 目标
 TARGET = tetris_game
 
 # 默认目标
-all: $(TARGET)
+all: $(TARGET) $(ADMIN_TARGET)
 
 # 链接目标
 $(TARGET): $(OBJS)
 	$(CXX) -o $@ $(OBJS) $(LDFLAGS)
 	@echo "✅ 编译完成: $(TARGET)（优化级别: $(OPT)）"
+
+$(ADMIN_TARGET): $(ADMIN_OBJECTS)
+	$(CXX) -o $@ $(ADMIN_OBJECTS) $(ADMIN_LDFLAGS)
+	@echo "✅ 编译完成: $(ADMIN_TARGET)"
 
 # 编译规则
 $(OBJDIR)/%.o: %.cpp
@@ -52,7 +65,7 @@ $(OBJDIR)/%.o: %.cpp
 
 # 清理
 clean:
-	rm -rf $(OBJDIR) $(TARGET)
+	rm -rf $(OBJDIR) $(TARGET) $(ADMIN_TARGET)
 	@echo "🧹 清理完成"
 
 # 重新编译
