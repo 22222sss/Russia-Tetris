@@ -1,0 +1,71 @@
+# Russia-Tetris 服务端（生产形态：只绑回环，公网入口是 sshd + tetris-bridge）
+#
+# 安装：sudo deploy/install-systemd.sh（建账号/目录、装单元、装 sysctl、开机自启）
+# 手动：sudo cp deploy/systemd/tetris-game.service /etc/systemd/system/
+#       sudo systemctl daemon-reload && sudo systemctl enable --now tetris-game
+#
+# 三个"不写就出事"的项，改之前先读 docs/DEPLOY.md 第 5 节：
+#   LimitNOFILE   systemd 给服务的默认 nofile 通常很小（Ubuntu 22.04 是 1024:524288）。
+#                 SystemOptimizer 只能把**软**限制升到硬限制，硬限制本身不够时它救不了 ——
+#                 这里必须把软硬都抬到 300000，否则它就是一条看不见的连接天花板。
+#   TETRIS_BIND   不设就绑 0.0.0.0，玩家可以绕过 sshd 直连明文端口，SSH 承载全白做。
+#   Restart=      被 OOM / 崩溃杀掉要能自己回来；配 StartLimit* 防止"配置错就无限重启"。
+[Unit]
+Description=Russia Tetris game server (loopback-only, fronted by sshd)
+Documentation=file:///usr/local/share/doc/tetris/DEPLOY.md
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=tetrisd
+Group=tetrisd
+
+# 工作目录 = 数据目录：SQLite 库和（首次启动时的）userdata.csv 都按这里找
+WorkingDirectory=/var/lib/tetris
+StateDirectory=tetris
+StateDirectoryMode=0700
+# 日志单独放 /var/log/tetris（TETRIS_LOG_DIR），不和库混在一个目录里
+LogsDirectory=tetris
+LogsDirectoryMode=0750
+
+Environment=TETRIS_BIND=127.0.0.1
+Environment=TETRIS_PORT=9999
+Environment=TETRIS_DB=/var/lib/tetris/tetris.db
+Environment=TETRIS_LOG_DIR=/var/log/tetris
+# 按大小轮转：每份 10 MiB，最多 5 份（≈50 MiB 封顶）。0 = 不轮转（旧行为）
+Environment=TETRIS_LOG_MAX_BYTES=10485760
+Environment=TETRIS_LOG_MAX_FILES=5
+# 先把日志级别保持 warn：info 级别在压测/高并发下会写很多盘
+Environment=TETRIS_LOG_LEVEL=warn
+
+ExecStart=/usr/local/bin/tetris_game
+Restart=always
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# fd 上限就是"能同时服务多少连接"（每连接一个 fd）。软硬都写，
+# 这样 SystemOptimizer 不用（也无法）去抬硬限制。
+LimitNOFILE=300000:300000
+
+StandardOutput=journal
+StandardError=journal
+
+# 加固：服务端只需要读写自己的 StateDirectory/LogsDirectory。
+# 它不写 /usr、不需要 /home、不需要设备、不加载内核模块（sysctl 只读）。
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

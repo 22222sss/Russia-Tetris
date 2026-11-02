@@ -12,6 +12,7 @@
 #include"../TetrisGame/PlayerInfo.h"
 #include"../Utility/SystemOptimizer.h"
 #include <spdlog/async.h>
+#include <spdlog/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <sys/wait.h>
 #include <arpa/inet.h>   // inet_pton：TETRIS_BIND 解析（netinet/in.h 不保证带上它）
@@ -27,16 +28,73 @@ std::shared_ptr<spdlog::logger> logger;
 // 调试时可用环境变量 TETRIS_LOG_LEVEL=debug/info 打开更详细的日志：
 // 异步 sink 默认不逐条 flush，进程被杀会丢尾部，所以非默认级别下开启 flush_on。
 // 多 worker 时每个进程写自己的 log.<pid>.txt，避免 N 个进程交织同一个文件。
+//
+// 日志文件**按大小轮转**（TETRIS_LOG_MAX_BYTES × TETRIS_LOG_MAX_FILES）：以前 log.txt
+// 只涨不缩，一个跑上几个月的实例能把磁盘写满；改用外部 logrotate 又和 spdlog 的
+// 常开 fd 冲突（rename 后继续写旧 inode，copytruncate 则会在文件里留下空洞），
+// 所以轮转放在进程内做 —— Docker 和 systemd 两种形态都同样生效。
+static std::string logDirectoryFromEnv() {
+    const char* raw = std::getenv("TETRIS_LOG_DIR");
+    if (raw == nullptr || *raw == '\0') {
+        return std::string();
+    }
+    std::string dir(raw);
+    if (dir.back() != '/') {
+        dir.push_back('/');
+    }
+    return dir;
+}
+
+static long long env_ll(const char* name, long long fallback, long long lo, long long hi) {
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return fallback;
+    }
+    const long long value = std::atoll(raw);
+    if (value < lo || value > hi) {
+        return fallback;
+    }
+    return value;
+}
+
+// 单个日志文件的上限（字节）：默认 10 MiB。0 = 不轮转（旧行为：log.txt 一直增长）。
+static size_t logMaxBytesFromEnv() {
+    return static_cast<size_t>(env_ll("TETRIS_LOG_MAX_BYTES", 10LL * 1024 * 1024,
+                                      0, 1024LL * 1024 * 1024));
+}
+
+// 轮转保留的份数（含当前文件）：默认 5，即最多占 50 MiB。
+static size_t logMaxFilesFromEnv() {
+    return static_cast<size_t>(env_ll("TETRIS_LOG_MAX_FILES", 5, 1, 100));
+}
+
 static std::shared_ptr<spdlog::logger> create_logger(bool per_process_file) {
     spdlog::init_thread_pool(65536, 2);
     spdlog::drop("logger");   // fork 后继承来的注册表里可能已有同名 logger
 
-    std::string file = "log.txt";
+    const std::string log_dir = logDirectoryFromEnv();
+    std::string file = log_dir + "log.txt";
     if (per_process_file) {
-        file = "log." + std::to_string(static_cast<long>(getpid())) + ".txt";
+        file = log_dir + "log." + std::to_string(static_cast<long>(getpid())) + ".txt";
     }
 
-    auto l = spdlog::basic_logger_mt<spdlog::async_factory>("logger", file);
+    const size_t max_bytes = logMaxBytesFromEnv();
+    std::shared_ptr<spdlog::logger> l;
+    try {
+        if (max_bytes == 0) {
+            l = spdlog::basic_logger_mt<spdlog::async_factory>("logger", file);
+        } else {
+            // 写满 max_bytes 就改名为 log.1.txt（旧的依次后移，最老的删掉）
+            l = spdlog::rotating_logger_mt<spdlog::async_factory>(
+                    "logger", file, max_bytes, logMaxFilesFromEnv());
+        }
+    } catch (const spdlog::spdlog_ex& e) {
+        // 目录不存在 / 没权限：退回 stderr。日志打不开是运维问题，
+        // 不该把"游戏服务起不来"变成它的后果（systemd/journal 里能看到这句）。
+        std::cerr << "❌ 无法打开日志文件 " << file << "：" << e.what()
+                  << "（检查 TETRIS_LOG_DIR 是否存在、是否可写）" << std::endl;
+        l = spdlog::stderr_color_mt("logger");
+    }
     l->set_level(spdlog::level::warn);
 
     if (const char* env = std::getenv("TETRIS_LOG_LEVEL")) {
@@ -92,6 +150,15 @@ static void printEffectiveConfig(int listen_port, int workers, int reuseport) {
     std::cout << "  REUSEPORT   TETRIS_REUSEPORT        = " << reuseport << std::endl;
     std::cout << "  日志级别    TETRIS_LOG_LEVEL        = "
               << (level != nullptr && *level != '\0' ? level : "warn（默认）") << std::endl;
+    const std::string logDir = logDirectoryFromEnv();
+    const size_t logMaxBytes = logMaxBytesFromEnv();
+    std::cout << "  日志        TETRIS_LOG_*            = "
+              << (logDir.empty() ? std::string("工作目录/") : logDir) << "log.txt，"
+              << (logMaxBytes == 0
+                      ? std::string("不轮转（log.txt 会一直增长）")
+                      : std::to_string(logMaxBytes / 1024) + " KiB × "
+                            + std::to_string(logMaxFilesFromEnv()) + " 份轮转")
+              << std::endl;
     std::cout << "  数据库      TETRIS_DB               = " << Db::configuredPath() << std::endl;
     std::cout << "  哈希线程    TETRIS_HASH_THREADS     = " << hashThreads
               << (hashThreads <= 1 ? "（不开线程池，校验退回文件线程串行）" : "") << std::endl;
@@ -262,6 +329,16 @@ static void forward_signal(int sig) {
     }
 }
 
+// 单 worker 模式没有子进程可转发，但**必须**装一个处理器：
+// 容器里默认的 1 号进程就是 tetris_game，而内核不会把"默认动作是终止"的信号
+// 投递给 1 号进程 —— 不装的话 `docker stop` 会干等到超时再 SIGKILL，
+// systemd 的 stop 也会拖到 TimeoutStopSec。
+// 这里直接 _exit：SQLite 是 WAL + 事务，进程被硬杀也不会坏库；
+// 不在信号处理器里做线程池/日志器的析构（那些操作不是 async-signal-safe 的）。
+static void exit_on_signal(int) {
+    _exit(0);
+}
+
 int main()
 {
     std::cout << "🎮 俄罗斯方块服务器启动中..." << std::endl;
@@ -282,6 +359,9 @@ int main()
     // 注意：系统优化放在 run_worker 里做（它要写日志，而 logger 是每进程创建的）
 
     if (workers == 1) {
+        // 单 worker 也要能立刻响应 SIGTERM/SIGINT（容器里它是 1 号进程，见 exit_on_signal）
+        signal(SIGINT, exit_on_signal);
+        signal(SIGTERM, exit_on_signal);
         return run_worker(listen_port, 1, ConnectionPool::INITIAL_POOL_SIZE, reuseport);
     }
 

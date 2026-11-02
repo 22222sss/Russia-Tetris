@@ -1,0 +1,35 @@
+# Russia-Tetris 的 Docker 构建上下文：只把编译需要的东西送进去
+#
+# 本地工作目录里有 30MB 的 Linux 二进制、obj/、日志、数据库和压测结果，
+# 不排掉的话每次 build 都要把它们打包上传一遍（而且可能把用旧代码编的
+# 二进制盖到镜像里）。
+
+.git
+.github
+.gitignore
+images-and-gif
+**/__pycache__
+**/*.pyc
+
+# 本地/CI 构建产物（镜像里会重新编译）
+src/obj
+src/tetris_game
+src/tetris-admin
+src/sizeof_user
+src/sizeof_user.cpp
+src/sizeof_err.txt
+
+# 运行时数据：日志、SQLite 三件套、旧 CSV（都含密码哈希，绝不进镜像）
+src/log.txt
+src/log.*.txt
+src/tetris.db
+src/tetris.db-wal
+src/tetris.db-shm
+src/userdata.csv
+src/userdata.csv.lock
+
+# 压测/测试产物
+bench-results
+play-results
+login-results
+play-remote-results

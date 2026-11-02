@@ -1,0 +1,19 @@
+# 每天 04:15 备份一次 tetris.db（错峰 + 随机延迟，避免和别的定时任务撞在一起）。
+#
+# 查看：systemctl list-timers tetris-backup.timer
+# 立即跑：sudo systemctl start tetris-backup.service
+# 失败时：systemctl --failed / journalctl -u tetris-backup.service -n 50
+[Unit]
+Description=Daily snapshot of tetris.db
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+# 最多再随机推迟 10 分钟（多台机器不会同时打满磁盘）
+RandomizedDelaySec=600
+# 关机错过的那次，开机后补跑一次
+Persistent=true
+AccuracySec=1min
+Unit=tetris-backup.service
+
+[Install]
+WantedBy=timers.target

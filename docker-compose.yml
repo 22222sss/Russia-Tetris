@@ -1,0 +1,56 @@
+# Russia-Tetris 单机部署示例（Linux）：服务端跑在容器里，SSH 入口留在宿主。
+#
+#   docker compose up -d --build
+#   docker compose exec tetris tetris-admin stats
+#   docker compose logs -f tetris
+#
+# 完整步骤、上线 checklist、备份与升级：docs/DEPLOY.md（第 4 节是 Docker 形态）。
+services:
+  tetris:
+    build: .
+    image: russia-tetris:local
+    container_name: tetris
+
+    # host 网络：容器里绑 127.0.0.1:9999 就等于宿主回环，和 systemd 形态完全一致，
+    # 也不会踩"docker-proxy 连不到容器 loopback"那个坑（见 Dockerfile 的 ENV 注释）。
+    # 不想用 host 网络就删掉这行，加 ports: ["127.0.0.1:9999:9999"]，并把
+    # TETRIS_BIND 改成 0.0.0.0 —— 发布地址必须写 127.0.0.1，别写成 9999:9999。
+    network_mode: host
+
+    # tini 做 PID 1：容器里的 1 号进程对"默认动作"的信号是不处理的，
+    # 有它 docker stop 才能立刻把 SIGTERM 交给服务端。
+    init: true
+    restart: unless-stopped
+
+    environment:
+      TETRIS_BIND: 127.0.0.1
+      TETRIS_PORT: "9999"
+      TETRIS_DB: /data/tetris.db
+      TETRIS_LOG_DIR: /var/log/tetris
+      TETRIS_LOG_MAX_BYTES: "10485760"
+      TETRIS_LOG_MAX_FILES: "5"
+      TETRIS_LOG_LEVEL: warn
+      # 多 worker 时限流状态是每进程一份，阈值实际 ×N（HANDOVER 6.23），别随手打开：
+      # TETRIS_WORKERS: "2"
+
+    # fd 上限 = 能同时服务多少连接；Docker 的默认值和宿主 ulimit 有关，别指望它
+    ulimits:
+      nofile:
+        soft: 300000
+        hard: 300000
+
+    volumes:
+      # tetris.db（含密码哈希）与 log.txt 分开存；备份用 docker compose exec 里的
+      # tetris-admin backup，别直接 cp 卷（WAL 会丢数据，见 docs/DEPLOY.md 第 7 节）
+      - tetris-data:/data
+      - tetris-logs:/var/log/tetris
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  tetris-data:
+  tetris-logs:

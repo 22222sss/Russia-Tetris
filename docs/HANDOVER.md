@@ -1,11 +1,54 @@
 ## 0. 当前状态（截至 2026-11-02）
 
-> 本次会话（2026-11-02）六轮：**① 按来源 IP 兜底** → **② 改密/重置** → **③ 连接池 trim**
-> → **④ 存储层 CSV → SQLite** → **⑤ SSH 承载** → **⑥ 管理员 CLI + 备份**。
+> 本次会话（2026-11-02）七轮：**① 按来源 IP 兜底** → **② 改密/重置** → **③ 连接池 trim**
+> → **④ 存储层 CSV → SQLite** → **⑤ SSH 承载** → **⑥ 管理员 CLI + 备份** →
+> **⑦ 打包/部署（Dockerfile + systemd 单元 + 日志轮转）**。
 > 更早：`-O2`（4.7）→ `User` 棋盘 int8（4.8）→ 连接池预创建 2048（4.9）→ 认证加固第一/二批。
 > 每轮实现细节见第 5 节，性能数据见第 4 节。
 
-**本轮做完了管理命令行：`tetris-admin`**（`src/tetris_admin.cpp`）
+**本轮做完了打包/部署：镜像 + systemd 单元 + 日志轮转**（`Dockerfile` / `deploy/systemd/` /
+`main.cpp` 的 `TETRIS_LOG_*`）
+
+1. **入口脚本而不是文档里的十几条命令**：`deploy/install-systemd.sh` 幂等完成
+   （装二进制/备份脚本 → 建 `tetrisd` 账号 → 建三个目录 → 装三个单元 → 装 sysctl →
+   开机自启 → 启动并自检）；`deploy/install-ssh-bridge.sh` 仍是 SSH 侧那一步；
+2. **`LimitNOFILE=300000:300000`**（软硬都写）：systemd 默认 nofile 是 `1024:524288`，
+   而 `SystemOptimizer` 只会把软限制抬到硬限制 —— 硬限制本身不够时它就是一条看不见的
+   连接天花板。CI 里既查 `systemctl show -p LimitNOFILE`，也读 `/proc/<pid>/limits` 核对进程；
+3. **日志真的会轮转了**：`main.cpp` 从 `basic_logger_mt` 换成 `rotating_logger_mt`，
+   新增 `TETRIS_LOG_DIR`（日志目录，默认当前目录）、`TETRIS_LOG_MAX_BYTES`（默认 10 MiB，0=不轮转）、
+   `TETRIS_LOG_MAX_FILES`（默认 5）；**没有用外部 logrotate**（spdlog 的 fd 常开，
+   `create` 会让进程继续写旧 inode、`copytruncate` 会在文件里留 NUL 空洞，见 6.44）；
+   打不开日志目录时退回 stderr 并提示，不让"日志写不了"变成"服务起不来"；
+4. **SIGTERM 处理器**（单 worker 模式）：容器里 `tetris_game` 通常是 1 号进程，而内核不会把
+   "默认动作是终止"的信号投递给 1 号进程 —— 不装处理器的话 `docker stop` 会干等到超时再
+   SIGKILL、systemd stop 也会拖到 `TimeoutStopSec`；现在收到就 `_exit(0)`（WAL 崩溃安全，见 6.46）；
+5. **每日备份变成系统的一部分**：`tetris-backup.timer`（每天 04:15 + 随机延迟 + `Persistent`）
+   → `tetris-backup.service` → `deploy/tetris-backup.sh` → `tetris-admin backup`；
+   保留 14 份、失败删半成品并让 systemd 记 `failed`；备份目录 `/var/backups/tetris` 故意
+   不在库所在目录（6.41）；
+6. **Dockerfile**：`debian:bookworm`（构建）→ `debian:bookworm-slim`（运行），只编一次、
+   `strip` 过、运行阶段只装运行库、`USER tetris`（uid 10001）、`VOLUME /data`、
+   `HEALTHCHECK` 真的连 `127.0.0.1:9999` 并**读到首屏字节**才算健康；
+   容器里 `TETRIS_BIND=0.0.0.0` + 宿主 `-p 127.0.0.1:9999:9999`（原因见 6.47），
+   `docker-compose.yml` 用 host 网络回到"绑 127.0.0.1"的形态；
+7. **测试/CI**：新增 `tests/deploy_test.py`（9 项静态断言：单元关键项、环境变量拼写、
+   Dockerfile、.dockerignore、compose、脚本语法、备份脚本行为、文档不漂移）与
+   `tests/log_rotation_test.py`（真二进制，500 条连接逼出多次轮转，断言 `log.N.txt` 出现、
+   份数/大小不超限、日志落在 `TETRIS_LOG_DIR`）；CI 末尾新增「Deploy artifacts test
+   (systemd)」（**真的装一遍**：LimitNOFILE/只绑回环/真跑一次备份 + 权限 600 + integrity_check/
+   `kill -9` 后等到**新 MainPID**/stop 计时）与「Docker image build and health check」
+   （真 build、真跑、断言 healthy/非 root/fd 300000/宿主能读到字节/容器内 tetris-admin 可用）。
+   job 从 22 步变 24 步，`timeout-minutes` 15 → 30；
+8. **上线 checklist 落在 `docs/DEPLOY.md`**：准备 → 部署 → 验证 → 运维四段，每条都带
+   "怎么验"（`ss -ltn` 只绑回环、`/proc/<pid>/limits`、`systemctl --failed`、恢复演练……），
+   另有升级/回滚、日志、备份恢复、排错表、安全边界各一节。
+
+> ⚠️ 本轮的 C++/deploy/CI 改动沙箱里跑不了（没有 g++、systemd、docker、bash），只能靠 CI；
+> 本地跑通的是 `tests/deploy_test.py`（7 项执行 + 2 项 shell 项在本机跳过）。
+> 首次 push 的 CI 结果见本节末尾 / 第 5 节对应小节。
+
+**上一轮做完了管理命令行：`tetris-admin`**（`src/tetris_admin.cpp`）
 
 1. **为什么要它**：没有邮箱，"忘记密码"就没有自救路径（6.28），以前只能手工 `sqlite3` 改库；
    备份也一直靠记命令。现在 `make` 会一次编出 `tetris_game` 和 `tetris-admin` 两个二进制，
@@ -28,7 +71,7 @@
    其余 20 步照旧通过。这一轮被 CI 抓到两个错：`ConnectionPool::MAX_POOL_SIZE` 是 private
    （6.42）、`Popen(cwd=...)` 下相对路径失效（6.43）。
 
-**上一轮做完了 SSH 承载：公网只开 sshd、9999 只绑回环**（`deploy/` + `TETRIS_BIND`）
+**再上一轮做完了 SSH 承载：公网只开 sshd、9999 只绑回环**（`deploy/` + `TETRIS_BIND`）
 
 - `deploy/tetris-bridge.py`：把一条 SSH 会话的 stdin/stdout 接到 `127.0.0.1:9999`，
   补 **raw 模式 / CR→CRLF / 本地回显**（`telnet` 行模式那三个坑），stdout 只留游戏字节；
@@ -51,18 +94,26 @@
 
 **下一步建议（按顺序，详见第 8 节）**：
 
-1. **打包/部署**（上线必需）：Dockerfile（多阶段、非 root、HEALTHCHECK）+ systemd unit。
-   重点不只是"能起来"：**`LimitNOFILE=300000`**（systemd 默认硬限制会成为隐藏的连接天花板，
-   `SystemOptimizer` 只能把软限制升到硬限制）、只绑回环、`log.txt` 轮转（现在无限增长）、
-   重启拉起、备份定时任务，以及一份上线 checklist；
-2. **注册限流**（公网开放后）：注册的 PBKDF2 跑在唯一写线程上且没有任何上限（6.30）；
-3. 认证状态跨进程（可选，只有真开多 worker 才值得）；
-4. 桥换成 C 版（每会话 16.8~17MB → 预期 1~2MB；SSH 承载的并发上限就是这项内存）——
+1. **注册限流**（公网开放后唯一没有上限的 PBKDF2 路径）：注册哈希跑在唯一写线程上，
+   一个客户端每秒能塞进 ~20 个注册，把登录的延迟拖到无界（6.30）；
+2. 认证状态跨进程（可选，只有真开多 worker 才值得）；
+3. 桥换成 C 版（每会话 16.8~17MB → 预期 1~2MB；SSH 承载的并发上限就是这项内存）——
    只有真上量才值得；
-5. `-flto` / 连接建立路径（性能线，收益有限，服务端本来就不是瓶颈）。
+4. `-flto` / 连接建立路径（性能线，收益有限，服务端本来就不是瓶颈）。
+
+> **打包/部署已完成**（`Dockerfile` + `deploy/systemd/` + 进程内日志轮转 + 每日备份 timer +
+> `docs/DEPLOY.md` 的上线 checklist），不要再重复做；只有"注册限流"还是上线前的缺口。
 
 **最有用的结论**（细节见后文）：
 
+- **部署有三条"不写就出事"**：`LimitNOFILE=300000:300000`（systemd 默认软限制就是连接数
+  天花板）、`TETRIS_BIND=127.0.0.1`（否则明文端口直上公网）、`Restart=always`（崩溃能回来）；
+  上线 checklist 在 `docs/DEPLOY.md` 第 0 节，每条都带"怎么验"；
+- **日志在进程内轮转**（`TETRIS_LOG_DIR` / `_MAX_BYTES` / `_MAX_FILES`，默认 10 MiB × 5 份）：
+  不用外部 logrotate，因为 spdlog 的 fd 常开 —— `create` 会让进程继续写旧 inode，
+  `copytruncate` 会在文件里留 NUL 空洞（6.44）；
+- **备份是系统的一部分**：`tetris-backup.timer` 每天 04:15 调 `tetris-admin backup`，
+  保留 14 份、失败让 systemd 记 `failed`；恢复时必须连 `-wal` 一起去掉（6.48）；
 - **认证侧三层，按代价从低到高**：IP 兜底（300 次/5 分钟）→ 用户名退避（前 5 次免延迟、
   1s 起翻倍、30s 封顶）→ 哈希队列上限 1024（队满回"服务繁忙"且不计失败）；
   两层退避状态都是**每进程**的，多 worker 时阈值实际 ×N（默认 1 worker 不受影响）；
@@ -140,6 +191,9 @@ cd src && make -j"$(nproc)"    # 产出两个二进制：tetris_game（服务端
 | `TETRIS_POOL_TRIM_TARGET` | 4096 | 空闲连接池最多缓存多少个 `User`；`>= 100000` 表示不缩 |
 | `TETRIS_POOL_TRIM_INTERVAL_MS` | 5000 | 多久检查一次要不要 trim（100ms 定时器里的限频） |
 | `TETRIS_DB` | `tetris.db` | SQLite 库文件路径（账号 + 成绩；旧的 `userdata.csv` 只用于首次导入） |
+| `TETRIS_LOG_DIR` | 空（当前目录） | 日志目录（末尾补 `/`）；生产设 `/var/log/tetris`，让日志和库分家 |
+| `TETRIS_LOG_MAX_BYTES` | 10485760 | 单份日志上限；`0` = 不轮转（旧行为，log.txt 一直增长） |
+| `TETRIS_LOG_MAX_FILES` | 5 | 轮转保留份数（含当前文件），总量 ≈ 上限 × 份数 |
 
 注意：改了**头文件**之后 `make` 现在会自动重编依赖它的源文件（`-MMD -MP`）。
 如果 `obj/` 是旧规则时代留下的，建议先 `make clean` 一次。
@@ -201,10 +255,16 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 | `tests/merge_results.py` | 合并多分片 JSON 与采样数据，生成 `result.json` |
 | `tests/bridge_test.py` | SSH 桥的自动化测试（**8 项**，不需要服务端）：字节透传 / 回车翻译 / 本地回显 / ESC 序列不回显 / stdin EOF 半关闭 / 服务端断开后桥自行退出 / 连不上时的提示与退出码 / 来源地址映射，外加**真 pty 的 raw 模式**（仅 Linux，顺带回传每会话 RSS）；给 `--server --db` 时再加一条**穿过桥跑真协议**（注册→登录→进游戏→按键） |
 | `tests/admin_test.py` | `tetris-admin` 的自动化测试（**10 项**，对真库跑）：reset-password 的四种结果（哈希账号 / 旧明文即迁移 / 短密码退出码 3 / 未知账号退出码 2 / 与当前密码相同不写库）、backup 的内容一致 + `integrity_check` + 600 权限 + 拒绝覆盖 + `--force`、list-users 的"明文未迁移"标记、stats、用法退出码；`--server-bin` 时再加一条**服务端启动打印生效配置**（含一个非默认 `TETRIS_AUTH_IP_*` 必须是生效值） |
+| `tests/deploy_test.py` | 部署形态检查（**9 项**，纯标准库，本地也能跑）：systemd 单元的关键项（`LimitNOFILE`/`TETRIS_BIND`/`Restart`/非 root/目录分离/加固项）、备份单元 + timer（ExecStart 脚本存在、`Unit=`、`OnCalendar`、`ReadWritePaths`）、**单元/Dockerfile 里的每个 `TETRIS_*` 都必须在 `src/` 里被 `getenv` 到**（防拼错）、Dockerfile（多阶段/非 root/HEALTHCHECK 连 127.0.0.1/钉版本/运行阶段不带 `-dev`）、`.dockerignore`（库/日志/旧 CSV 不进镜像）、compose（host 网络 + 127.0.0.1 + nofile 对齐）、`deploy/*.sh` 语法、**备份脚本行为**（失败不留半成品、按 KEEP 清理）、`docs/DEPLOY.md` 与单元不漂移 |
+| `tests/log_rotation_test.py` | 日志轮转（需要真二进制）：用 `TETRIS_LOG_MAX_BYTES=4096`/`_MAX_FILES=3`/`TETRIS_LOG_LEVEL=info` 起服务端，灌 500 条连接逼出多次轮转，断言 `log.1.txt` 出现、份数不超上限、单文件不超上限的 1.5 倍、日志落在 `TETRIS_LOG_DIR`（工作目录里不能有 `log.txt`） |
 
 `deploy/` 是部署入口（不参与服务端编译）：`tetris-bridge.py`（桥）、`sshd-tetris.conf`
-（sshd Match 片段）、`install-ssh-bridge.sh`（幂等安装 + `sshd -t` 校验 + 失败还原）。
-安装步骤、来源 IP 映射、安全边界和排错表在 `docs/SSH_DEPLOY.md`。
+（sshd Match 片段）、`install-ssh-bridge.sh`（幂等安装 + `sshd -t` 校验 + 失败还原）、
+`install-systemd.sh`（账号/目录/单元/sysctl/开机自启，幂等）、`systemd/`（`tetris-game.service`
++ 备份 service/timer）、`tetris-backup.sh`（在线备份 + 保留 N 份）、`sysctl.d/`（backlog / fd）。
+安装步骤、来源 IP 映射、安全边界和排错表在 `docs/SSH_DEPLOY.md`；**上线（systemd/Docker、
+日志、备份恢复、升级回滚、checklist）在 `docs/DEPLOY.md`**。仓库根还有 `Dockerfile` 与
+`docker-compose.yml`。
 
 三个 C++ 自检（`password_hash_test.cpp` / `auth_throttle_test.cpp` / `ip_throttle_test.cpp`）都能在
 `src/` 下单独编译运行，文件头里有完整的 `g++ ...` 命令；CI 里各占一步，失败细节走 `::error::` 注解。
@@ -232,7 +292,15 @@ CI 步骤（`build.yml`，每次 push `main` 都跑，顺序如下）：
 → 19. **sshd 片段语法**（装 openssh-server，`sshd -t -f` 解析 `deploy/sshd-tetris.conf`，
 再用 `sshd -T -C user=tetris` 核对生效的 `ForceCommand`、并断言片段以 `Match all` 收尾）
 → 20. **管理命令测试**（`tests/admin_test.py`：对真库跑 reset-password / backup / list-users /
-stats，外加服务端启动打印的生效配置）。CI 的 apt 依赖里已加 `libssl-dev`、`libsqlite3-dev`。
+stats，外加服务端启动打印的生效配置）
+→ 21. **部署形态测试**（`tests/deploy_test.py` 9 项静态断言 + `log_rotation_test.py` 日志轮转 +
+**真的装一遍 systemd 服务**：`systemctl show -p LimitNOFILE` 与 `/proc/<pid>/limits` 都是
+300000、`ss -ltn` 只绑 127.0.0.1、真跑一次备份并检查 600 + `integrity_check`、
+`kill -9` 后等到**新的 MainPID**、`systemctl stop` 在 5 秒内完成）
+→ 22. **Docker 镜像**（真 `docker build` + 真跑容器：`HEALTHCHECK` 变 healthy、`id -u` 非 0、
+容器内 nofile=300000、从宿主读到 9999 的首屏字节、容器内 `tetris-admin stats` 可用）。
+整个 job 现在 **24 步**（原 22 步），`timeout-minutes` 从 15 提到 30。
+CI 的 apt 依赖里已加 `libssl-dev`、`libsqlite3-dev`。
 
 `bench.yml` 只在 push 到 `bench-run` 分支或手动触发时跑，**用完记得删分支**。
 push 触发时它做两件事：**同机 -O0/-O2 交错 A/B**（`Build -O0 and -O2 binaries` +
@@ -479,6 +547,52 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 - **异步文件回调收回事件循环线程**：三个 `*Async` 回调原来在异步文件线程上直接改 `User`（data race）。
   现在用 `EventLoop::post()` 经**自管道**投递回循环线程——没用 `evthread_use_pthreads()`（会给每个 event
   操作加全局锁）；回调里加了"状态已变化就丢弃"的守卫。
+
+### 打包/部署（2026-11-02）
+
+上线需要的"最后一公里"：**能一条命令装成服务、跑几个月不炸、出事有退路**。代码本身
+（协议/认证/存储）一行没动，改的是部署形态 + 日志轮转 + 退出语义。
+
+- **`deploy/install-systemd.sh`**（幂等，7 步）：装二进制与备份脚本 → 建/检查 `tetrisd`
+  （系统账号、nologin、home `/var/lib/tetris`）→ 建三个目录（库 0700 / 日志 0750 / 备份 0700，
+  全部属 `tetrisd`）→ 装三个单元 + `daemon-reload` → 装 `/etc/sysctl.d/99-tetris.conf` →
+  `enable` + `restart` 并等到 active（最多 10 秒，不用固定 sleep）→ 自检
+  （`LimitNOFILE`、`/proc/<pid>/limits`、`ss -ltn`），失败时打印 `systemctl status` 再退出；
+  账号名与单元里的 `User=/Group=` **绑死**（改成环境变量会出现"脚本建了 A，单元跑 B"）；
+- **`deploy/systemd/tetris-game.service`**：`LimitNOFILE=300000:300000`（软硬都写，见 6.45）、
+  `TETRIS_BIND=127.0.0.1`、`TETRIS_DB=/var/lib/tetris/tetris.db`、
+  `TETRIS_LOG_DIR=/var/log/tetris`、`Restart=always`+`RestartSec=2`+`StartLimitBurst=5/60s`、
+  `StateDirectory`/`LogsDirectory`（systemd 负责建目录与属主）、`ProtectSystem=strict` /
+  `ProtectHome` / `PrivateTmp` / `PrivateDevices` / `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`
+  等加固项；stdout/stderr 进 journal（启动打印的"生效配置"在这里）；
+- **日志轮转**（`main.cpp`）：`spdlog::basic_logger_mt` → `rotating_logger_mt`，新增
+  `TETRIS_LOG_DIR`（默认当前目录，保留旧行为）、`TETRIS_LOG_MAX_BYTES`（默认 10 MiB，`0`=不轮转）、
+  `TETRIS_LOG_MAX_FILES`（默认 5）；轮转命名是 spdlog 的 `log.1.txt` 规则；
+  打不开日志时退回 stderr 并打印原因（不让"日志目录没建"变成"服务起不来"）；
+  为什么不用 logrotate 见 6.44；
+- **退出语义**（`main.cpp::exit_on_signal`）：单 worker 模式装 `SIGINT`/`SIGTERM` 处理器，
+  `_exit(0)` 立刻退出。原因不只是"停得慢"：容器里 `tetris_game` 是 1 号进程，而内核不会把
+  "默认动作是终止"的信号投递给 1 号进程 —— 不装处理器时 `docker stop` 会等到超时才 SIGKILL；
+  `_exit` 不做清理是**有意**的（信号处理器里不能安全析构线程池/日志器；SQLite 是 WAL + 事务，
+  崩溃安全）；
+- **备份**：`tetris-backup.timer`（04:15 + `RandomizedDelaySec=600` + `Persistent=true`）→
+  `tetris-backup.service`（oneshot，`User=tetrisd`，`ReadWritePaths=/var/backups/tetris`，
+  `Nice=10`）→ `deploy/tetris-backup.sh` → `tetris-admin backup`；脚本负责
+  唯一文件名（同秒加后缀）、失败删半成品、空文件视为失败、按 `TETRIS_BACKUP_KEEP`
+  （默认 14）删旧的；备份目录**故意不在库所在目录**（同盘写满会连库一起带走）；
+- **Dockerfile**（两阶段）：`debian:bookworm` 构建（和 CI 同一组 `-dev` 依赖、
+  默认 `-O2`）→ `strip` → `debian:bookworm-slim` 运行（只装运行库 + `libstdc++6`）；
+  非 root（`tetris`，uid 10001）、`VOLUME /data`、`EXPOSE 9999`、`WORKDIR /data`；
+  `HEALTHCHECK` 用 `/dev/tcp` 连 `127.0.0.1:9999` 并 `head -c 16` **读到首屏字节**才算健康
+  （只测 listen 会漏掉"进程活着但事件循环卡死"）；容器内 `TETRIS_BIND=0.0.0.0` +
+  宿主 `-p 127.0.0.1:9999:9999`（原因见 6.47）；`docker-compose.yml` 用 `network_mode: host`
+  回到"绑 127.0.0.1"的形态，并带 `ulimits.nofile=300000`、两个卷、json-file 日志上限；
+- **测试/CI**：`tests/deploy_test.py`（9 项，纯 stdlib，**本地可跑**；其中 `deploy/*.sh`
+  语法与备份脚本行为两项在没有 POSIX shell 的机器上会跳过，可用 `TETRIS_TEST_SH` 指定）、
+  `tests/log_rotation_test.py`（真二进制）；CI 末尾两步分别是"真装一遍 systemd 并跑一次备份"
+  和"真 build 镜像并跑容器"，见第 3 节；
+- **`docs/DEPLOY.md`**：上线 checklist（每条都带验证命令）+ systemd/Docker 两种形态 +
+  环境变量/上限 + 日志 + 备份恢复 + 升级回滚 + 巡检 + 排错表 + 安全边界。
 
 ### SSH 承载（2026-11-02）
 
@@ -937,6 +1051,44 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     凡是"换了 cwd 起子进程"的地方，二进制/脚本路径要先 `os.path.abspath()`；
     本地用桩跑同样会踩（我本地传的是绝对路径，所以没暴露）。
 
+44. **日志轮转不能交给外部 logrotate**：服务端用的是 spdlog 的文件 sink，**fd 常开**。
+    `create`（rename 后新建）会让进程继续写进已经改名的旧文件，新的 `log.txt` 一直是空的；
+    `copytruncate` 截断后 spdlog 的写偏移还停在原处，文件开头会留下空洞（一屏 `NUL`）。
+    所以轮转放进进程里（`spdlog::rotating_file_sink`），命名是 `log.1.txt` / `log.2.txt`
+    （basename + `.N` + 扩展名，别写成 `log.txt.1`）。`TETRIS_LOG_MAX_BYTES=0` 是"退回不轮转"
+    的开关（老行为），**生产别设**——那正是以前把磁盘写满的配置。
+
+45. **`LimitNOFILE` 的硬限制才是天花板**：`SystemOptimizer::setFileDescriptorLimit()` 只能把
+    **软**限制抬到硬限制（要么已经够、要么 setrlimit 因为没权限失败），硬限制不够时它救不了。
+    systemd 服务的默认值通常是 `1024:524288`（Ubuntu 22.04），**1024 就是能同时服务的连接数**；
+    手工在 shell 里跑则只继承 shell 的 `ulimit -n`。单元里写 `LimitNOFILE=300000:300000`
+    （软硬都写），验证要读 `/proc/<pid>/limits`（`awk '/Max open files/'`），不能只看
+    `systemctl show`——那只是"配置值"，进程里未必生效。
+
+46. **容器里的 1 号进程不处理"默认动作是终止"的信号**：内核不会把 `SIGTERM` 投递给 PID 1
+    除非它装了处理器。所以 `docker stop` 会一直等到 `--time-limit`（默认 10s）再 SIGKILL，
+    systemd 的 stop 也会拖到 `TimeoutStopSec`。两条对策都要有：`main.cpp` 里装
+    `SIGTERM`/`SIGINT` 处理器（单 worker 模式，`_exit(0)`），compose 里 `init: true`
+    （`docker run --init` 同理）。`_exit` 不清理是故意的：信号处理器里不能安全析构线程池，
+    而 SQLite 是 WAL + 事务，硬退出不会坏库。
+
+47. **容器里绑 127.0.0.1 就没人连得上**：`-p 127.0.0.1:9999:9999` 的 `docker-proxy`
+    连的是**容器 IP**，不是容器自己的 loopback。所以镜像里必须 `TETRIS_BIND=0.0.0.0`，
+    "只对公网不可见"由宿主的发布地址保证：`-p 127.0.0.1:9999:9999` ✅、`-p 9999:9999` ❌
+    （后者等于把明文端口放到公网，SSH 承载白做）。用 `--network host` 时反过来：
+    设 `TETRIS_BIND=127.0.0.1`，和 systemd 形态一致（compose 就是这么写的）。
+
+48. **恢复备份必须连 `-wal`/`-shm` 一起删**：只把备份覆盖成 `tetris.db`、留着旧的
+    `tetris.db-wal`，SQLite 下一次打开会把 WAL 里"更新但已不在库里"的页回放上去——
+    恢复出来的数据既不是备份也不是现状。正确顺序：停服 → 挪走旧库（留证）→
+    删 `.db`/`-wal`/`-shm` 三件 → 放备份 → `chown tetrisd` → 起服 → `tetris-admin stats`。
+    这条也写进了 `docs/DEPLOY.md` 第 7.4 节，因为它是恢复流程里最容易漏的一步。
+
+49. **`tetris-admin` 的库路径默认是"当前目录的 `tetris.db`"**：systemd 装法里库在
+    `/var/lib/tetris/tetris.db`、服务的工作目录也是那里，但**你在别处手工跑**时它会去
+    当前目录找，报"找不到数据库文件"（或者更糟：建了个空库然后说"库里还没有账号"）。
+    手工用时一律带绝对路径：`sudo -u tetrisd env TETRIS_DB=/var/lib/tetris/tetris.db tetris-admin stats`。
+
 ## 7. 仓库现状
 
 - `main` 干净，CI 全绿；无 tag；
@@ -968,7 +1120,11 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     桥现在是 Python 进程（CI 实测约 17 MB/会话，见 6.36），换 C 的收益见第 8 节；
   - **管理命令行已完成**（`tetris-admin`：`reset-password` / `backup` / `list-users` / `stats`，
     见 5.管理命令行），服务端启动也会打印一遍生效配置；
-    备份目前是"想起来手工跑"的状态，定时任务/日志轮转随打包那一轮一起给（第 8 节）；
+  - **打包/部署已完成**（5.打包/部署）：`Dockerfile` + `docker-compose.yml` +
+    `deploy/systemd/`（`LimitNOFILE=300000`、只绑回环、加固、`Restart=always`）+
+    `install-systemd.sh` + 每日备份 timer + 进程内日志轮转 + `docs/DEPLOY.md` 的上线 checklist；
+    CI 会**真装一遍 systemd 服务并跑一次备份**、**真 build 镜像并跑健康检查**；
+    还没在真实云主机上走过一遍（本地只有 Windows + 沙箱，见 6.7）；
   - 远程压测脚本与手册已就绪（`play_remote.sh` / `REMOTE_BENCH.md`），尚未在真实云主机上跑过；
   - 连接数多机压测（`BENCH_REMOTE_CLIENTS`）修了源 IP 绑定，但 >6.4 万/台仍需加网卡 alias，未实测；
   - `output()` 的 1 MB 慢客户端上限是拍脑袋定的，未针对极端场景验证过；
@@ -979,8 +1135,7 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 
 | 方向 | 内容 | 价值 |
 |---|---|---|
-| **打包/部署（上线必需）** | Dockerfile（多阶段、非 root、HEALTHCHECK）+ systemd unit（`LimitNOFILE`、只绑回环、日志轮转、重启拉起）+ 上线 checklist | **高**：别人无法按 README 一把部署；systemd 默认 `LimitNOFILE` 会成隐藏天花板 |
-| **注册限流（公网时做）** | 方案 A：按 IP（20 次/5 分钟）+ 全局（200 次/小时），提交密码前挡掉；方案 B（更重）：把注册哈希挪进哈希线程池，队满回 Busy | 中：见 6.30，是现在唯一无上限的 PBKDF2 路径 |
+| **注册限流（公网前必做）** | 方案 A：按 IP（20 次/5 分钟）+ 全局（200 次/小时），提交密码前挡掉；方案 B（更重）：把注册哈希挪进哈希线程池，队满回 Busy | **高**：见 6.30，是现在唯一无上限的 PBKDF2 路径 |
 | 桥换成 C 版 | 现在每会话一个 Python 进程（CI 实测约 17 MB），换几十行 C 可降到 1~2MB；SSH 承载的并发上限目前就是这项内存（见 6.36） | 中：真上量时才值得 |
 | 认证状态跨进程 | 用户名退避 / IP 兜底的计数都在各 worker 内存里，阈值实际 ×N；要统一得放共享内存或落文件 | 低：只有真的开多 worker 才值得 |
 | `-flto` | 跨 TU 内联（UImanage/Utility 的小函数），预期几个点；用 bench.yml 的 A/B 步骤量 | 低~中：CPU |
@@ -996,7 +1151,9 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 **存储层 SQLite（accounts/scores + WAL + 旧 CSV 一次性导入）**、
 **SSH 承载（sshd `ForceCommand` + `deploy/` 桥 + `TETRIS_BIND`，见 5.SSH 承载）**、
 **管理命令行（`tetris-admin`：reset-password / backup / list-users / stats + 启动打印生效配置，
-见 5.管理命令行）**（本轮）、
+见 5.管理命令行）**、
+**打包/部署（Dockerfile + compose + systemd 单元 + 备份 timer + 日志轮转 + docs/DEPLOY.md，
+见 5.打包/部署）**（本轮）、
 密码加盐哈希 + 迁移、登录吞吐、输出批量。
 
 ## 9. 给新会话的起步提示
@@ -1005,36 +1162,40 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 读 docs/HANDOVER.md 了解现状，然后我们继续做 <方向>。
 
 方向已定：**A（终端原生，SSH 承载）+ SQLite**，目标是把现在的服务端做成能上线的产品。
-功能、加固、上线入口都已经收口：认证三层 / 改密 / 连接池 trim / SQLite 存储层 + 旧 CSV 导入 /
-SSH 承载（sshd ForceCommand + 桥 + TETRIS_BIND）/ 管理命令行（reset-password / backup /
-list-users / stats + 启动打印生效配置）。不要再重复做，也别再堆性能优化
-（建连和游戏两种场景服务端都不是瓶颈）。
+功能、加固、上线入口、部署形态都已经收口：认证三层 / 改密 / 连接池 trim / SQLite 存储层 +
+旧 CSV 导入 / SSH 承载（sshd ForceCommand + 桥 + TETRIS_BIND）/ 管理命令行（reset-password /
+backup / list-users / stats + 启动打印生效配置）/ 打包部署（Dockerfile + compose +
+systemd 单元 + 每日备份 timer + 日志轮转 + docs/DEPLOY.md 的上线 checklist）。
+不要再重复做，也别再堆性能优化（建连和游戏两种场景服务端都不是瓶颈）。
 
 上线前真正缺的（按优先级）：
-1. 打包/部署：Dockerfile（多阶段、非 root、HEALTHCHECK）+ systemd unit。
-   重点：LimitNOFILE=300000（systemd 默认硬限制是隐藏的连接天花板）、只绑回环、
-   日志轮转（log.txt 现在无限增长）、重启拉起、备份定时任务 + 一份上线 checklist；
-2. 注册限流（公网开放后）：注册的 PBKDF2 跑在唯一写线程上且无上限，见 6.30。
+1. 注册限流（公网开放前必做）：注册的 PBKDF2 跑在唯一写线程上且无上限（6.30）；
+2. 真机走一遍 docs/DEPLOY.md 第 0 节的 checklist（systemd 装法 + 恢复演练），
+   把"CI 里装过"变成"这台机器上装过"。
 
 要点：
 - 数据在 tetris.db（SQLite，WAL，三件套），旧 userdata.csv 只用于首次导入；测试脚本统一用
   --db；schema 在 src/TetrisGame/Db.cpp 与 tests/db.py 两处，改结构要同时改；
-- 部署入口在 deploy/：tetris-bridge.py（SSH 桥）、sshd-tetris.conf（Match 片段）、
-  install-ssh-bridge.sh（幂等安装）；玩家侧只要 ssh tetris@host，细节见 docs/SSH_DEPLOY.md
-  （含来源 IP 映射、安全边界、排错表）；服务端记得 TETRIS_BIND=127.0.0.1；
+- 部署入口：deploy/install-systemd.sh（服务端 + 备份 timer + sysctl，幂等）、
+  deploy/install-ssh-bridge.sh（SSH 入口，幂等）、Dockerfile + docker-compose.yml；
+  玩家侧只要 ssh tetris@host；细节见 docs/DEPLOY.md（上线）与 docs/SSH_DEPLOY.md（SSH 层）；
+- 三条"不写就出事"：LimitNOFILE=300000:300000、TETRIS_BIND=127.0.0.1、Restart=always；
+  日志在进程内轮转（TETRIS_LOG_DIR/_MAX_BYTES/_MAX_FILES），不要改成外部 logrotate（6.44）；
 - 运维工具是 tetris-admin（make 一起编）：reset-password / backup / list-users / stats；
+  它默认读**当前目录**的 tetris.db，手工用带 TETRIS_DB 绝对路径（6.49）；
   改环境变量后先看启动打印的"生效配置"，别猜默认值；
-- 沙箱里跑不了 WSL/g++，C++ 改动只能 push main 让 CI 验证；失败细节靠 ::notice::/::error::
-  注解（Build 步骤会把前几条 error 一起回传）。本地能跑的是 Python：
-  tests/bridge_test.py（8 项）、tests/admin_test.py（10 项，没有二进制时可以先写个桩验证脚本本身）、
-  tests/mock_server.py + 集成 12 项 / 跨进程 5 项 / IP 兜底 —— 别浪费 CI 轮次；
-- CI 现在 23 步，末尾三步是「SSH bridge test」「Verify sshd snippet」「Admin CLI test」，
-  守的是"部署形态"（只绑回环、sshd 片段能被真实 sshd 解析、管理工具能对真库工作），
-  改 deploy/ 或 tetris_admin.cpp 一定会碰到它们，别删；
+- 沙箱里跑不了 WSL/g++/systemd/docker/bash，C++/deploy/CI 改动只能 push main 让 CI 验证；
+  失败细节靠 ::notice::/::error:: 注解。本地能跑的是 Python：tests/deploy_test.py（9 项静态
+  断言，其中 2 项 shell 相关在本机会跳过）、tests/bridge_test.py（8 项）、tests/admin_test.py
+  （10 项）、tests/mock_server.py + 集成 12 项 / 跨进程 5 项 / IP 兜底 —— 别浪费 CI 轮次；
+- CI 现在 24 步，末尾三步是「Admin CLI test」「Deploy artifacts test (systemd)」
+  「Docker image build and health check」：后两步会**真装一遍 systemd 服务**（LimitNOFILE /
+  只绑回环 / 真跑备份 / kill -9 拉起 / stop 计时）和**真 build 镜像并跑健康检查**；
+  改 deploy/、Dockerfile、tetris_admin.cpp 一定会碰到它们，别删；
 - 压测数字的读法：CPU 看「游戏窗口 CPU / 每按键 µs」，「全程 CPU」被登录 PBKDF2 污染；
   内存看「服务端 RSS」；跨 run/跨 runner 的绝对值不要直接相除；
 - 不要再做这些已完成的事：WSL 安装、README 数据清理、GIF 处理、死代码清理、质量工程、
   多核化、密码加盐哈希 + 迁移、登录吞吐、输出批量、-O2、User int8、池子 2048、
   注册密码策略、假 PBKDF2、用户名退避 + 队列上限、按 IP 兜底、改密、连接池 trim、
-  SQLite 存储层、SSH 承载、管理命令行。
+  SQLite 存储层、SSH 承载、管理命令行、打包/部署（Docker/systemd/日志轮转/备份 timer）。
 ```

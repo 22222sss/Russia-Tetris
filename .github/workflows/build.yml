@@ -13,7 +13,9 @@ jobs:
   build:
     name: ubuntu-latest / g++
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 末尾两步要真装一遍 systemd 服务、真 build 一个 Docker 镜像（各自 2~4 分钟），
+    # 15 分钟会把整个 job 顶到超时，所以放到 30。
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -629,3 +631,173 @@ jobs:
             echo "::error::管理命令测试失败（rc=$RC）"
           fi
           exit "$RC"
+
+      - name: Deploy artifacts test (systemd)
+        working-directory: src
+        run: |
+          # 部署形态平时没人跑：Dockerfile 只在真部署时 build，systemd 单元只在真机上
+          # 被解析，备份脚本只在 04:15 被 cron 叫醒。写错一个字符 -> CI 全绿、上线当天才发现。
+          # 所以这里不只是"看文件"，而是真装一遍、真跑一次备份、真 kill -9 一次。
+          set +e
+
+          for f in ../tests/deploy_test.py ../tests/log_rotation_test.py; do
+            if ! python3 -m py_compile "$f" 2> /tmp/pyc_deploy.txt; then
+              echo "::error::$f 语法错误: $(tr '\n' '|' < /tmp/pyc_deploy.txt | cut -c1-800)"
+              exit 1
+            fi
+          done
+
+          # 1) 静态断言：单元里的 LimitNOFILE/TETRIS_BIND、Dockerfile 的非 root/HEALTHCHECK、
+          #    环境变量拼写、备份脚本"失败不留半成品"、文档和单元不漂移
+          python3 ../tests/deploy_test.py
+          RC_STATIC=$?
+
+          # 2) 日志轮转要真二进制才测得出来（TETRIS_LOG_DIR / _MAX_BYTES / _MAX_FILES）
+          python3 ../tests/log_rotation_test.py --bin ./tetris_game --connections 500
+          RC_ROTATE=$?
+
+          # 3) 真装一遍：账号/目录/单元/sysctl/开机自启/启动
+          sudo ../deploy/install-systemd.sh > /tmp/install-systemd.log 2>&1
+          RC_INSTALL=$?
+          if [ "$RC_INSTALL" -ne 0 ]; then
+            echo "::error::install-systemd.sh 失败（rc=$RC_INSTALL）: $(tail -12 /tmp/install-systemd.log | tr '\n' '|' | cut -c1-1800)"
+          fi
+
+          RC_RUNTIME=0
+          if [ "$RC_INSTALL" -eq 0 ]; then
+            # 3.1 fd 上限 —— systemd 默认值就是连接数的隐藏天花板
+            LIMIT=$(systemctl show tetris-game -p LimitNOFILE --value)
+            PID=$(systemctl show tetris-game -p MainPID --value)
+            PROC_LIMIT=$(awk '/Max open files/ {print $4}' /proc/"$PID"/limits 2>/dev/null)
+            if [ "$LIMIT" != "300000:300000" ] || [ "$PROC_LIMIT" != "300000" ]; then
+              echo "::error::LimitNOFILE 没生效：单元=$LIMIT 进程=$PROC_LIMIT（期望 300000:300000 / 300000）"
+              RC_RUNTIME=1
+            fi
+
+            # 3.2 只绑回环（否则玩家能绕过 sshd 直连明文端口）
+            BOUND=$(ss -ltn | awk '$4 ~ /:9999$/ {print $4}')
+            if [ "$BOUND" != "127.0.0.1:9999" ]; then
+              echo "::error::服务端监听地址是 '${BOUND:-空}'，期望 127.0.0.1:9999"
+              RC_RUNTIME=1
+            fi
+
+            # 3.3 timer 能被解析并运行（单元写错时 is-active 会失败）
+            if ! systemctl is-active --quiet tetris-backup.timer; then
+              echo "::error::tetris-backup.timer 没起来（单元写错了？）"
+              RC_RUNTIME=1
+            fi
+
+            # 3.4 真跑一次备份：脚本 + tetris-admin + 权限 + 内容
+            sudo systemctl start tetris-backup.service
+            RC_BACKUP=$?
+            BK=$(ls /var/backups/tetris/tetris-*.db 2>/dev/null | tail -1)
+            if [ "$RC_BACKUP" -ne 0 ] || [ -z "$BK" ]; then
+              echo "::error::备份失败（rc=$RC_BACKUP）: $(journalctl -u tetris-backup -n 20 --no-pager 2>&1 | tr '\n' '|' | cut -c1-1200)"
+              RC_RUNTIME=1
+            else
+              MODE=$(stat -c '%a' "$BK")
+              CHECK=$(python3 -c 'import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute("PRAGMA integrity_check").fetchone()[0])' "$BK")
+              SIZE=$(stat -c '%s' "$BK")
+              if [ "$MODE" != "600" ] || [ "$CHECK" != "ok" ] || [ "$SIZE" -le 0 ]; then
+                echo "::error::备份产物不对：$BK 权限=$MODE integrity=$CHECK 大小=$SIZE（期望 600 / ok / >0）"
+                RC_RUNTIME=1
+              else
+                echo "::notice::备份产物正常：$(basename "$BK") ${SIZE}B 权限 $MODE integrity ok"
+              fi
+            fi
+
+            # 3.5 崩溃自动拉起：要等到**新的** MainPID，别被"还没死透"的旧状态骗过去
+            OLD_PID=$(systemctl show tetris-game -p MainPID --value)
+            sudo kill -9 "$OLD_PID"
+            NEW_PID=""
+            for i in $(seq 1 20); do
+              NEW_PID=$(systemctl show tetris-game -p MainPID --value)
+              if [ -n "$NEW_PID" ] && [ "$NEW_PID" != "0" ] && [ "$NEW_PID" != "$OLD_PID" ] \
+                 && systemctl is-active --quiet tetris-game; then
+                break
+              fi
+              sleep 1
+            done
+            if [ -z "$NEW_PID" ] || [ "$NEW_PID" = "0" ] || [ "$NEW_PID" = "$OLD_PID" ]; then
+              echo "::error::kill -9 之后服务没有自动拉起（旧 pid=$OLD_PID 新 pid=${NEW_PID:-空}）"
+              RC_RUNTIME=1
+            else
+              echo "::notice::kill -9 后已自动拉起：pid $OLD_PID -> $NEW_PID"
+            fi
+
+            # 3.6 stop 要及时（SIGTERM 被处理；否则容器/重启会等到 TimeoutStopSec）
+            START=$(date +%s)
+            sudo systemctl stop tetris-game
+            ELAPSED=$(( $(date +%s) - START ))
+            if [ "$ELAPSED" -gt 5 ]; then
+              echo "::error::systemctl stop 用了 ${ELAPSED}s（SIGTERM 没有被处理？）"
+              RC_RUNTIME=1
+            fi
+          fi
+
+          # 别把装了服务的 runner 留给后面的步骤
+          sudo systemctl disable --now tetris-game tetris-backup.timer >/dev/null 2>&1 || true
+
+          if [ "$RC_STATIC" -ne 0 ] || [ "$RC_ROTATE" -ne 0 ] || \
+             [ "$RC_INSTALL" -ne 0 ] || [ "$RC_RUNTIME" -ne 0 ]; then
+            echo "::error::部署形态测试失败（static=$RC_STATIC rotate=$RC_ROTATE install=$RC_INSTALL runtime=$RC_RUNTIME）"
+            exit 1
+          fi
+          echo "::notice::部署形态测试通过：LimitNOFILE=300000/只绑回环/备份 600+integrity ok/kill -9 自动拉起/stop 及时"
+
+      - name: Docker image build and health check
+        run: |
+          # Dockerfile 平时只在真部署时 build：这里真 build 一次、真跑一个容器，
+          # 断言"非 root + HEALTHCHECK 真的 healthy + 9999 能从宿主连上"。
+          # 坏掉的镜像发出去，比没有镜像更糟。
+          set +e
+
+          docker build -t russia-tetris:ci . > /tmp/docker-build.log 2>&1
+          RC_BUILD=$?
+          if [ "$RC_BUILD" -ne 0 ]; then
+            echo "::error::docker build 失败: $(tail -25 /tmp/docker-build.log | tr '\n' '|' | cut -c1-1800)"
+            exit 1
+          fi
+
+          docker rm -f tetris-ci >/dev/null 2>&1
+          docker run -d --name tetris-ci \
+            -e TETRIS_BIND=0.0.0.0 \
+            --ulimit nofile=300000:300000 \
+            -p 127.0.0.1:10020:9999 \
+            --health-interval=2s --health-timeout=3s --health-retries=5 --health-start-period=1s \
+            russia-tetris:ci > /dev/null
+          RC_RUN=$?
+          if [ "$RC_RUN" -ne 0 ]; then
+            echo "::error::docker run 失败（rc=$RC_RUN）: $(docker logs tetris-ci 2>&1 | tail -15 | tr '\n' '|' | cut -c1-1200)"
+            docker rm -f tetris-ci >/dev/null 2>&1
+            exit 1
+          fi
+
+          STATUS=""
+          for i in $(seq 1 40); do
+            STATUS=$(docker inspect -f '{{.State.Health.Status}}' tetris-ci 2>/dev/null)
+            [ "$STATUS" = "healthy" ] && break
+            sleep 2
+          done
+
+          UID_IN_IMAGE=$(docker exec tetris-ci id -u 2>/dev/null)
+          FDLIMIT=$(awk '/Max open files/ {print $4}' "/proc/$(docker inspect -f '{{.State.Pid}}' tetris-ci)/limits" 2>/dev/null)
+          BYTES=$(timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/10020; head -c 16 <&3' 2>/dev/null | wc -c)
+          ADMIN="ok"
+          docker exec tetris-ci tetris-admin stats > /tmp/docker-admin.txt 2>&1 || ADMIN="fail"
+          LOGS=$(docker logs tetris-ci 2>&1 | tail -8 | tr '\n' '|' | cut -c1-900)
+
+          echo "health=$STATUS uid=$UID_IN_IMAGE fd=$FDLIMIT bytes=$BYTES admin=$ADMIN"
+
+          RC_DOCKER=0
+          [ "$STATUS" = "healthy" ] || { echo "::error::容器不是 healthy（当前 '${STATUS:-空}'）: $LOGS"; RC_DOCKER=1; }
+          [ "$UID_IN_IMAGE" != "0" ] || { echo "::error::容器以 root 运行（id -u = 0）"; RC_DOCKER=1; }
+          [ "$FDLIMIT" = "300000" ] || { echo "::error::容器内 fd 上限是 '${FDLIMIT:-空}'，期望 300000"; RC_DOCKER=1; }
+          [ "${BYTES:-0}" -ge 8 ] || { echo "::error::从宿主连不上容器的 9999（读到 ${BYTES:-0} 字节）"; RC_DOCKER=1; }
+          [ "$ADMIN" = "ok" ] || { echo "::error::容器里 tetris-admin stats 跑不起来: $(tr '\n' '|' < /tmp/docker-admin.txt | cut -c1-600)"; RC_DOCKER=1; }
+
+          docker rm -f tetris-ci >/dev/null 2>&1
+          if [ "$RC_DOCKER" -ne 0 ]; then
+            exit 1
+          fi
+          echo "::notice::镜像可用：非 root（uid $UID_IN_IMAGE）+ healthy + 9999 可读 + tetris-admin 可用"

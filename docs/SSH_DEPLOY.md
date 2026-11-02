@@ -48,6 +48,10 @@ sudo deploy/install-ssh-bridge.sh
 sudo passwd tetris
 ```
 
+> 生产上第 1 步不要手工 `./tetris_game`：用 `sudo deploy/install-systemd.sh` 装成 systemd 服务
+> （`LimitNOFILE=300000`、只绑回环、日志轮转、崩溃拉起、每日备份都在里面），
+> 见 [DEPLOY.md](DEPLOY.md) 第 3 节。手工跑的话 fd 上限只有 shell 里那点，接不了多少连接。
+
 装完的效果：
 
 - `/usr/local/bin/tetris-bridge`（0755，root 所有）；
@@ -190,4 +194,5 @@ CI 里对应两步：`SSH bridge test`（桥的 8 项自检 + 穿过桥的真协
   天花板是内存**，适合几十人的规模。要压更多并发，值得把桥改成一个几十行的 C 程序
   （预期 1~2 MB/会话）；服务端本身不用再优化（1 万按键/秒只用 0.1~0.15 核）；
 - **不用共享口令**：`AuthorizedKeysCommand` + 游戏侧签发 key，让每个玩家一条独立 SSH 身份；
-- 管理员 CLI / 备份、Docker / systemd 单元（见 `docs/HANDOVER.md` 第 8 节）。
+- 部署形态（systemd 服务 / Docker 镜像、fd 上限、日志轮转、备份定时任务、上线 checklist）
+  已经做完，见 [DEPLOY.md](DEPLOY.md)；本文件只管 SSH 入口这一层。

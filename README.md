@@ -54,13 +54,19 @@ Russia-Tetris/
 │   ├── tetris_admin.cpp      # 管理命令行（重置密码 / 在线备份 / 列表 / 统计）
 │   ├── makefile              # 构建脚本
 │   └── optimize_system.sh    # 系统调优脚本
-├── deploy/                   # 部署入口：SSH 桥 / sshd 片段 / 安装脚本
+├── deploy/                   # 部署入口：SSH 桥 / sshd 片段 / systemd 单元
 │   ├── tetris-bridge.py      # 把一条 SSH 会话接到本机 9999（raw/回显/CRLF）
 │   ├── sshd-tetris.conf      # sshd Match 片段（ForceCommand 只跑桥）
-│   └── install-ssh-bridge.sh # 幂等安装：桥 + 片段 + 登录账号
-├── docs/                     # 交接文档 / 远程压测手册 / SSH 承载部署
+│   ├── install-ssh-bridge.sh # 幂等安装：桥 + 片段 + 登录账号
+│   ├── install-systemd.sh    # 幂等安装：账号 / 目录 / 单元 / sysctl / 开机自启
+│   ├── systemd/              # tetris-game.service + 每日备份 service/timer
+│   ├── tetris-backup.sh      # 备份脚本（在线备份 + 保留 N 份）
+│   └── sysctl.d/             # listen backlog / 系统 fd 上限
+├── Dockerfile                # 多阶段构建、非 root、HEALTHCHECK
+├── docker-compose.yml        # 单机部署示例（host 网络 + 两个卷）
+├── docs/                     # 交接文档 / 部署上线 / 远程压测 / SSH 承载
 ├── images-and-gif/           # 演示截图与 GIF
-├── tests/                    # 测试与压测脚本（集成 / 跨进程 / 桥 / 压测）
+├── tests/                    # 测试与压测脚本（集成 / 跨进程 / 桥 / 部署形态 / 压测）
 └── README.md                 # 项目说明
 ```
 
@@ -141,6 +147,37 @@ telnet <服务器IP> 9999
 - 查询服务器 IP：Linux 下执行 `ip addr`（`ifconfig` 需先安装 `net-tools`）；
 - 端口号位于 `src/Common/Common.h` 的 `DEFAULT_PORT` 宏定义中，默认 9999；
   监听地址由环境变量 `TETRIS_BIND` 控制（默认 `0.0.0.0`，走 SSH 时设成 `127.0.0.1`）。
+
+### 7. 部署上线（systemd / Docker）
+
+生产形态是**公网只开 sshd、服务端只绑回环**（见上一节）。两种部署方式都提供：
+
+```bash
+# A) 宿主机 systemd（推荐）：账号/目录/单元/sysctl/开机自启一次装好，幂等
+cd src && make -j"$(nproc)" && cd ..
+sudo deploy/install-systemd.sh
+sudo deploy/install-ssh-bridge.sh     # SSH 入口
+sudo passwd tetris                    # 玩家的共享登录口令
+
+# B) Docker：镜像里只有服务端，SSH 入口仍在宿主
+docker compose up -d --build
+```
+
+装完必须验的四件事（漏了就是线上故障）：
+
+```bash
+systemctl show tetris-game -p LimitNOFILE   # 300000:300000（默认值会变成连接数天花板）
+ss -ltn | grep 9999                         # 只有 127.0.0.1:9999
+systemctl list-timers tetris-backup.timer   # 每天 04:15 在线备份，保留 14 份
+journalctl -u tetris-game -n 40             # 启动打印的"生效配置"
+```
+
+- 日志按大小轮转（`TETRIS_LOG_DIR` / `TETRIS_LOG_MAX_BYTES` / `TETRIS_LOG_MAX_FILES`，
+  默认 10 MiB × 5 份），不再无限增长；
+- `LimitNOFILE=300000`、`Restart=always`、`ProtectSystem=strict` 都写在
+  `deploy/systemd/tetris-game.service` 里，改之前先读注释；
+- 完整步骤、上线 checklist、备份/恢复、升级/回滚、排错表：
+  [docs/DEPLOY.md](docs/DEPLOY.md)。
 
 ## 项目展示
 
