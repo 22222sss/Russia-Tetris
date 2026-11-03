@@ -31,6 +31,14 @@
 8. **默认值不改现有行为**：集成测试里那 6~8 次注册远低于 20 次额度；本地
    `mock + integration_test` 12/12 通过。
 
+> **CI 实测（SHA `98327a5`，一轮全绿，4m35s）**：`make` 0 告警；
+> `Registration throttle self-test` 通过（状态机 28 项，注解里能看到前 21 条）；
+> `Registration limit integration test` **13 秒**通过（阈值 3 次/10s + 全局 6 次/10s：
+> "单 IP 3 次后被拦、换 IP 可继续、全局 6 次后新 IP 也被拦、窗口滑过后恢复"）；
+> 其余 24 步照旧——集成 12 项、IP 兜底、跨进程 5 项、桥 8+1、管理命令 10 项、
+> 部署形态 10 项（含恢复演练 `恢复演练通过`）、镜像 healthy（uid 10001）。
+> job 从 24 步变 **26 步**。
+
 **上一轮做完了打包/部署：镜像 + systemd 单元 + 日志轮转**（`Dockerfile` / `deploy/systemd/` /
 `main.cpp` 的 `TETRIS_LOG_*`）
 
