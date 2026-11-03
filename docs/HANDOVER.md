@@ -1,12 +1,41 @@
-## 0. 当前状态（截至 2026-11-03）
+## 0. 当前状态（截至 2026-11-04）
 
-> 本次会话八轮：**① 按来源 IP 兜底** → **② 改密/重置** → **③ 连接池 trim**
+> 本次会话九轮：**① 按来源 IP 兜底** → **② 改密/重置** → **③ 连接池 trim**
 > → **④ 存储层 CSV → SQLite** → **⑤ SSH 承载** → **⑥ 管理员 CLI + 备份** →
-> **⑦ 打包/部署（Dockerfile + systemd 单元 + 日志轮转）** → **⑧ 注册限流**。
+> **⑦ 打包/部署（Dockerfile + systemd 单元 + 日志轮转）** → **⑧ 注册限流**
+> → **⑨ 真机验证（WSL）+ 恢复演练修复**。
 > 更早：`-O2`（4.7）→ `User` 棋盘 int8（4.8）→ 连接池预创建 2048（4.9）→ 认证加固第一/二批。
 > 每轮实现细节见第 5 节，性能数据见第 4 节。
 
-**本轮做完了注册限流：`RegThrottle`（每 IP + 全局两道滑动窗口）**（`TetrisGame/RegThrottle.{h,cpp}`）
+**本轮做完了真机验证（WSL）：`docs/DEPLOY.md` 第 0 节 checklist 全过，并修掉恢复演练在真机上的静默跳过**
+
+1. **机器**：WSL2 Ubuntu 22.04.5（内核 6.18.5.4）。原本 PID 1 是 `init`、`systemctl` 报
+   `offline`，所以先给 `/etc/wsl.conf` 加 `[boot] systemd=true` 再 `wsl --shutdown`；
+   另外补装 `libsqlite3-dev`（缺它 SQLite 层编译不过）和 `openssh-server`（SSH 入口要用）；
+2. **安装**：拉代码到 `64e69b5` → `make` **0 告警**（`-O2`，两个二进制）→
+   `sudo deploy/install-systemd.sh` 一次过：**fd 300000/300000**（`systemctl` 两个属性与
+   `/proc/<pid>/limits` 都是）、**只监听 `127.0.0.1:9999`**、开机自启；
+3. **SSH 入口**：`install-ssh-bridge.sh` 一次过（`sshd -t` 通过、`ForceCommand` 生效、
+   转发全关、`MaxSessions 1`）。从 **Windows 主机**经 NAT 地址 `ssh tetris@172.18.102.210`
+   直接落到首屏（"1. 注册帐号 / 2. 登录"）；反过来从 Windows 连 9999 → **不可达**；
+4. **运行时行为**：journal 里的"生效配置"含注册限流那行（每 IP 20 次/300s、全局 200 次/3600s）；
+   `kill -9` → **2 秒**拉起且 `NRestarts` 计数正确；`wsl --shutdown` 整机重启后仍
+   `active`+`enabled`、端口不变（WSL 在两次 `wsl.exe` 调用之间会自己关掉，等于反复验证了自启）；
+5. **日志轮转**：用 `tests/log_rotation_test.py` 对**已安装的二进制**跑，
+   `log.1/2/3.txt` + `log.txt` 都出现、每份 ≤4096 字节（默认 `warn` 级别下日志是 0 字节，
+   看不出轮转，所以用低阈值用例证明机制）；
+6. **备份 + 7.5 恢复演练**：`tetris-backup.service` 真跑一次 → 40 KB、600 权限、
+   `integrity_check ok`、6 账号/1 成绩；`tetris-restore-drill` 演练通过；集成测试 12/12；
+7. **抓到的 bug（CI 永远抓不到）**：`tetris-restore-drill` 只按"`deploy/` 旁边的 `tests/`"
+   找协议测试，而装到真机后脚本在 `/usr/local/bin`、仓库在别处 —— 第 5 步**静默跳过**，
+   结尾却照样打印"恢复演练通过"。CI 看不见是因为 CI 从仓库里跑 `deploy/restore-drill.py`。
+   修法：`install-systemd.sh` 把 `integration_test.py` + `credential.py` + `db.py` 装到
+   `/usr/local/share/doc/tetris/tests/`，工具回落找那里，`deploy_test.py` 钉死这两点；
+   修完在真机上复验：**不带参数**的一条命令 5/5、结尾"完整协议通过"（见 6.55）；
+8. **没覆盖**：真实云主机（公网 IP、"从公网另一台机器 ssh"）、Docker 形态（WSL 没装 docker）。
+   这两块仍按第 8 节挂着。
+
+**上一轮做完了注册限流：`RegThrottle`（每 IP + 全局两道滑动窗口）**（`TetrisGame/RegThrottle.{h,cpp}`）
 
 1. **为什么是它**：登录有三层限流，**注册一层都没有**（6.30）。注册是唯一"免费"的
    PBKDF2 入口（不需要旧密码），而且它的哈希跑在**唯一的异步写线程**上，和登录凭据查询 /
@@ -605,6 +634,43 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
   现在用 `EventLoop::post()` 经**自管道**投递回循环线程——没用 `evthread_use_pthreads()`（会给每个 event
   操作加全局锁）；回调里加了"状态已变化就丢弃"的守卫。
 
+### 真机验证（WSL，2026-11-04）
+
+上线前的最后一条：把"CI 里装过"变成"这台机器上装过"。**代码只动了部署脚本 + 文档**，
+协议/存储/认证一行没改。
+
+- **为什么 WSL 也算真机**：CI 的 runner 和这里是同一个 Ubuntu + systemd + 真内核，
+  差别只在"我碰得到、你能 ssh 进去玩"。**没有公网 IP**，所以"从公网另一台机器 ssh"
+  这条只能用 Windows 宿主经 NAT 地址近似（`ssh tetris@172.18.102.210` 落到首屏），
+  云主机那轮仍要做（第 8 节）；
+- **两个前提要自己补**：`libsqlite3-dev`（缺它 SQLite 层编不过）和 `openssh-server`；
+  以及 `/etc/wsl.conf` 的 `[boot] systemd=true`（WSL 默认 PID 1 是 `init`，`systemctl` 报
+  `offline`，`install-systemd.sh` 会直接 die 在"这台机器没有 systemd"）；
+- **WSL 的一个意外好处**：两次 `wsl.exe` 调用之间 WSL 会自己停掉，
+  所以每次调用都是一次**真开机**——"重启后服务自动起来"这条因此被反复验证了；
+- **修掉的 bug**（`deploy/restore-drill.py`）：协议测试的发现逻辑原本只有
+  `dirname(dirname(__file__))/tests/integration_test.py`，也就是"`deploy/` 旁边"。
+  装到真机后脚本在 `/usr/local/bin/tetris-restore-drill`，这个路径解析成
+  `/usr/local/tests/...`，不存在 → **第 5 步静默跳过**，而结尾仍打印
+  "恢复演练通过：…（integrity ok、临时实例能服务）"，**少了一句"完整协议通过"**。
+  CI 里始终是通过的，因为 CI 从仓库里跑 `deploy/restore-drill.py`，`deploy/` 旁边就有 `tests/`；
+- **修法三处**：
+  1. `deploy/install-systemd.sh`：把 `tests/integration_test.py` 和它 `import` 的
+     `credential.py` / `db.py` 一起装到 `$DOC_DIR/tests`（装完之后就没有仓库了，
+     所以这三个文件必须是安装产物，不能指望用户克隆）；
+  2. `deploy/restore-drill.py`：`--protocol-test` 没给时按"仓库位置 → 安装目录
+     `/usr/local/share/doc/tetris/tests/integration_test.py`"顺序找，常量叫 `INSTALLED_TESTS`；
+  3. `tests/deploy_test.py`：钉死"安装脚本必须装这三个文件"+"工具必须有安装目录的回落"，
+     两个断言都写成了带原因的 `Failure`，以后谁删掉会直接红；
+- **`docs/DEPLOY.md` 第 7.5 节**同步说明两个查找位置，并写明"两处都没有时会打印跳过、
+  结尾仍是恢复演练通过（但只证明能起能服务，没证明能玩）"——这句话是给下次的真机验证看的；
+- **真机实测**：修完在 WSL 上重跑 `install-systemd.sh`（幂等，顺带把测试装进文档目录）后，
+  **不带参数**的 `sudo tetris-restore-drill <备份>` 就是 5/5、
+  `ok 协议测试通过（注册/登录/进游戏都不依赖生产库）`、结尾"完整协议通过"；
+  同一台机器上 `tests/deploy_test.py` **10/10**（WSL 有 bash，两项 shell 断言不再跳过）、
+  `tests/integration_test.py` 对已安装实例 **12/12**、`tests/log_rotation_test.py` PASS；
+- **没做的**：Docker 形态（WSL 没装 docker，仍只有 CI 验过）、真实云主机。
+
 ### 注册限流（2026-11-03）
 
 上线前最后一块功能缺口：注册是唯一"免费"的 PBKDF2 入口（6.30）。协议 / 存储 / 认证都没动，
@@ -992,7 +1058,10 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
    届时 makefile 里的 `\r` 会让 make 失败 → 真遇到就 `sed -i 's/\r$//'`，或到 `~/` 编译；
 3. **GitHub Actions 日志**：公开仓库下载日志需要 admin token；调试靠 `::notice::` / `::error::` 注解回传；
 4. **README 图片**：GitHub 对单图有大小限制，大 GIF 压到 <10 MB（`*-demo.gif`）；
-5. **沙箱限制**：pwsh 跑在低完整性，`wsl` 命令会 `E_ACCESSDENIED`；MSYS 的 `sh.exe` 无法创建信号管道；
+5. **沙箱限制**：pwsh 跑在低完整性，`wsl` 命令会 `E_ACCESSDENIED`；MSYS 的 `sh.exe` 无法创建信号管道。
+   **但提权能解**：对同一条命令带 `sandbox_permissions: danger-full-access` 重试（会弹审批），
+   `wsl.exe` 就能正常用 —— 2026-11-04 的真机验证就是这么做的（装 systemd 服务、跑恢复演练、
+   打 `/proc/<pid>/limits` 全在 WSL 里）。注意提权是**每次调用**生效，后续调用要再带一次；
 6. **WSL 里的 `wsl` 命令**：不要在 Ubuntu 里执行，要在 Windows PowerShell 里执行；
 7. **沙箱里没有本地 C++/服务端验证能力**：`wsl` 会 `E_ACCESSDENIED`，也没有 `g++`。改 C++ 只能 push 到 `main`
    让 CI 验证（`build.yml` 只在 push `main` 或 PR 时触发），结果用 GitHub API 读 conclusion + annotations；
@@ -1224,6 +1293,17 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     namespace），但各自持 config。以后给别的路径加限流照这个结构来，别往 `IpThrottle`
     里塞第二套参数。
 
+55. **"装到机器上"和"从仓库里跑"是两种环境，工具里凡是靠相对路径找文件的地方都要在
+    真机上核一遍**：`restore-drill` 找 `tests/integration_test.py` 原本只认
+    `deploy/` 旁边（仓库布局），装到 `/usr/local/bin` 后解析成 `/usr/local/tests/...`，
+    于是**第 5 步被静默跳过**、结尾还打印"恢复演练通过"——最糟的那种失败：看起来全绿，
+    实际少做了最关键的一步（"备份能打开"和"恢复出来能玩"是两件事，第 5 步才是后者）。
+    CI 看不见，因为 CI 从仓库里跑 `deploy/restore-drill.py`。现在的约定：安装脚本把
+    `integration_test.py` + `credential.py` + `db.py` 装到 `/usr/local/share/doc/tetris/tests/`，
+    工具回落找那里（`INSTALLED_TESTS`），`deploy_test.py` 两条断言钉死。
+    **以后凡是"仓库里有、装完就没了"的辅助脚本，都要走安装产物这条路。**
+    顺带记一条判读方法：演练输出里出现"跳过协议测试"就不是全绿，别只看最后一行。
+
 ## 7. 仓库现状
 
 - `main` 干净，CI 全绿（最后一次实测 `d3dc1b4`）；无 tag；
@@ -1262,7 +1342,9 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     `tetris-restore-drill`（7.5 节：临时端口把备份恢复出来跑完整协议）** +
     `docs/DEPLOY.md` 的上线 checklist；
     CI 会**真装一遍 systemd 服务并跑一次备份**、**真 build 镜像并跑健康检查**；
-    还没在真实云主机上走过一遍（本地只有 Windows + 沙箱，见 6.7）；
+    **2026-11-04 已在 WSL（Ubuntu 22.04 + systemd）上把第 0 节 checklist 走了一遍**
+    （见 5.真机验证、6.55），顺带修掉恢复演练在真机上静默跳过第 5 步的问题；
+    仍未在**真实云主机**上走过（没有公网 IP，见 6.7），Docker 形态也仍只有 CI 验过；
   - 远程压测脚本与手册已就绪（`play_remote.sh` / `REMOTE_BENCH.md`），尚未在真实云主机上跑过；
   - 连接数多机压测（`BENCH_REMOTE_CLIENTS`）修了源 IP 绑定，但 >6.4 万/台仍需加网卡 alias，未实测；
   - `output()` 的 1 MB 慢客户端上限是拍脑袋定的，未针对极端场景验证过；
@@ -1273,7 +1355,7 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 
 | 方向 | 内容 | 价值 |
 |---|---|---|
-| **真机验证（挂起）** | 按 `docs/DEPLOY.md` 第 0 节在真实云主机走一遍（尤其 7.5 的恢复演练）；用户 2026-11-03 说"这条后面做" | 中：CI 里装过/演练过，缺"这台机器上装过" |
+| **真机验证（云主机）** | WSL 上已按 `docs/DEPLOY.md` 第 0 节走完（2026-11-04，见 5.真机验证）；仍差**真实云主机**：公网 IP、从公网另一台机器 ssh、公网 9999 不可达、Docker 形态 | 中：WSL 已覆盖 systemd/备份/演练，云主机补的是"出网边界" |
 | 桥换成 C 版 | 现在每会话一个 Python 进程（CI 实测约 17 MB），换几十行 C 可降到 1~2MB；SSH 承载的并发上限目前就是这项内存（见 6.36） | 中：真上量时才值得 |
 | 认证状态跨进程 | 用户名退避 / IP 兜底 / 注册限流的计数都在各 worker 内存里，阈值实际 ×N；要统一得放共享内存或落文件 | 低：只有真的开多 worker 才值得 |
 | 注册限流方案 B | 把注册哈希挪进哈希线程池，队满回"服务繁忙"（让注册和登录共享同一份背压）；现在方案 A 已经在提交哈希前挡掉，只有"额度内的正常注册把写线程占满"时才需要 | 低~中：只在注册量真的很大时 |
@@ -1293,7 +1375,9 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 见 5.管理命令行）**、
 **打包/部署（Dockerfile + compose + systemd 单元 + 备份 timer + 日志轮转 + 恢复演练 + docs/DEPLOY.md，
 见 5.打包/部署）**、
-**注册限流（`RegThrottle`：每 IP 20 次/5 分钟 + 全局 200 次/小时 + 两套测试，见 5.注册限流）**（本轮）、
+**注册限流（`RegThrottle`：每 IP 20 次/5 分钟 + 全局 200 次/小时 + 两套测试，见 5.注册限流）**、
+**真机验证（WSL 上走完第 0 节 checklist + 7.5 恢复演练，并修掉演练在真机上跳过协议测试的 bug，
+见 5.真机验证、6.55）**（本轮）、
 密码加盐哈希 + 迁移、登录吞吐、输出批量。
 
 ## 9. 给新会话的起步提示
@@ -1309,16 +1393,19 @@ SQLite 存储层 + 旧 CSV 导入 / SSH 承载（sshd ForceCommand + 桥 + TETRI
 docs/DEPLOY.md 的上线 checklist）。
 不要再重复做，也别再堆性能优化（建连和游戏两种场景服务端都不是瓶颈）。
 
-上线前真正缺的（只剩一条）：
-1. 真机走一遍 docs/DEPLOY.md 第 0 节的 checklist（systemd 装法 + `tetris-restore-drill`
-   恢复演练），把"CI 里装过"变成"这台机器上装过"。—— 用户 2026-11-03 明确说"这条后面做"，
-   别自作主张开工。
+上线前真正缺的（WSL 那轮之后只剩云主机相关）：
+1. 在**真实云主机**（有公网 IP）上再走一遍 docs/DEPLOY.md 第 0 节：公网侧 `ssh tetris@<IP>`
+   进游戏、公网 `nc -vz <IP> 9999` 不通、Docker 形态跑一次；
+   —— WSL（2026-11-04）已经把 systemd 装法、fd 上限、只绑回环、kill -9、开机自启、
+   日志轮转、备份、7.5 恢复演练全验过，**别在 WSL 上再重复一遍**。
 
 要点：
 - 注册也有限流了（`TETRIS_REG_*`：每 IP 20 次/5 分钟 + 全局 200 次/小时，挡在 PBKDF2 之前）；
   它和登录那三层一样是**每进程**的，多 worker 时阈值 ×N（5.注册限流、6.53/6.54）；
 - 恢复演练不用等出事：`sudo tetris-restore-drill <备份>` 会把备份在临时目录/临时端口恢复出来，
-  跑 integrity + 条数对比 + 完整协议（第 7.5 节）；`--keep` 后能起桥亲手玩副本；
+  跑 integrity + 条数对比 + 完整协议（第 7.5 节）；`--keep` 后能起桥亲手玩副本。
+  **输出里出现"跳过协议测试"就不是全绿**（说明没找到 integration_test.py，
+  现在会从仓库和 /usr/local/share/doc/tetris/tests/ 两处找，见 6.55）；
 - 数据在 tetris.db（SQLite，WAL，三件套），旧 userdata.csv 只用于首次导入；测试脚本统一用
   --db；schema 在 src/TetrisGame/Db.cpp 与 tests/db.py 两处，改结构要同时改；
 - 部署入口：deploy/install-systemd.sh（服务端 + 备份 timer + sysctl，幂等）、
@@ -1329,11 +1416,13 @@ docs/DEPLOY.md 的上线 checklist）。
 - 运维工具是 tetris-admin（make 一起编）：reset-password / backup / list-users / stats；
   它默认读**当前目录**的 tetris.db，手工用带 TETRIS_DB 绝对路径（6.49）；
   改环境变量后先看启动打印的"生效配置"，别猜默认值；
-- 沙箱里跑不了 WSL/g++/systemd/docker/bash，C++/deploy/CI 改动只能 push main 让 CI 验证；
+- 沙箱里 `wsl.exe` 默认 `E_ACCESSDENIED`，但**带 `sandbox_permissions: danger-full-access`
+  重试就能用**（2026-11-04 在 WSL 里真装了 systemd 服务 + 跑完整 checklist）；
+  Windows 侧仍没有 g++/docker，所以 C++ 改动还是 push main 让 CI 验证；
   失败细节靠 ::notice::/::error:: 注解。本地能跑的是 Python：tests/deploy_test.py（10 项静态
-  断言，其中 2 项 shell 相关在本机会跳过）、tests/bridge_test.py（8 项）、tests/admin_test.py
-  （10 项）、tests/mock_server.py + 集成 12 项 / 跨进程 5 项 / IP 兜底 / 注册限流
-  （`reg_limit_test.py` 配低阈值 mock）—— 别浪费 CI 轮次；
+  断言，其中 2 项 shell 相关在本机会跳过、在 WSL 里不跳过）、tests/bridge_test.py（8 项）、
+  tests/admin_test.py（10 项）、tests/mock_server.py + 集成 12 项 / 跨进程 5 项 / IP 兜底 /
+  注册限流（`reg_limit_test.py` 配低阈值 mock）—— 别浪费 CI 轮次；
 - CI 现在 26 步，末尾三步是「Admin CLI test」「Deploy artifacts test (systemd)」
   「Docker image build and health check」：后两步会**真装一遍 systemd 服务**（LimitNOFILE /
   只绑回环 / 真跑备份 / 恢复演练 / kill -9 拉起 / stop 计时）和**真 build 镜像并跑健康检查**；
@@ -1344,5 +1433,5 @@ docs/DEPLOY.md 的上线 checklist）。
   多核化、密码加盐哈希 + 迁移、登录吞吐、输出批量、-O2、User int8、池子 2048、
   注册密码策略、假 PBKDF2、用户名退避 + 队列上限、按 IP 兜底、改密、连接池 trim、
   SQLite 存储层、SSH 承载、管理命令行、打包/部署（Docker/systemd/日志轮转/备份 timer/恢复演练）、
-  注册限流（RegThrottle + 两套测试）。
+  注册限流（RegThrottle + 两套测试）、**WSL 真机验证（第 0 节 checklist + 7.5 演练）**。
 ```
