@@ -35,6 +35,11 @@
 8. **没覆盖**：真实云主机（公网 IP、"从公网另一台机器 ssh"）、Docker 形态（WSL 没装 docker）。
    这两块仍按第 8 节挂着。
 
+> **CI 实测（SHA `d1e0b1a`，一轮全绿，4m13s）**：27 步照旧全过；「Deploy artifacts test (systemd)」
+> 真装一遍 + 真跑备份 + 恢复演练仍是绿的（CI 从仓库里跑，两种查找位置都命中）；
+> 「Docker image build and health check」healthy。本轮没有新的 CI 抓错——改的是 shell/python
+> 和文档，真机先验证过了（见 5.真机验证）。
+
 **上一轮做完了注册限流：`RegThrottle`（每 IP + 全局两道滑动窗口）**（`TetrisGame/RegThrottle.{h,cpp}`）
 
 1. **为什么是它**：登录有三层限流，**注册一层都没有**（6.30）。注册是唯一"免费"的
