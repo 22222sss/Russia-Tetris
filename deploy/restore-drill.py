@@ -45,6 +45,8 @@ except ImportError:  # pragma: no cover
 DEFAULT_DB = "/var/lib/tetris/tetris.db"
 DEFAULT_SERVER = "/usr/local/bin/tetris_game"
 DEFAULT_USER = "tetrisd"
+# install-systemd.sh 把协议测试装到这里（装完就没有仓库了，只能从这找）
+INSTALLED_TESTS = "/usr/local/share/doc/tetris/tests/integration_test.py"
 TOTAL_STEPS = 5
 
 
@@ -394,11 +396,17 @@ def main():
         return 2
 
     if not args.protocol_test:
-        # 仓库里的那份：deploy/ 旁边就是 tests/
-        guess = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                             "tests", "integration_test.py")
-        if os.path.isfile(guess):
-            args.protocol_test = guess
+        # 两个位置都要找：仓库里的（deploy/ 旁边就是 tests/）和安装后的
+        # （install-systemd.sh 把 integration_test.py + 它 import 的两个模块
+        # 装到文档目录）。只找前者的话，真机上这条命令会**静默跳过第 5 步**
+        # —— 提示是"跳过协议测试"，但结尾照样打印"恢复演练通过"，很容易被当成
+        # 全绿（2026-11-03 在 WSL 真机上第一次发现）。
+        here = os.path.dirname(os.path.abspath(__file__))
+        for guess in (os.path.join(os.path.dirname(here), "tests", "integration_test.py"),
+                      INSTALLED_TESTS):
+            if os.path.isfile(guess):
+                args.protocol_test = guess
+                break
 
     try:
         return run_drill(args)

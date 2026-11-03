@@ -503,6 +503,12 @@ def test_restore_drill():
     except SyntaxError as exc:
         raise Failure("deploy/restore-drill.py 语法错误：%s" % exc)
 
+    # 回落到"安装后的测试目录"这一步不能丢：真机上 deploy/ 旁边没有 tests/，
+    # 只认仓库位置就会静默跳过第 5 步（完整协议），而结尾照样打印"恢复演练通过"。
+    if "/usr/local/share/doc/tetris/tests/integration_test.py" not in read(script):
+        raise Failure("restore-drill.py 没有回落到安装后的测试目录"
+                      "（/usr/local/share/doc/tetris/tests/integration_test.py）")
+
     workdir = make_workdir("drill")
     try:
         db_path = os.path.join(workdir, "prod.db")
@@ -589,6 +595,12 @@ def test_docs():
             raise Failure("deploy/systemd/%s 不存在" % name)
     if "restore-drill.py" not in installer:
         raise Failure("install-systemd.sh 没有安装恢复演练工具（deploy/restore-drill.py）")
+    # 恢复演练的第 5 步（完整协议）跑的是 tests/integration_test.py，而装到真机上
+    # 之后仓库就不在了：这三个文件必须一起装到文档目录，工具才知道去哪找。
+    # 漏了不会报错，只会静默跳过第 5 步（2026-11-03 在 WSL 真机上踩到）。
+    for name in ("integration_test.py", "credential.py", "db.py"):
+        if name not in installer:
+            raise Failure("install-systemd.sh 没有安装 tests/%s（恢复演练第 5 步要用）" % name)
     return "DEPLOY.md 覆盖 %d 个环境变量，安装脚本的单元文件/演练工具都在" % len(keys)
 
 

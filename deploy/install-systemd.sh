@@ -72,6 +72,12 @@ install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$BACKUP_DIR"
 install -d -m 0755 "$DOC_DIR"
 install -m 0644 "$REPO_ROOT/docs/DEPLOY.md" "$DOC_DIR/DEPLOY.md"
 install -m 0644 "$REPO_ROOT/docs/SSH_DEPLOY.md" "$DOC_DIR/SSH_DEPLOY.md"
+# 恢复演练的第 5 步要跑完整协议，但装完之后就没有仓库了 —— 把脚本和它 import 的
+# 两个模块一起装过去，restore-drill.py 会从 $DOC_DIR/tests 找
+install -d -m 0755 "$DOC_DIR/tests"
+for f in integration_test.py credential.py db.py; do
+    install -m 0644 "$REPO_ROOT/tests/$f" "$DOC_DIR/tests/$f"
+done
 
 info "4/7 安装 systemd 单元"
 install -m 0644 "$HERE/systemd/tetris-game.service" "$UNIT_DIR/tetris-game.service"

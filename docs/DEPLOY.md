@@ -384,8 +384,12 @@ sudo tetris-restore-drill /var/backups/tetris/tetris-20261102T041500Z.db
    副本比生产库还多 → 直接失败（说明这份备份不是这台机器上的）；
 3. 用副本起一个**临时服务端**：另一个端口、另一个工作目录和日志目录，生产实例毫发无损；
 4. 连上去确认首屏菜单真的发出来了（不是"进程在跑"就算数）；
-5. 找到仓库里的 `tests/integration_test.py` 时再跑一遍完整协议（12 项：注册 / 登录 /
-   进游戏 / 改密 / 旧明文迁移……），证明这份数据确实能玩。
+5. 找到 `tests/integration_test.py` 时再跑一遍完整协议（12 项：注册 / 登录 /
+   进游戏 / 改密 / 旧明文迁移……），证明这份数据确实能玩。它按两个位置找：
+   `deploy/` 旁边的仓库副本，以及安装目录 `/usr/local/share/doc/tetris/tests/`
+   （`install-systemd.sh` 会把 `integration_test.py` 和它 import 的
+   `credential.py`/`db.py` 一起装过去）。两处都没有时会**打印"跳过协议测试"**
+   —— 那时结尾仍是"恢复演练通过"，但只证明了"能起、能服务"，没证明"能玩"。
 
 期望输出（中间几步省略）：
 
