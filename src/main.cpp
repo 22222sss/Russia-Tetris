@@ -6,6 +6,7 @@
 #include"../TetrisGame/Server.h"
 #include"../TetrisGame/AuthThrottle.h"
 #include"../TetrisGame/IpThrottle.h"
+#include"../TetrisGame/RegThrottle.h"
 #include"../TetrisGame/Db.h"
 #include"../EventLoop/EventLoop.h"
 #include"../TetrisGame/Filedata.h"
@@ -176,6 +177,10 @@ static void printEffectiveConfig(int listen_port, int workers, int reuseport) {
               << ip.windowMs / 1000 << "s 滑动窗口（" << IpThrottle::kSlots << " 槽，每槽 "
               << static_cast<double>(ip.windowMs) / IpThrottle::kSlots / 1000.0
               << "s）；最多跟踪 " << ip.maxEntries << " 个 IP" << std::endl;
+    const RegThrottle::Config reg = RegThrottle::configFromEnv();
+    std::cout << "  注册限流    TETRIS_REG_*           = 每 IP " << reg.ipMax << " 次 / "
+              << reg.ipWindowMs / 1000 << "s，全局 " << reg.globalMax << " 次 / "
+              << reg.globalWindowMs / 1000 << "s（0 = 关闭该维度）" << std::endl;
     std::cout << "  连接池      预创建 " << ConnectionPool::INITIAL_POOL_SIZE
               << " 个，上限 " << ConnectionPool::MAX_POOL_SIZE
               << " 个，空闲 trim 目标 " << ConnectionPool::trimTarget()

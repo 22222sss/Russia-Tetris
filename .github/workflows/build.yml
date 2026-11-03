@@ -143,6 +143,29 @@ jobs:
           fi
           echo "::notice::IP 兜底自检通过: $(echo "$out" | tr '\n' '|' | cut -c1-800)"
 
+      - name: Registration throttle self-test
+        working-directory: src
+        run: |
+          # 注册限流同样可以拆成纯状态机（时间注入）：每 IP / 全局两个窗口、
+          # 拒绝不记账、跨槽累计、未知来源只算全局、条目上限 fail-open、0=关闭维度。
+          # 注册是唯一"免费"的 PBKDF2 入口（跑在唯一写线程上，见 HANDOVER 6.30）。
+          if ! g++ -std=c++17 -Wall -Wextra -I. TetrisGame/RegThrottle.cpp \
+                ../tests/reg_throttle_test.cpp -pthread -o /tmp/rgt_test \
+                2> /tmp/rgt_build.txt; then
+            echo "::error::注册限流自检编译失败: $(tr '\n' '|' < /tmp/rgt_build.txt | cut -c1-1200)"
+            exit 1
+          fi
+
+          set +e
+          out=$(/tmp/rgt_test 2>&1)
+          rc=$?
+          echo "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::注册限流自检失败: $(echo "$out" | tr '\n' '|' | cut -c1-1500)"
+            exit 1
+          fi
+          echo "::notice::注册限流自检通过: $(echo "$out" | tr '\n' '|' | cut -c1-800)"
+
       - name: Protocol integration test
         working-directory: src
         run: |
@@ -267,6 +290,49 @@ jobs:
               detail=$(tail -20 /tmp/ip_server.log 2>/dev/null | tr '\n' '|' | cut -c1-1500)
             fi
             echo "::error::IP 兜底测试失败，服务端日志: $detail"
+          fi
+          exit "$RC"
+
+      - name: Registration limit integration test
+        working-directory: src
+        run: |
+          # 注册限流必须用低阈值跑（默认 20 次/5 分钟 + 200 次/小时，测试等不起）：
+          # 这里 3 次/10 秒 + 全局 6 次/10 秒。用例：同一 IP 用满额度 -> 第 4 次被拦 ->
+          # 换源地址还能注册 -> 换够 IP 把全局额度用完 -> 全新 IP 也被拦 -> 窗口滑过后恢复。
+          set +e
+
+          if ! python3 -m py_compile ../tests/reg_limit_test.py 2> /tmp/pyc_reg.txt; then
+            echo "::error::reg_limit_test.py 语法错误: $(tr '\n' '|' < /tmp/pyc_reg.txt | cut -c1-800)"
+            exit 1
+          fi
+
+          rm -f tetris.db tetris.db-wal tetris.db-shm userdata.csv userdata.csv.lock log.txt
+          TETRIS_REG_IP_MAX=3 TETRIS_REG_IP_WINDOW_MS=10000 \
+            TETRIS_REG_GLOBAL_MAX=6 TETRIS_REG_GLOBAL_WINDOW_MS=10000 \
+            TETRIS_PORT=10016 ./tetris_game > /tmp/reg_server.log 2>&1 &
+          echo $! > /tmp/reg_server.pid
+
+          for i in $(seq 1 120); do
+            if (exec 3<>/dev/tcp/127.0.0.1/10016) 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          python3 ../tests/reg_limit_test.py --port 10016 --db tetris.db \
+            --ip-max 3 --ip-window-ms 10000 --global-max 6 --global-window-ms 10000
+          RC=$?
+
+          kill "$(cat /tmp/reg_server.pid)" 2>/dev/null
+          wait "$(cat /tmp/reg_server.pid)" 2>/dev/null
+          sleep 1
+
+          if [ "$RC" -ne 0 ]; then
+            detail=$(grep -aE '注册过于频繁|注册|Client\[|Error|error' log.txt 2>/dev/null | tail -25 | tr '\n' '|' | cut -c1-1500)
+            if [ -z "$detail" ]; then
+              detail=$(tail -20 /tmp/reg_server.log 2>/dev/null | tr '\n' '|' | cut -c1-1500)
+            fi
+            echo "::error::注册限流测试失败，服务端日志: $detail"
           fi
           exit "$RC"
 

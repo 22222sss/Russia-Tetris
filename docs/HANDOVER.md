@@ -1,12 +1,37 @@
-## 0. 当前状态（截至 2026-11-02）
+## 0. 当前状态（截至 2026-11-03）
 
-> 本次会话（2026-11-02）七轮：**① 按来源 IP 兜底** → **② 改密/重置** → **③ 连接池 trim**
+> 本次会话八轮：**① 按来源 IP 兜底** → **② 改密/重置** → **③ 连接池 trim**
 > → **④ 存储层 CSV → SQLite** → **⑤ SSH 承载** → **⑥ 管理员 CLI + 备份** →
-> **⑦ 打包/部署（Dockerfile + systemd 单元 + 日志轮转）**。
+> **⑦ 打包/部署（Dockerfile + systemd 单元 + 日志轮转）** → **⑧ 注册限流**。
 > 更早：`-O2`（4.7）→ `User` 棋盘 int8（4.8）→ 连接池预创建 2048（4.9）→ 认证加固第一/二批。
 > 每轮实现细节见第 5 节，性能数据见第 4 节。
 
-**本轮做完了打包/部署：镜像 + systemd 单元 + 日志轮转**（`Dockerfile` / `deploy/systemd/` /
+**本轮做完了注册限流：`RegThrottle`（每 IP + 全局两道滑动窗口）**（`TetrisGame/RegThrottle.{h,cpp}`）
+
+1. **为什么是它**：登录有三层限流，**注册一层都没有**（6.30）。注册是唯一"免费"的
+   PBKDF2 入口（不需要旧密码），而且它的哈希跑在**唯一的异步写线程**上，和登录凭据查询 /
+   成绩写入 / 排行榜读取同一条队列 —— 一个客户端每秒 ~20 个注册就能把正常登录延迟拖到无界；
+2. **两道窗口**：每 IP `ipMax` 次 / `ipWindowMs`（默认 **20 次/5 分钟**）+ 全局 `globalMax` 次 /
+   `globalWindowMs`（默认 **200 次/小时**，挡"换一批 IP 分散喷洒"）；都是 5 槽滑动窗口，
+   不会在边界放出双倍额度；阈值设 `0` = 关闭该维度；
+3. **挡在提交哈希之前**（`Server::receive_password_register`）：`RegThrottle::check` 在
+   密码策略检查之前、`saveNewUserDataAsync` 之前；记账（`onAttempt`）只在"确定要算哈希"
+   的位置 —— 被拒绝、密码太短、用户名重复（不进哈希）都不占额度（6.53）；
+4. **UI**：新增 `UImanage::show_Registration_Throttled`（"注册过于频繁，请 N 秒后再试。"
+   + "请按3返回上级菜单"），切到 `STATUS_REGISTER_OR_LOAD_OVER`（按 3 回初始菜单），
+   和登录退避那种"原地重输密码"不同 —— 额度可能被锁几分钟，回菜单等更自然；
+5. **为什么不复用 `IpThrottle`**：它的配置是**类级静态**的（一份 config 服务所有维度），
+   而这里要"每 IP 5 分钟 20 次 + 全局 1 小时 200 次"两套窗口参数（6.54）；
+6. **可观测**：启动打印的"生效配置"多一行（两道额度 + 窗口），每次拒绝都 `logger->warn`
+   （默认 warn 级别会落盘）—— 排查"为什么注册不了"先看 `log.txt` 里这行；
+7. **测试/CI**：`tests/reg_throttle_test.cpp`（状态机，28 项断言）+ `tests/reg_limit_test.py`
+   （协议级：同一 IP 用满额度 → 被拦 → 换 IP 还能注册 → 把全局额度用完 → 新 IP 也被拦 →
+   窗口滑过后恢复）；CI 加两步（状态机自检 + 协议测试），job **24 → 26 步**；
+   `tests/mock_server.py` 同步实现了同一套窗口（本地能先跑）；
+8. **默认值不改现有行为**：集成测试里那 6~8 次注册远低于 20 次额度；本地
+   `mock + integration_test` 12/12 通过。
+
+**上一轮做完了打包/部署：镜像 + systemd 单元 + 日志轮转**（`Dockerfile` / `deploy/systemd/` /
 `main.cpp` 的 `TETRIS_LOG_*`）
 
 1. **入口脚本而不是文档里的十几条命令**：`deploy/install-systemd.sh` 幂等完成
@@ -101,18 +126,21 @@
 
 **下一步建议（按顺序，详见第 8 节）**：
 
-1. **注册限流**（公网开放后唯一没有上限的 PBKDF2 路径）：注册哈希跑在唯一写线程上，
-   一个客户端每秒能塞进 ~20 个注册，把登录的延迟拖到无界（6.30）；
+1. **真机走一遍上线 checklist**（`docs/DEPLOY.md` 第 0 节 + 7.5 节恢复演练）：CI 里装过、
+   演练过，但没在真实云主机上走过。⚠️ 用户 2026-11-03 明确说"这条后面做" ——
+   别自作主张开工，等指令；
 2. 认证状态跨进程（可选，只有真开多 worker 才值得）；
 3. 桥换成 C 版（每会话 16.8~17MB → 预期 1~2MB；SSH 承载的并发上限就是这项内存）——
    只有真上量才值得；
 4. `-flto` / 连接建立路径（性能线，收益有限，服务端本来就不是瓶颈）。
 
-> **打包/部署已完成**（`Dockerfile` + `deploy/systemd/` + 进程内日志轮转 + 每日备份 timer +
-> `docs/DEPLOY.md` 的上线 checklist），不要再重复做；只有"注册限流"还是上线前的缺口。
+> **上线前的功能缺口已经清零**：打包/部署（含恢复演练工具）与注册限流都做完了，
+> 不要再重复做；剩下只有"真机验证"这一条（已挂起）。
 
 **最有用的结论**（细节见后文）：
 
+- **注册也有限流了**（随 IP 20 次/5 分钟、全局 200 次/小时，挡在 PBKDF2 之前）：
+  它是唯一"免费"的 PBKDF2 入口，跑在唯一写线程上，不挡的话一个客户端就能把登录拖慢（6.53）；
 - **部署有三条"不写就出事"**：`LimitNOFILE=300000:300000`（systemd 默认软限制就是连接数
   天花板）、`TETRIS_BIND=127.0.0.1`（否则明文端口直上公网）、`Restart=always`（崩溃能回来）；
   上线 checklist 在 `docs/DEPLOY.md` 第 0 节，每条都带"怎么验"；
@@ -201,6 +229,11 @@ cd src && make -j"$(nproc)"    # 产出两个二进制：tetris_game（服务端
 | `TETRIS_LOG_DIR` | 空（当前目录） | 日志目录（末尾补 `/`）；生产设 `/var/log/tetris`，让日志和库分家 |
 | `TETRIS_LOG_MAX_BYTES` | 10485760 | 单份日志上限；`0` = 不轮转（旧行为，log.txt 一直增长） |
 | `TETRIS_LOG_MAX_FILES` | 5 | 轮转保留的**历史**份数（spdlog 的 `max_files`，当前 `log.txt` 另算）；总量 ≈ 上限 × (份数+1) |
+| `TETRIS_REG_IP_MAX` | 20 | 注册限流：单个 IP 在窗口内的注册次数（`0` = 关闭这一维） |
+| `TETRIS_REG_IP_WINDOW_MS` | 300000 | 注册限流：单 IP 窗口长度（5 分钟，5 个等长槽） |
+| `TETRIS_REG_GLOBAL_MAX` | 200 | 注册限流：全进程在窗口内的注册次数（挡"换 IP 喷洒"；`0` = 关闭） |
+| `TETRIS_REG_GLOBAL_WINDOW_MS` | 3600000 | 注册限流：全局窗口长度（1 小时） |
+| `TETRIS_REG_MAX_ENTRIES` | 4096 | 注册限流：最多跟踪多少个 IP（满了对新 IP fail-open） |
 
 注意：改了**头文件**之后 `make` 现在会自动重编依赖它的源文件（`-MMD -MP`）。
 如果 `obj/` 是旧规则时代留下的，建议先 `make clean` 一次。
@@ -243,7 +276,9 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 | `tests/password_hash_test.cpp` | 哈希层自检（CI 单独编译运行）：Python `hashlib` 已知向量交叉验证、随机盐、旧明文兼容、坏记录拒绝、**`verifyDummy` 恒 false 且耗时同量级**、**注册密码策略（UTF-8 码点计数）**、单次耗时 |
 | `tests/auth_throttle_test.cpp` | 退避状态机自检（CI 单独编译运行）：注入时间，覆盖**指数增长/30s 封顶/成功清零/窗口内不延长/过期/条目上限/超长用户名** |
 | `tests/ip_throttle_test.cpp` | 按 IP 兜底的状态机自检（CI 单独编译运行）：注入时间，覆盖**阈值/滑动窗口（5 槽）/拒绝不延长/跨槽累计/多 IP 隔离/条目上限/过期/格式化** |
+| `tests/reg_throttle_test.cpp` | 注册限流的状态机自检（CI 单独编译运行）：注入时间，覆盖**每 IP 阈值/全局阈值/拒绝不记账也不延长/跨时间片累计/多 IP 隔离/未知来源只算全局/条目上限 fail-open/0=关闭某一维/等待秒数不超过窗口** |
 | `tests/ip_fallback_test.py` | 按 IP 兜底的协议级用例（CI 用低阈值 `5 次/10 秒` 起服务端）：**换用户名喷洒被按 IP 拦截 → 正确密码也进不去 → 127.0.0.2 同时可登录 → 窗口滑过后恢复** |
+| `tests/reg_limit_test.py` | 注册限流的协议级用例（CI 用低阈值 `3 次/10 秒 + 全局 6 次/10 秒` 起服务端）：**同一 IP 用满额度 → 第 4 次被拦（等待秒数 ≤ 窗口）→ 按 3 回上级菜单 → 换源地址还能注册 → 换 IP 把全局额度用完 → 全新 IP 也被拦 → 窗口滑过后恢复** |
 | `tests/credential.py` | 哈希格式的 Python 实现（与 `PasswordHash.cpp` 对齐），供 mock / 集成测试 / play_test 复用 |
 | `tests/db.py` | 测试侧的 SQLite 存取（schema 与 `Db.cpp` 保持一致）：`--db` 路径、等账号落库、读凭据、造账号、查成绩 |
 | `tests/csv_import_test.py` | 旧 `userdata.csv` 一次性导入验证：造旧 CSV → 服务端启动自动导入 → 明文密码能登录 → 登录后库里变成加盐哈希 |
@@ -273,13 +308,16 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 日志、备份恢复、升级回滚、checklist）在 `docs/DEPLOY.md`**。仓库根还有 `Dockerfile` 与
 `docker-compose.yml`。
 
-三个 C++ 自检（`password_hash_test.cpp` / `auth_throttle_test.cpp` / `ip_throttle_test.cpp`）都能在
-`src/` 下单独编译运行，文件头里有完整的 `g++ ...` 命令；CI 里各占一步，失败细节走 `::error::` 注解。
+四个 C++ 自检（`password_hash_test.cpp` / `auth_throttle_test.cpp` / `ip_throttle_test.cpp` /
+`reg_throttle_test.cpp`）都能在 `src/` 下单独编译运行，文件头里有完整的 `g++ ...` 命令；
+CI 里各占一步，失败细节走 `::error::` 注解。
 集成测试的退避用例会"连续失败直到出现提示"，不依赖环境变量——但服务端必须是默认阈值
 （5 次免延迟、1s 起），把 `TETRIS_AUTH_*` 调得太大它就会超时失败。
 按 IP 兜底的用例相反：**必须**用低阈值服务端（`TETRIS_AUTH_IP_MAX_FAILURES=5
 TETRIS_AUTH_IP_WINDOW_MS=10000`），所以它单独起一个服务端、单独占一个 CI 步骤，
 不跟默认配置的集成测试混跑（否则别人的失败会把 5 次额度吃掉）。
+注册限流的协议用例同理：低阈值（`TETRIS_REG_IP_MAX=3` / `TETRIS_REG_GLOBAL_MAX=6`，
+窗口 10 秒），单独一个服务端、单独一个步骤。
 
 CI 步骤（`build.yml`，每次 push `main` 都跑，顺序如下）：
 
@@ -287,28 +325,30 @@ CI 步骤（`build.yml`，每次 push `main` 都跑，顺序如下）：
 → 2. **优化级别守卫**（`make -s print-opt` 不含 -O2/-O3/-Os 直接失败）
 → 3. 测试脚本语法（`tests/*.py` py_compile + `tests/*.sh` `bash -n`）
 → 4. 密码哈希自检（`password_hash_test.cpp`，失败细节走注解）→ 5. 退避自检（`auth_throttle_test.cpp`）
-→ 6. **IP 兜底自检**（`ip_throttle_test.cpp`）→ 7. 协议集成测试（12 项）
-→ 8. **旧 CSV 导入**（`csv_import_test.py`：造旧 CSV → 启动自动导入 → 明文登录 → 迁移）
-→ 9. **IP 兜底协议测试**（低阈值服务端 + `ip_fallback_test.py`）→ 10. 跨进程存储测试（5 项）
-→ 11. 双 worker 测试（先断言两个子进程都活着，再跑完整协议测试）
-→ 12. 登录吞吐基准（1/2 worker 各 2 轮，只回传 `::notice::`，不做时间断言）
-→ 13. 200 连接冒烟 → 14. `bench.sh` 100 连接冒烟 → 15. **连接池 trim（3000 连接后断言池子被压回
-目标值、且之后仍能接新连接）** → 16. `sizeof(User)` → 17. 头文件依赖跟踪自检
-（`touch User.h` + `make -n`）→ 18. **SSH 桥测试**（`tests/bridge_test.py` 的 8 项 +
+→ 6. **IP 兜底自检**（`ip_throttle_test.cpp`）→ 7. **注册限流自检**（`reg_throttle_test.cpp`）
+→ 8. 协议集成测试（12 项）
+→ 9. **旧 CSV 导入**（`csv_import_test.py`：造旧 CSV → 启动自动导入 → 明文登录 → 迁移）
+→ 10. **IP 兜底协议测试**（低阈值服务端 + `ip_fallback_test.py`）
+→ 11. **注册限流协议测试**（低阈值服务端 + `reg_limit_test.py`）→ 12. 跨进程存储测试（5 项）
+→ 13. 双 worker 测试（先断言两个子进程都活着，再跑完整协议测试）
+→ 14. 登录吞吐基准（1/2 worker 各 2 轮，只回传 `::notice::`，不做时间断言）
+→ 15. 200 连接冒烟 → 16. `bench.sh` 100 连接冒烟 → 17. **连接池 trim（3000 连接后断言池子被压回
+目标值、且之后仍能接新连接）** → 18. `sizeof(User)` → 19. 头文件依赖跟踪自检
+（`touch User.h` + `make -n`）→ 20. **SSH 桥测试**（`tests/bridge_test.py` 的 8 项 +
 `--server` 的穿过桥真协议 + 用 `TETRIS_BIND=127.0.0.1` 起服务端后断言 `ss -ltn` 只监听回环）
-→ 19. **sshd 片段语法**（装 openssh-server，`sshd -t -f` 解析 `deploy/sshd-tetris.conf`，
+→ 21. **sshd 片段语法**（装 openssh-server，`sshd -t -f` 解析 `deploy/sshd-tetris.conf`，
 再用 `sshd -T -C user=tetris` 核对生效的 `ForceCommand`、并断言片段以 `Match all` 收尾）
-→ 20. **管理命令测试**（`tests/admin_test.py`：对真库跑 reset-password / backup / list-users /
+→ 22. **管理命令测试**（`tests/admin_test.py`：对真库跑 reset-password / backup / list-users /
 stats，外加服务端启动打印的生效配置）
-→ 21. **部署形态测试**（`tests/deploy_test.py` 10 项静态断言 + `log_rotation_test.py` 日志轮转 +
+→ 23. **部署形态测试**（`tests/deploy_test.py` 10 项静态断言 + `log_rotation_test.py` 日志轮转 +
 **真的装一遍 systemd 服务**：`/proc/<pid>/limits` 的软/硬都是 300000（systemd 的
 `LimitNOFILE`/`LimitNOFILESoft` 一并打出来对照——它把软硬拆成两个属性，别去比
 `300000:300000` 这个字符串）、`ss -ltn` 只绑 127.0.0.1、真跑一次备份并检查 600 +
 `integrity_check`、**用那份备份跑一次恢复演练（临时端口 + 完整协议）**、
 `kill -9` 后等到**新的 MainPID**、`systemctl stop` 在 5 秒内完成）
-→ 22. **Docker 镜像**（真 `docker build` + 真跑容器：`HEALTHCHECK` 变 healthy、`id -u` 非 0、
+→ 24. **Docker 镜像**（真 `docker build` + 真跑容器：`HEALTHCHECK` 变 healthy、`id -u` 非 0、
 容器内 nofile=300000、从宿主读到 9999 的首屏字节、容器内 `tetris-admin stats` 可用）。
-整个 job 现在 **24 步**（原 22 步），`timeout-minutes` 从 15 提到 30。
+整个 job 现在 **26 步**（打包/部署那轮是 24 步；最初 22 步），`timeout-minutes` 是 30。
 CI 的 apt 依赖里已加 `libssl-dev`、`libsqlite3-dev`。
 
 `bench.yml` 只在 push 到 `bench-run` 分支或手动触发时跑，**用完记得删分支**。
@@ -556,6 +596,34 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 - **异步文件回调收回事件循环线程**：三个 `*Async` 回调原来在异步文件线程上直接改 `User`（data race）。
   现在用 `EventLoop::post()` 经**自管道**投递回循环线程——没用 `evthread_use_pthreads()`（会给每个 event
   操作加全局锁）；回调里加了"状态已变化就丢弃"的守卫。
+
+### 注册限流（2026-11-03）
+
+上线前最后一块功能缺口：注册是唯一"免费"的 PBKDF2 入口（6.30）。协议 / 存储 / 认证都没动，
+新增一个状态机 + 一处接入点 + 一个 UI 屏。
+
+- **`TetrisGame/RegThrottle.{h,cpp}`**：两个 5 槽滑动窗口 —— 每 IP（`ipMax` 次 / `ipWindowMs`，
+  默认 20 次/5 分钟）和全局（`globalMax` 次 / `globalWindowMs`，默认 200 次/小时）；
+  `check()` 只读（顺手删整窗过期的条目），`onAttempt()` 记账；阈值 `0` = 关闭该维度；
+  条目满了对新 IP fail-open（已有记录仍生效）；算术与 `IpThrottle` 一致（6.54 说明为什么
+  不直接复用它）；
+- **接入点**（`Server::receive_password_register`）：先 `RegThrottle::check(peerIp)`
+  —— 在密码策略之前、在 `saveNewUserDataAsync` 之前；被拒 → `show_Registration_Throttled(retryAfter)`
+  + 切到 `STATUS_REGISTER_OR_LOAD_OVER`（按 3 回初始菜单）；通过 → 策略检查 → `setPassword` →
+  `RegThrottle::onAttempt` → 提交异步哈希（6.53）；
+- **不记"被拒绝"的账**：拒绝本身不花 PBKDF2，记账只会把"等一会儿再来"的人越锁越久
+  （和 `AuthThrottle` / `IpThrottle` 同一条原则）；
+- **UI**：`UImanage::show_Registration_Throttled`（"注册过于频繁，请 N 秒后再试。"）——
+  和登录退避那种"原地重输密码"不同，回菜单等更自然（额度可能锁几分钟）；
+- **来源未知（`peerIp == 0`）**：跳过"按 IP"这一维，但仍然计入全局 —— 宁可漏掉单 IP 维度，
+  也不要在拿不到地址时整条限流失效；
+- **可观测**：启动打印的生效配置多一行；每次拒绝都 `logger->warn("注册过于频繁（全局额度/
+  单 IP 额度），来源 IP x，N 秒后可重试")`（默认 warn 级别会落盘），协议测试失败时 CI 会从
+  `log.txt` 里抓这几行；
+- **测试**：`tests/reg_throttle_test.cpp`（状态机，28 项断言）+ `tests/reg_limit_test.py`
+  （协议级，~11 秒，含一次 10 秒窗口等待）；`tests/mock_server.py` 同步实现了同一套窗口，
+  所以本地 `mock + reg_limit_test` 能先跑通（实测 **PASS 11.3s**）；
+- **对现有流程透明**：集成测试一轮注册 6~8 次，远低于 20 次额度；本地 mock + 集成 **12/12**。
 
 ### 打包/部署（2026-11-02）
 
@@ -1135,6 +1203,18 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     `chown` 回服务账号。以后写"以服务账号执行某个脚本"的工具时，要么先把脚本 stage 到
     它读得到的地方（比如演练目录），要么就别切身份。
 
+53. **注册限流的"记账时机"比阈值更容易写错**：只能在"确定要算哈希"的那一刻
+    `RegThrottle::onAttempt`。放在 `check()` 里（拒绝也记账）→ 一次攻击就能把同 NAT 下
+    所有玩家越锁越久；放在密码策略之前 → 填短密码的人也消耗公共额度。所以顺序固定为
+    `check → 密码策略 → setPassword → onAttempt → saveNewUserDataAsync`，而且 `onAttempt`
+    必须在**提交异步任务之前**（提交之后这段逻辑就离开事件循环线程了，`RegThrottle` 没加锁）。
+
+54. **没有复用 `IpThrottle` 是有意的**：它的 `config()` 是**类级静态**的（一份配置服务所有
+    维度），而注册要"每 IP 5 分钟 20 次"和"全局 1 小时 200 次"两套窗口参数 —— 一个静态
+    config 塞不下。`RegThrottle` 里两个 `Window` 共用同一段模板化算术（`.cpp` 的匿名
+    namespace），但各自持 config。以后给别的路径加限流照这个结构来，别往 `IpThrottle`
+    里塞第二套参数。
+
 ## 7. 仓库现状
 
 - `main` 干净，CI 全绿；无 tag；
@@ -1150,7 +1230,8 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
   - 失败退避按用户名（前 5 次免延迟、1s 起翻倍、30s 封顶，见 5.认证加固第二批）；
     **按 IP 的粗粒度兜底已完成**（5.认证加固第三批：滑动窗口 300 次/5 分钟），
     两层状态都是**每进程**的，多 worker 时阈值 ×N（见 6.23/6.25）；
-  - IP 兜底不覆盖注册路径，也没有"跨进程共享计数"（要做得上共享内存/文件）；
+  - **注册限流已完成**（`RegThrottle`：每 IP 20 次/5 分钟 + 全局 200 次/小时，见 5.注册限流）；
+    和登录那三层一样是**每进程**的：多 worker 时阈值实际 ×N，也没有跨进程共享计数；
   - 密码策略只在注册/改密时检查；**登录后可以改密**（主菜单 5），存量短密码由用户自己换；
     没有"忘记密码"（没邮箱）——现在靠管理员跑 `tetris-admin reset-password`（见 5.管理命令行、6.28）；
   - `accept` 路径的 `showInitMenu` 还没走 `OutputBatch`，菜单也没预渲染缓存；
@@ -1183,9 +1264,10 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 
 | 方向 | 内容 | 价值 |
 |---|---|---|
-| **注册限流（公网前必做）** | 方案 A：按 IP（20 次/5 分钟）+ 全局（200 次/小时），提交密码前挡掉；方案 B（更重）：把注册哈希挪进哈希线程池，队满回 Busy | **高**：见 6.30，是现在唯一无上限的 PBKDF2 路径 |
+| **真机验证（挂起）** | 按 `docs/DEPLOY.md` 第 0 节在真实云主机走一遍（尤其 7.5 的恢复演练）；用户 2026-11-03 说"这条后面做" | 中：CI 里装过/演练过，缺"这台机器上装过" |
 | 桥换成 C 版 | 现在每会话一个 Python 进程（CI 实测约 17 MB），换几十行 C 可降到 1~2MB；SSH 承载的并发上限目前就是这项内存（见 6.36） | 中：真上量时才值得 |
-| 认证状态跨进程 | 用户名退避 / IP 兜底的计数都在各 worker 内存里，阈值实际 ×N；要统一得放共享内存或落文件 | 低：只有真的开多 worker 才值得 |
+| 认证状态跨进程 | 用户名退避 / IP 兜底 / 注册限流的计数都在各 worker 内存里，阈值实际 ×N；要统一得放共享内存或落文件 | 低：只有真的开多 worker 才值得 |
+| 注册限流方案 B | 把注册哈希挪进哈希线程池，队满回"服务繁忙"（让注册和登录共享同一份背压）；现在方案 A 已经在提交哈希前挡掉，只有"额度内的正常注册把写线程占满"时才需要 | 低~中：只在注册量真的很大时 |
 | `-flto` | 跨 TU 内联（UImanage/Utility 的小函数），预期几个点；用 bench.yml 的 A/B 步骤量 | 低~中：CPU |
 | 连接建立路径 | accept 时 `showInitMenu` 也批量，并把固定菜单预渲染成静态字符串 | 低~中：10 万连接场景的 CPU（当前不是瓶颈） |
 | 空闲定时器 | 维护"游戏中/待发/待清理"集合，别每 100ms 扫全表 | 低：只有继续压连接数才值得 |
@@ -1200,8 +1282,9 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 **SSH 承载（sshd `ForceCommand` + `deploy/` 桥 + `TETRIS_BIND`，见 5.SSH 承载）**、
 **管理命令行（`tetris-admin`：reset-password / backup / list-users / stats + 启动打印生效配置，
 见 5.管理命令行）**、
-**打包/部署（Dockerfile + compose + systemd 单元 + 备份 timer + 日志轮转 + docs/DEPLOY.md，
-见 5.打包/部署）**（本轮）、
+**打包/部署（Dockerfile + compose + systemd 单元 + 备份 timer + 日志轮转 + 恢复演练 + docs/DEPLOY.md，
+见 5.打包/部署）**、
+**注册限流（`RegThrottle`：每 IP 20 次/5 分钟 + 全局 200 次/小时 + 两套测试，见 5.注册限流）**（本轮）、
 密码加盐哈希 + 迁移、登录吞吐、输出批量。
 
 ## 9. 给新会话的起步提示
@@ -1210,18 +1293,21 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 读 docs/HANDOVER.md 了解现状，然后我们继续做 <方向>。
 
 方向已定：**A（终端原生，SSH 承载）+ SQLite**，目标是把现在的服务端做成能上线的产品。
-功能、加固、上线入口、部署形态都已经收口：认证三层 / 改密 / 连接池 trim / SQLite 存储层 +
-旧 CSV 导入 / SSH 承载（sshd ForceCommand + 桥 + TETRIS_BIND）/ 管理命令行（reset-password /
-backup / list-users / stats + 启动打印生效配置）/ 打包部署（Dockerfile + compose +
-systemd 单元 + 每日备份 timer + 日志轮转 + docs/DEPLOY.md 的上线 checklist）。
+功能、加固、上线入口、部署形态都已经收口：认证三层 / 注册限流 / 改密 / 连接池 trim /
+SQLite 存储层 + 旧 CSV 导入 / SSH 承载（sshd ForceCommand + 桥 + TETRIS_BIND）/
+管理命令行（reset-password / backup / list-users / stats + 启动打印生效配置）/
+打包部署（Dockerfile + compose + systemd 单元 + 每日备份 timer + 日志轮转 + 恢复演练 +
+docs/DEPLOY.md 的上线 checklist）。
 不要再重复做，也别再堆性能优化（建连和游戏两种场景服务端都不是瓶颈）。
 
-上线前真正缺的（按优先级）：
-1. 注册限流（公网开放前必做）：注册的 PBKDF2 跑在唯一写线程上且无上限（6.30）；
-2. 真机走一遍 docs/DEPLOY.md 第 0 节的 checklist（systemd 装法 + `tetris-restore-drill`
-   恢复演练），把"CI 里装过"变成"这台机器上装过"。
+上线前真正缺的（只剩一条）：
+1. 真机走一遍 docs/DEPLOY.md 第 0 节的 checklist（systemd 装法 + `tetris-restore-drill`
+   恢复演练），把"CI 里装过"变成"这台机器上装过"。—— 用户 2026-11-03 明确说"这条后面做"，
+   别自作主张开工。
 
 要点：
+- 注册也有限流了（`TETRIS_REG_*`：每 IP 20 次/5 分钟 + 全局 200 次/小时，挡在 PBKDF2 之前）；
+  它和登录那三层一样是**每进程**的，多 worker 时阈值 ×N（5.注册限流、6.53/6.54）；
 - 恢复演练不用等出事：`sudo tetris-restore-drill <备份>` 会把备份在临时目录/临时端口恢复出来，
   跑 integrity + 条数对比 + 完整协议（第 7.5 节）；`--keep` 后能起桥亲手玩副本；
 - 数据在 tetris.db（SQLite，WAL，三件套），旧 userdata.csv 只用于首次导入；测试脚本统一用
@@ -1237,15 +1323,17 @@ systemd 单元 + 每日备份 timer + 日志轮转 + docs/DEPLOY.md 的上线 ch
 - 沙箱里跑不了 WSL/g++/systemd/docker/bash，C++/deploy/CI 改动只能 push main 让 CI 验证；
   失败细节靠 ::notice::/::error:: 注解。本地能跑的是 Python：tests/deploy_test.py（10 项静态
   断言，其中 2 项 shell 相关在本机会跳过）、tests/bridge_test.py（8 项）、tests/admin_test.py
-  （10 项）、tests/mock_server.py + 集成 12 项 / 跨进程 5 项 / IP 兜底 —— 别浪费 CI 轮次；
-- CI 现在 24 步，末尾三步是「Admin CLI test」「Deploy artifacts test (systemd)」
+  （10 项）、tests/mock_server.py + 集成 12 项 / 跨进程 5 项 / IP 兜底 / 注册限流
+  （`reg_limit_test.py` 配低阈值 mock）—— 别浪费 CI 轮次；
+- CI 现在 26 步，末尾三步是「Admin CLI test」「Deploy artifacts test (systemd)」
   「Docker image build and health check」：后两步会**真装一遍 systemd 服务**（LimitNOFILE /
-  只绑回环 / 真跑备份 / kill -9 拉起 / stop 计时）和**真 build 镜像并跑健康检查**；
+  只绑回环 / 真跑备份 / 恢复演练 / kill -9 拉起 / stop 计时）和**真 build 镜像并跑健康检查**；
   改 deploy/、Dockerfile、tetris_admin.cpp 一定会碰到它们，别删；
 - 压测数字的读法：CPU 看「游戏窗口 CPU / 每按键 µs」，「全程 CPU」被登录 PBKDF2 污染；
   内存看「服务端 RSS」；跨 run/跨 runner 的绝对值不要直接相除；
 - 不要再做这些已完成的事：WSL 安装、README 数据清理、GIF 处理、死代码清理、质量工程、
   多核化、密码加盐哈希 + 迁移、登录吞吐、输出批量、-O2、User int8、池子 2048、
   注册密码策略、假 PBKDF2、用户名退避 + 队列上限、按 IP 兜底、改密、连接池 trim、
-  SQLite 存储层、SSH 承载、管理命令行、打包/部署（Docker/systemd/日志轮转/备份 timer/恢复演练）。
+  SQLite 存储层、SSH 承载、管理命令行、打包/部署（Docker/systemd/日志轮转/备份 timer/恢复演练）、
+  注册限流（RegThrottle + 两套测试）。
 ```

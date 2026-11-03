@@ -186,6 +186,93 @@ def ip_throttle_failure(peer_ip):
             slots[index] = (cur, count + 1)
 
 
+# ---------------------------------------------------------------------------
+# 注册限流（与 C++ 侧 TetrisGame/RegThrottle 对齐）：每 IP + 全局两道滑动窗口。
+# 真服务端在"提交哈希之前"判定，被拒绝的尝试不记账；mock 也保持同样的顺序。
+# ---------------------------------------------------------------------------
+_REG_SLOTS = 5
+
+_reg_lock = threading.Lock()
+_reg_entries = {}    # ip -> [(时间片编号, 注册次数)] * _REG_SLOTS
+_reg_global = [(None, 0)] * _REG_SLOTS
+
+
+def _reg_config():
+    return (
+        _auth_env_int("TETRIS_REG_IP_MAX", 20),
+        _auth_env_int("TETRIS_REG_IP_WINDOW_MS", 5 * 60 * 1000),
+        _auth_env_int("TETRIS_REG_GLOBAL_MAX", 200),
+        _auth_env_int("TETRIS_REG_GLOBAL_WINDOW_MS", 60 * 60 * 1000),
+        _auth_env_int("TETRIS_REG_MAX_ENTRIES", 4096),
+    )
+
+
+def _reg_window_wait(slots, limit, window_ms):
+    """滑动窗口判定：返回还要等几秒（0 = 放行）。与 IpThrottle 同一算法。"""
+    if limit <= 0:
+        return 0
+    slot_ms = max(1, window_ms // _REG_SLOTS)
+    now_ms = int(time.monotonic() * 1000)
+    cur = now_ms // slot_ms
+    total = sum(count for bucket, count in slots
+                if bucket is not None and bucket <= cur and cur - bucket < _REG_SLOTS)
+    if total == 0 or total < limit:
+        return 0
+    acc = total
+    drain_ms = (cur + 1) * slot_ms
+    for bucket, count in sorted(b for b in slots if b[0] is not None):
+        if bucket > cur or cur - bucket >= _REG_SLOTS:
+            continue
+        acc -= count
+        if acc < limit:
+            drain_ms = (bucket + _REG_SLOTS) * slot_ms
+            break
+    return max(1, int(math.ceil((drain_ms - now_ms) / 1000.0)))
+
+
+def _reg_bump(slots, window_ms):
+    slot_ms = max(1, window_ms // _REG_SLOTS)
+    cur = int(time.monotonic() * 1000) // slot_ms
+    index = cur % _REG_SLOTS
+    bucket, count = slots[index]
+    if bucket != cur:
+        slots[index] = (cur, 1)
+    else:
+        slots[index] = (cur, count + 1)
+
+
+def reg_throttle_wait(peer_ip):
+    """返回还要等几秒；0 表示可以注册。先判全局，再判单 IP（与 C++ 同序）。"""
+    ip_max, ip_window, global_max, global_window, _max_entries = _reg_config()
+    with _reg_lock:
+        wait = _reg_window_wait(_reg_global, global_max, global_window)
+        if wait > 0:
+            return wait
+        if ip_max <= 0 or peer_ip == "0.0.0.0":
+            return 0
+        slots = _reg_entries.get(peer_ip)
+        if slots is None:
+            return 0
+        return _reg_window_wait(slots, ip_max, ip_window)
+
+
+def reg_throttle_attempt(peer_ip):
+    """记录一次"确定要算哈希"的注册。"""
+    ip_max, ip_window, global_max, global_window, max_entries = _reg_config()
+    with _reg_lock:
+        if global_max > 0:
+            _reg_bump(_reg_global, global_window)
+        if ip_max <= 0 or peer_ip == "0.0.0.0":
+            return
+        slots = _reg_entries.get(peer_ip)
+        if slots is None:
+            if len(_reg_entries) >= max_entries:
+                return      # 条目满了不再跟踪新 IP（fail-open）
+            slots = [(None, 0)] * _REG_SLOTS
+            _reg_entries[peer_ip] = slots
+        _reg_bump(slots, ip_window)
+
+
 def account_exists(name):
     """账号是否存在（直接查 SQLite，多个 mock 进程共享同一个库文件）。"""
     return db.account_exists(DB_PATH, name)
@@ -260,6 +347,15 @@ def serve(conn):
                         state = "reg_pwd"
                         pending_user = cmd
                 elif state == "reg_pwd":
+                    # 与真服务端同序：先判注册限流（每 IP + 全局），再判密码策略，
+                    # 最后才写库——被限流/策略拒掉的尝试都不占额度。
+                    wait = reg_throttle_wait(peer_ip)
+                    if wait > 0:
+                        conn.sendall(("\x1b[2J\x1b[H\x1b[12;14H\x1b[37m"
+                                      "注册过于频繁，请 %d 秒后再试。\r\n"
+                                      "\x1b[14;14H\x1b[37m请按3返回上级菜单：" % wait).encode())
+                        state = "after_reg"
+                        continue
                     # 与真服务端一致：密码不满足策略时提示并留在密码输入状态，
                     # 否则集成测试里的"短密码被拒"分支在本地 mock 上跑不通。
                     if not password_policy_ok(cmd):
@@ -267,6 +363,7 @@ def serve(conn):
                                      "请重新输入密码：".encode())
                         continue
                     write_account(pending_user, cmd)
+                    reg_throttle_attempt(peer_ip)
                     conn.sendall("\x1b[16;14H\x1b[37m注册成功！\r\n"
                                  "\x1b[17;14H\x1b[37m请按3返回上级菜单：".encode())
                     state = "after_reg"

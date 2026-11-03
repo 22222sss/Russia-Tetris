@@ -266,8 +266,10 @@ docker compose exec tetris tetris-backup                # 默认写 /var/backups
 | `TETRIS_LOG_MAX_BYTES` | `10485760`（10 MiB；`0`=不轮转） | 单份上限 |
 | `TETRIS_LOG_MAX_FILES` | `5` | 历史份数（当前 `log.txt` 另算），默认 6 个文件 ≈ 60 MiB |
 | `TETRIS_LOG_LEVEL` | `warn` | `info` 下每条连接都会落盘，别在生产常开 |
-| `TETRIS_WORKERS` | `1`（默认） | 多 worker 时退避/IP 兜底状态是每进程一份，阈值实际 ×N（HANDOVER 6.23/6.25） |
+| `TETRIS_WORKERS` | `1`（默认） | 多 worker 时退避/IP 兜底/注册限流的状态是每进程一份，阈值实际 ×N（HANDOVER 6.23/6.25） |
 | `TETRIS_AUTH_*` / `TETRIS_AUTH_IP_*` | 默认 | 共享口令入口的机器按"全站额度"重新评估（HANDOVER 6.35） |
+| `TETRIS_REG_IP_MAX` / `_WINDOW_MS` | `20` / `300000` | 注册限流：单个 IP 5 分钟 20 次（`0` = 关这一维） |
+| `TETRIS_REG_GLOBAL_MAX` / `_WINDOW_MS` | `200` / `3600000` | 注册限流：全进程 1 小时 200 次；**预期上线当天大量注册就把这个调大**（`0` = 关） |
 | `TETRIS_ADMIN` / `TETRIS_BACKUP_DIR` / `TETRIS_BACKUP_KEEP` | 备份脚本用 | 单元里已设；`KEEP` 默认 14 |
 
 改完变量先看**启动打印的生效配置**（`journalctl -u tetris-game -n 40`）——值全部取自各模块自己的
@@ -473,6 +475,7 @@ df -h /var/lib/tetris /var/backups/tetris             # 库和备份的盘都别
 | 连上就断 / 提示 `not available` | `chsh -s /bin/sh tetris`；见 SSH_DEPLOY.md 排错表 |
 | 提示"游戏服务暂时不可用" | 服务端活没活、桥的目标端口对不对 |
 | 所有人被"登录尝试过于频繁" | 来源 IP 映射是否生效（桥的日志）、`TETRIS_AUTH_IP_MAX_FAILURES` |
+| 玩家反馈"注册过于频繁" | 正常现象也可能是额度太紧：单 IP 20 次/5 分钟、全局 200 次/小时（`TETRIS_REG_*`）；看 `log.txt` 里"注册过于频繁（全局额度/单 IP 额度）"那行 |
 | 登录突然变慢 | 哈希队列（`TETRIS_AUTH_QUEUE_LIMIT`）、有没有人在刷注册 |
 
 ---

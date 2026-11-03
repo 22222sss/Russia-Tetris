@@ -124,6 +124,22 @@ bool UImanage::show_Login_Throttled(int retryAfterSeconds, const shared_ptr<User
     return true;
 }
 
+bool UImanage::show_Registration_Throttled(int retryAfterSeconds, const shared_ptr<User>& user)
+{
+    if (!UImanage::clear(user))
+        return false;
+
+    const string message = "注册过于频繁，请 " + to_string(retryAfterSeconds) + " 秒后再试。";
+    if (!outputText(user, WINDOW_ROW_COUNT / 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, message))
+        return false;
+
+    // 额度是按 IP/全局算的，等一会儿再试比原地重输密码自然：回到"注册/登录"这一层
+    // （调用方会切到 STATUS_REGISTER_OR_LOAD_OVER，按 3 回上级菜单）
+    if (!outputText(user, WINDOW_ROW_COUNT / 2 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请按3返回上级菜单："))
+        return false;
+    return true;
+}
+
 bool UImanage::show_Server_Busy(const shared_ptr<User>& user)
 {
     if (!outputText(user, WINDOW_ROW_COUNT / 2 + 4, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "服务繁忙，请稍后重试："))

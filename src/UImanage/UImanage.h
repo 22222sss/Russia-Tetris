@@ -49,6 +49,9 @@ public:
 	//展示"登录尝试过于频繁，请 N 秒后再试"（失败退避，见 TetrisGame/AuthThrottle.h）
 	static bool show_Login_Throttled(int retryAfterSeconds, const shared_ptr<User>& user);
 
+	//展示"注册过于频繁，请 N 秒后再试"（按 IP + 全局的注册限流，见 TetrisGame/RegThrottle.h）
+	static bool show_Registration_Throttled(int retryAfterSeconds, const shared_ptr<User>& user);
+
 	//展示"服务繁忙"（哈希队列已满，本次没有校验）
 	static bool show_Server_Busy(const shared_ptr<User>& user);
 

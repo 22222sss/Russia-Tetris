@@ -6,6 +6,7 @@
 #include"PasswordPolicy.h"
 #include"AuthThrottle.h"
 #include"IpThrottle.h"
+#include"RegThrottle.h"
 #include"../Utility/Utility.h"
 #include"../UImanage/UImanage.h"
 #include"../EventLoop/EventLoop.h"
@@ -207,6 +208,26 @@ int Server::receive_password_register(shared_ptr<User>& user)
 
     if (password != "")
     {
+        // 注册限流（HANDOVER 6.30）：注册是唯一"免费的 PBKDF2 入口"，而且它的哈希
+        // 跑在唯一的异步写线程上（和登录查询/成绩写入同一条队列）。所以在**提交
+        // 哈希之前**按 IP + 全局两道滑动窗口挡掉；被拒绝的尝试不记账（拒绝本身不花
+        // 代价，记账只会把"等一会儿再来"的人越锁越久）。
+        const auto regNow = std::chrono::steady_clock::now();
+        const auto regDecision = RegThrottle::check(user->getPeerIp(), regNow);
+        if (regDecision.throttled)
+        {
+            user->setReceivedata("");
+            logger->warn("注册过于频繁（{}），来源 IP {}，{} 秒后可重试",
+                         regDecision.global ? "全局额度" : "单 IP 额度",
+                         IpThrottle::format(user->getPeerIp()),
+                         regDecision.retryAfterSeconds);
+            if (!UImanage::show_Registration_Throttled(regDecision.retryAfterSeconds, user))
+            {
+                return -1;
+            }
+            return 1;   // 由 process_STATUS_RECEIVE_PASSWORD_REGISTER 切到"按3返回"
+        }
+
         // 注册密码策略：至少 8 个字符、不能全是空白（见 PasswordPolicy.h）。
         // 只拦注册；老账号登录不检查，避免升级后被自己的短密码锁在门外。
         if (!PasswordPolicy::check(password))
@@ -220,6 +241,9 @@ int Server::receive_password_register(shared_ptr<User>& user)
         }
 
         user->setPassword(password);
+
+        // 记账放在"确定要算哈希"的位置：策略不通过/被拒绝的尝试都不占额度
+        RegThrottle::onAttempt(user->getPeerIp(), regNow);
 
         Filedata::saveNewUserDataAsync(user);  // ✅ 异步调用，立即返回
 
