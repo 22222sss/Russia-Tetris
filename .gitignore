@@ -50,3 +50,6 @@ src/sizeof_err.txt
 # tests/deploy_test.py 在"临时目录不可写"的环境里会落在仓库根（点号前缀）
 .tetris-deploy-test-*
 
+# 真机部署用的临时私钥（绝不入库）
+.deploy-key/
+
