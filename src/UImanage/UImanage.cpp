@@ -285,8 +285,10 @@ bool UImanage::showRecentScores(const shared_ptr<User>& user)
 
             if (!success) {
                 logger->error("读取最近成绩失败");
-                // 显示错误信息
+                // 这一屏之后状态仍是 STATUS_LOGIN_OVER（服务端只认"3"），所以每个出口
+                // 都必须给出返回提示，否则玩家面对的是一屏没有任何按键说明的文字（6.56）
                 outputText(user, WINDOW_ROW_COUNT / 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "读取失败，请重试");
+                outputText(user, WINDOW_ROW_COUNT / 3 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请按3返回菜单：");
                 return;
             }
 
@@ -294,6 +296,7 @@ bool UImanage::showRecentScores(const shared_ptr<User>& user)
                 // Read_recent_grades 用单个 "1" 作为"用户存在但没有成绩"的哨兵值
                 // （见 Filedata::Read_recent_grades），不能当成一条成绩渲染出来
                 outputText(user, WINDOW_ROW_COUNT / 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "暂无成绩记录");
+                outputText(user, WINDOW_ROW_COUNT / 3 + 2, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请按3返回菜单：");
                 return;
             }
 
@@ -308,8 +311,9 @@ bool UImanage::showRecentScores(const shared_ptr<User>& user)
                 i++;
             }
 
-            // 显示返回提示
-            outputText(user, WINDOW_ROW_COUNT / 2 + 21, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请按3返回菜单：");
+            // 显示返回提示：紧跟在最后一条成绩下面。原来的 WINDOW_ROW_COUNT/2+21 = 33
+            // 已经超出 24 行窗口，只能指望终端把光标钳到最后一行，等于没提示（6.56）
+            outputText(user, WINDOW_ROW_COUNT / 3 + i + 1, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "请按3返回菜单：");
         }
     );
 
@@ -340,6 +344,9 @@ bool UImanage::showTopScores(const shared_ptr<User>& user)
                 logger->error("读取排行榜失败");
                 outputText(user, WINDOW_ROW_COUNT / 3, 2 * (WINDOW_COL_COUNT / 3),
                     COLOR_WHITE, "加载失败，请重试");
+                // 同 showRecentScores：失败出口也要给返回提示，否则这一屏没法退出去（6.56）
+                outputText(user, WINDOW_ROW_COUNT / 3 + 2, 2 * (WINDOW_COL_COUNT / 3),
+                    COLOR_WHITE, "请按3返回菜单：");
                 return;
             }
 
@@ -363,7 +370,9 @@ bool UImanage::showTopScores(const shared_ptr<User>& user)
             sort(show.begin(), show.end(), cmp_diffcult);
             UImanage::showTopScores_Diffcult(WINDOW_ROW_COUNT / 3, WINDOW_COL_COUNT + 54, show, user);
 
-            outputText(user, WINDOW_ROW_COUNT / 2 + 30, 2 * (WINDOW_COL_COUNT / 3),
+            // 三列最多占 WINDOW_ROW_COUNT/3(8) + 3 + 10 = 21 行，提示放最后一行
+            // （原来的 WINDOW_ROW_COUNT/2+30 = 42 根本不在窗口里，见 6.56）
+            outputText(user, WINDOW_ROW_COUNT - 1, 2 * (WINDOW_COL_COUNT / 3),
                 COLOR_WHITE, "请按3返回菜单：");
         }
     );
