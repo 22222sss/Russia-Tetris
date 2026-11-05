@@ -322,7 +322,9 @@ def test_register_and_login(args, user, password):
         STAGE = "查看最近成绩（新账号）"
         conn.sendline("1")
         expect(conn, "暂无成绩记录")
-        # 无成绩时异步回调直接 return，不会打印"请按3返回菜单"；直接发 3 回主菜单
+        # 2026-11-05 起：无成绩分支也会打印"请按3返回菜单"。
+        # 以前那里提前 return 把提示跳过了，玩家看到一屏没有任何按键说明的文字。
+        expect(conn, "请按3返回菜单")
         conn.sendline("3")
         expect(conn, "3. 开始游戏")
 
@@ -354,6 +356,16 @@ def test_register_and_login(args, user, password):
         STAGE = "按键后连接应仍然存活"
         if not conn.alive(1.0):
             raise Failure("按下方向键后服务端关闭了连接；最近输出：%r" % conn.tail())
+
+        # 渲染层守卫：游戏中每个格子都会走 outputText，早期版本会顺手在
+        # (row, 0) 画一个白方块 —— 列号 0 在 ANSI 里不合法，终端钳到第 1 列，
+        # 表现是方块每下落一格、最左边就糊一个白块（2026-11-05 反馈后删除）。
+        # moveTo(row, 0) 发出的字节里一定有 ";0H"，这里钉死它不再出现。
+        STAGE = "棋盘不该往第 0 列写光标"
+        if b";0H" in conn.raw:
+            raise Failure("棋盘输出里出现了 (row, 0) 的光标定位，"
+                          "说明 outputText 又在最左边画东西了：%r"
+                          % conn.tail(600))
     finally:
         conn.close()
 

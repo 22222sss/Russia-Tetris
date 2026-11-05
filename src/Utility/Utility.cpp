@@ -147,34 +147,10 @@ bool ChangeCurrentColor(const shared_ptr<User>& user, int n)
 
 bool outputText(const shared_ptr<User>& user, int row, int col, int color, const string& text, int grade) //有分数则输出分数
 {
-    if (user->getStatus() == STATUS_PLAYING)
-    {
-        if (!moveTo(user, row, 0))
-        {
-            return false;
-        }
-
-        if (!output(user, string("  ")))
-        {
-            return false;
-        }
-
-        if (!moveTo(user, row, 0))
-        {
-            return false;
-        }
-
-        if (!ChangeCurrentColor(user, COLOR_WHITE))
-        {
-            return false;
-        }
-
-        if (!output(user, string("■")))
-        {
-            return false;
-        }
-    }
-
+    // 这里曾经有一段"游戏进行中先在 (row, 0) 画个白方块"的逻辑：那是早期留下的
+    // 调试痕迹，列号 0 在 ANSI 里不合法（从 1 开始计），终端一律钳到第 1 列，
+    // 于是方块每下落一格、每渲染一个格子，就在最左边糊一个白块（2026-11-05 反馈）。
+    // 而且它让每个格子的渲染多出 4 次 send，去掉顺带省了这部分输出。
 
     // 检查输入是否合法
     // 参数验证 - 只有当明确传入了grade时才验证
