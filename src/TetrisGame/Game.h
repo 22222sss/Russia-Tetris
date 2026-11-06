@@ -94,6 +94,11 @@ public:
     // 不需要重开一局（2026-11-06 反馈）。
     static bool Repaint(std::shared_ptr<User>& user);
 
+    // 补画三道竖墙（左墙 / 右墙 / 面板右边）。终端偶尔会把已经画好的墙格吃掉，
+    // 但服务端从没写过那里（TETRIS_DRAW_TRACE 实测 erase 恒为 0），所以每落一块
+    // 顺手补一遍，成本 3x24 个格子（2026-11-06）。
+    static bool RedrawWalls(std::shared_ptr<User>& user);
+
     //判断结束
     //直接判断游戏区最上面的一行当中是否有方块存在，若存在方块，则游戏结束。
     //游戏结束后询问玩家是否再来一局。

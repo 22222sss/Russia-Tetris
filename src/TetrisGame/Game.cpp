@@ -1,6 +1,29 @@
 #include"Game.h"
+#include <cstdlib>
+#include <string>
 
 extern shared_ptr<spdlog::logger> logger;
+
+namespace {
+// 临时诊断开关（TETRIS_DRAW_TRACE=1）：把靠近右边界的绘制/擦除动作写进日志。
+// 只在排查"右墙出现缺口"时打开；平时不产生任何输出。
+bool drawTraceEnabled()
+{
+    static const bool on = []() {
+        const char* v = std::getenv("TETRIS_DRAW_TRACE");
+        return v != nullptr && *v != '\0' && std::string(v) != "0";
+    }();
+    return on;
+}
+
+void traceDraw(const char* what, int shape, int form, int row, int col)
+{
+    if (!drawTraceEnabled() || col < 15)
+        return;
+    logger->info("[draw] {} shape={} form={} row={} col={} ansi_col_j0={}",
+                 what, shape, form, row, col, 2 * col - 1);
+}
+}
 
 void Game::InitBlockInfo()
 {
@@ -161,6 +184,7 @@ bool Game::InitGameFace(shared_ptr<User>& user)
 
 bool Game::DrawBlock(shared_ptr<User>& user, int shape, int form, int row, int col)//row和col，指的是方块信息当中第一行第一列的方块的打印位置为第row行第col列
 {
+    traceDraw("DrawBlock", shape, form, row, col);
     for (int i = 0; i < 4; i++)
     {
         for (int j = 0; j < 4; j++)
@@ -177,6 +201,7 @@ bool Game::DrawBlock(shared_ptr<User>& user, int shape, int form, int row, int c
 
 bool Game::DrawSpace(shared_ptr<User>& user, int shape, int form, int row, int col)
 {
+    traceDraw("DrawSpace", shape, form, row, col);
     int i, j;
     for (i = 0; i < 4; i++)
     {
@@ -447,6 +472,25 @@ bool Game::Repaint(shared_ptr<User>& user)
             return false;
     }
 
+    return true;
+}
+
+bool Game::RedrawWalls(shared_ptr<User>& user)
+{
+    // 三道竖墙的列号与 InitInterface 一致：
+    //   j=0                  -> 2*(0+1)-1        = 1
+    //   j=WINDOW_COL_COUNT-1 -> 2*WINDOW_COL_COUNT-1 = 39
+    //   j=WINDOW_COL_COUNT+9 -> 2*(WINDOW_COL_COUNT+9)+1 = 59
+    for (int i = 0; i < WINDOW_ROW_COUNT; i++)
+    {
+        const int row = i + 1;
+        if (!outputText(user, row, 1, COLOR_WHITE, "■"))
+            return false;
+        if (!outputText(user, row, 2 * WINDOW_COL_COUNT - 1, COLOR_WHITE, "■"))
+            return false;
+        if (!outputText(user, row, 2 * (WINDOW_COL_COUNT + 9) + 1, COLOR_WHITE, "■"))
+            return false;
+    }
     return true;
 }
 
@@ -779,6 +823,14 @@ void Game::processBlockDown(shared_ptr<User>& user)
 
 
         if (!Game::UpdateCurrentScore(user))
+        {
+            return;
+        }
+
+        // 每落一块把三道竖墙补一遍：终端偶尔会把已经画好的墙格"吃掉"，
+        // 而服务端从没写过那里（TETRIS_DRAW_TRACE 实测 erase 恒为 0），
+        // 补画是最便宜的自我修复（2026-11-06）。
+        if (!Game::RedrawWalls(user))
         {
             return;
         }

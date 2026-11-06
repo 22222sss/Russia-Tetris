@@ -1,5 +1,7 @@
 #include"Utility.h"
 #include"../TetrisGame/Db.h"
+#include <cstdlib>
+#include <string>
 
 extern shared_ptr<spdlog::logger> logger;
 
@@ -7,6 +9,17 @@ namespace {
 // >0 表示当前在 OutputBatch 里：output() 只写缓冲，由最外层析构统一 flush。
 // 事件循环是单线程的，用 thread_local 即可（异步回调也已经 post 回循环线程）。
 thread_local int gOutputBatchDepth = 0;
+
+// 临时诊断开关（TETRIS_DRAW_TRACE=1）：记录所有打到"右墙/面板左列"的写入。
+// 排查"右墙出现缺口"用，平时不产生输出。
+bool wallTraceEnabled()
+{
+    static const bool on = []() {
+        const char* v = std::getenv("TETRIS_DRAW_TRACE");
+        return v != nullptr && *v != '\0' && std::string(v) != "0";
+    }();
+    return on;
+}
 }
 
 bool output(const shared_ptr<User>& user, string s)
@@ -165,6 +178,14 @@ bool outputText(const shared_ptr<User>& user, int row, int col, int color, const
 
     // 构建输出内容
     string outputContent = text;
+
+    // 诊断：谁往右墙/面板左列写了东西（擦墙就会在这里留痕）
+    if (wallTraceEnabled() && (col == 39 || col == 40 || col == 41))
+    {
+        logger->info("[wall] row={} col={} color={} erase={} status={} text_len={}",
+                     row, col, color, text == "  ",
+                     static_cast<int>(user->getStatus()), text.size());
+    }
 
     if (grade > 0)
     {
