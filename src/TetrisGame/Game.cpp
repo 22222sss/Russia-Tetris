@@ -359,6 +359,74 @@ bool Game::UpdateCurrentScore(shared_ptr<User>& user)
     return true;
 }
 
+bool Game::Repaint(shared_ptr<User>& user)
+{
+    // 整屏重绘：只读 data/color，不改任何游戏状态（分数不在这里累加）。
+    // 平时是"增量绘制"，终端一旦重排（拖窗口、改字号、滚动），旧内容错位、
+    // 新帧又画在绝对坐标上，就会叠出花屏（2026-11-06 反馈）。
+    if (!UImanage::clear(user))
+        return false;
+
+    // 1. 边框：坐标与 InitInterface 完全一致，但这里只画、不动 data
+    for (int i = 0; i < WINDOW_ROW_COUNT; i++)
+    {
+        for (int j = 0; j < WINDOW_COL_COUNT + 10; j++)
+        {
+            const bool wall = (j == 0 || j == WINDOW_COL_COUNT - 1 || j == WINDOW_COL_COUNT + 9);
+            if (wall || i == WINDOW_ROW_COUNT - 1)
+            {
+                if (!outputText(user, i + 1, 2 * (j + 1) - 1, COLOR_WHITE, "■"))
+                    return false;
+            }
+        }
+    }
+
+    // 2. 右上角面板的分隔线 + "Next:"
+    for (int i = WINDOW_COL_COUNT; i < WINDOW_COL_COUNT + 10; i++)
+    {
+        if (!outputText(user, 11 + 1, 2 * i + 1, COLOR_WHITE, "■"))
+            return false;
+    }
+
+    if (!outputText(user, 2, 2 * WINDOW_COL_COUNT + 1 + 1, COLOR_WHITE, "Next:"))
+        return false;
+
+    // 3. 已落下的方块：颜色取落块时记下的 shape（越界就按白色画，别让一行坏数据毁掉整屏）
+    for (int i = 0; i < WINDOW_ROW_COUNT; i++)
+    {
+        for (int j = 1; j < WINDOW_COL_COUNT - 1; j++)
+        {
+            if (user->getData(i, j) != 1)
+                continue;
+
+            const int stored = user->getColor(i, j);
+            const int code = (stored >= 0 && stored <= SHAPE_O) ? Color(stored) : COLOR_WHITE;
+            if (!outputText(user, i + 1, 2 * j + 1, code, "■"))
+                return false;
+        }
+    }
+
+    // 4. 当前下落的方块 + 右上角的下一块
+    if (!Game::DrawBlock(user, user->getShape(), user->getForm(), user->getRow(), user->getCol()))
+        return false;
+
+    if (!Game::DrawBlock(user, user->getNextShape(), user->getNextForm(), 3, WINDOW_COL_COUNT + 3))
+        return false;
+
+    // 5. 分数：直接画当前值（不能调 UpdateCurrentScore，它会再累加一次）
+    if (!outputText(user, 14, 2 * WINDOW_COL_COUNT + 2, COLOR_WHITE, "Score: ", user->getScore()))
+        return false;
+
+    // 6. 已经在"结束确认"这一屏的话，把文字补回去
+    if (user->getStatus() == STATUS_OVER_CONFIRMING)
+    {
+        if (!UImanage::showover(user))
+            return false;
+    }
+
+    return true;
+}
+
 bool Game::IsOver(shared_ptr<User>& user)
 {
     //判断游戏是否结束
@@ -523,6 +591,13 @@ bool Game::handleReceivedData_STATUS_PLAYING(char* buffer, shared_ptr<User>& use
             return false;
         }
     }
+    else if (*buffer == 'r' || *buffer == 'R')//重绘整屏（终端重排/花屏后用，不影响游戏状态）
+    {
+        if (!Game::Repaint(user))
+        {
+            return false;
+        }
+    }
 
     return true;
 }
@@ -571,6 +646,13 @@ bool Game::handleBufferData_STATUS_OVER_CONFIRMING(char* buffer, shared_ptr<User
         if (!UImanage::showInitMenu(user))
             return false;
 
+    }
+    else if (*buffer == 'r' || *buffer == 'R')//重绘整屏（含 GAME OVER 那两行）
+    {
+        if (!Game::Repaint(user))
+        {
+            return false;
+        }
     }
     else
     {

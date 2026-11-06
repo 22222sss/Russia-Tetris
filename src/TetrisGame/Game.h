@@ -88,6 +88,12 @@ public:
     //更新目前分数
     static bool UpdateCurrentScore(std::shared_ptr<User>& user);
 
+    // 整屏重绘：按 data/color 把边框、已落方块、当前方块、Next、Score 重新画一遍。
+    // 游戏平时是"增量绘制"（只改变化的格子），所以终端一旦重排（拖动窗口、改字号、
+    // 滚动）旧内容就会错位，之后的新帧画在绝对坐标上叠出花屏。按下 R 走这条路径即可复原，
+    // 不需要重开一局（2026-11-06 反馈）。
+    static bool Repaint(std::shared_ptr<User>& user);
+
     //判断结束
     //直接判断游戏区最上面的一行当中是否有方块存在，若存在方块，则游戏结束。
     //游戏结束后询问玩家是否再来一局。
