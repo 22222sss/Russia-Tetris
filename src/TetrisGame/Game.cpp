@@ -421,7 +421,9 @@ bool Game::Repaint(shared_ptr<User>& user)
                 continue;
 
             const int stored = user->getColor(i, j);
-            const int code = (stored >= 0 && stored <= SHAPE_O) ? Color(stored) : COLOR_WHITE;
+            // 上界必须是 SHAPE_I（=6）而不是 SHAPE_O（=5）：长条方块就是 SHAPE_I，
+            // 写成 SHAPE_O 会让它落到"越界按白色画"的分支 —— 按 R 重绘后长条变白。
+            const int code = (stored >= SHAPE_T && stored <= SHAPE_I) ? Color(stored) : COLOR_WHITE;
             if (!outputText(user, i + 1, 2 * j + 1, code, "■"))
                 return false;
         }
