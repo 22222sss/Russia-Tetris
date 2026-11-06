@@ -569,6 +569,35 @@ Test-NetConnection 2408:8459:... -Port 9999    # 期望 False
 - **运营商/路由器可能挡入站 IPv6**：那时 22 从外面也是 timeout。别把这个当成服务端问题——
   先看 12.2 能不能连通，再回头查路由器。
 
+再补三条"临时开放给朋友试玩"时才暴露的坑（2026-11-06 实测）：
+
+- **WSL 3.x 会在最后一个客户端退出后约 20 秒把整个虚拟机关掉**（systemd 里的
+  `tetris-game`/`ssh` 一起没），`.wslconfig` 的 `[wsl2] vmIdleTimeout` 在 WSL **3.0.3 上不生效**。
+  想让入口常开，必须让一个 WSL 进程常驻：
+
+  ```powershell
+  # 隐藏窗口里挂着；杀掉它 = 停服（WSL 会自己在空闲后关掉）
+  Start-Process wsl.exe -ArgumentList '-d','Ubuntu-22.04','--','tail','-f','/dev/null' -WindowStyle Hidden
+  ```
+
+  迷惑点：手工跑完所有检查都是绿的，**20 秒后服务就没了**——朋友那时连必然扑空；
+- **转发目标写 `127.0.0.1`，不要写 WSL 的 NAT 地址**：WSL 有 localhostForwarding，
+  `::22 -> 127.0.0.1:22` 在 WSL 重启换 IP 后照样有效；写死 `172.18.x.x` 迟早失效；
+- **判断链路好坏要读 SSH banner，不能只看端口在监听**：`netsh portproxy` 是"先 accept、
+  再去连目标"，目标不可达时客户端看到的是**连上然后卡住**（`connect` 成功、`read` 超时）。
+  自检要连上去读 32 字节并断言以 `SSH-2.0` 开头：
+
+  ```powershell
+  $c = New-Object Net.Sockets.TcpClient([Net.Sockets.AddressFamily]::InterNetworkV6)
+  $c.Connect('2408:...',22); $b = New-Object byte[] 32
+  $n = $c.GetStream().Read($b,0,32); [Text.Encoding]::ASCII.GetString($b,0,$n)   # SSH-2.0-OpenSSH_...
+  ```
+
+本机有一对封装好的脚本（在 `.deploy-key/cloud/`，gitignore，不在仓库里）：
+`start-friends.bat`（按住 WSL + 只放行 22 + 转发到 127.0.0.1 + 读 banner 自检）、
+`stop-friends.bat`（拆规则并杀掉 keepalive）。注意**笔记本休眠/关机就等于停服**，
+换网络或路由器重启后公网地址会变，要重跑一次拿新地址。
+
 ### 12.2 公共 TCP 中继 + 一台公网 CI runner
 
 没有公网 IPv6（或路由器不让入站）时，可以让任何一台公网机器当探针，用公共 TCP 中继

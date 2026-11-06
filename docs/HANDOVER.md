@@ -1569,6 +1569,19 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     **CI 的 runner 在墙外，这条永远不会在 CI 上暴露**，"本地/真机 build 一次"要单独做。
     这台 Windows 机器没有 docker，Docker 形态只能在 WSL 里跑。
 
+69. **WSL 3.x 会把整个 VM 关掉，`vmIdleTimeout` 管不住它**（2026-11-06 给朋友开公网入口时踩到）：
+    最后一个 `wsl.exe` 客户端退出后**约 20 秒**，`sshd` 和 `tetris-game` 一起收到 SIGTERM、
+    VM 停止（`journalctl` 里能看见 `Received signal 15` 然后下一次 `Boot ...`）。
+    按文档写 `.wslconfig` 的 `[wsl2] vmIdleTimeout=2147483647` 后实测**仍然关**（WSL 3.0.3）。
+    对策：让**一个 WSL 进程常驻**当"电源开关"
+    （`Start-Process wsl.exe -ArgumentList '-d','Ubuntu-22.04','--','tail','-f','/dev/null' -WindowStyle Hidden`），
+    杀掉它 WSL 就恢复"空闲自关"。
+    这条最恶心的地方是**假绿**：手工把 `ss`、`systemctl is-active`、`connect` 全部跑一遍都是绿的，
+    20 秒后服务没了，朋友连上来时你已经以为一切正常。
+    连带两个坑：① **`netsh portproxy` 的目标写 `127.0.0.1`**（走 WSL 的 localhostForwarding），
+    写死 `172.18.x.x` 会在某次 WSL 重启后失效；② **判断链路要读 SSH banner**——
+    `portproxy` 先 accept 再连目标，目标不可达时客户端是"连上后卡住"，只看端口在监听会被骗。
+
 ## 7. 仓库现状
 
 - `main` 干净，CI 全绿（最后一次实测 `40e76c4`：27 步全过）；无 tag；
