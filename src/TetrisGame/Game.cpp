@@ -126,6 +126,10 @@ bool Game::InitGameFace(shared_ptr<User>& user)
     if (!UImanage::clear(user))
         return false;
 
+    // 棋盘是自绘的，不需要插入符；藏起来否则它会停在最后一次绘制的位置闪
+    if (!UImanage::hideCursor(user))
+        return false;
+
     if (!Game::InitInterface(user))//初始化界面
     {
         return false;
@@ -365,6 +369,9 @@ bool Game::Repaint(shared_ptr<User>& user)
     // 平时是"增量绘制"，终端一旦重排（拖窗口、改字号、滚动），旧内容错位、
     // 新帧又画在绝对坐标上，就会叠出花屏（2026-11-06 反馈）。
     if (!UImanage::clear(user))
+        return false;
+
+    if (!UImanage::hideCursor(user))
         return false;
 
     // 1. 边框：坐标与 InitInterface 完全一致，但这里只画、不动 data

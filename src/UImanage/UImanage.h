@@ -97,6 +97,9 @@ public:
 	//清屏函数
 	static bool clear(const shared_ptr<User>& user);
 
+	// 隐藏/显示光标（游戏进行中藏起来，回到菜单再显示）
+	static bool hideCursor(const shared_ptr<User>& user);
+
 };
 
 

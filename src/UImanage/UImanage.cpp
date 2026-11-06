@@ -597,5 +597,13 @@ bool UImanage::clear(const shared_ptr<User>& user)
     // 终端会把超出的字符折到下一行行首 —— 屏幕上表现为最左边多出一列彩色方块、
     // 文字被挤掉几个字符（2026-11-06 反馈）。关掉之后超宽部分直接截断，不再"跑到左边"。
     // 代价只有 4 字节，比任何重绘方案都便宜。
-    return output(user, "\x1b[?7l\x1b[2J\x1b[H");
+    //
+    // \x1b[?25h 是"显示光标"：菜单/输入界面需要一个可见的插入符；游戏进行中会再
+    // 调 hideCursor 藏起来（否则光标会停在棋盘上闪烁，2026-11-06 反馈）。
+    return output(user, "\x1b[?25h\x1b[?7l\x1b[2J\x1b[H");
+}
+
+bool UImanage::hideCursor(const shared_ptr<User>& user)
+{
+    return output(user, "\x1b[?25l");
 }
