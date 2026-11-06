@@ -181,12 +181,11 @@ bool outputText(const shared_ptr<User>& user, int row, int col, int color, const
 
     if (user->getStatus() == STATUS_PLAYING)
     {
+        // 这里原来还会 output(" ")：把光标挪到第 500 列（会被终端钳到最后一列）再写一个
+        // 空格。写到最后一列会让终端进入"待折行"状态，在最底下一行还会把整屏向上滚一行 ——
+        // 方块每落/锁一次都在底部写一格，画面就持续上移，边框错位、左边缘出现残影
+        // （2026-11-06 定位到的真凶）。移动光标本身不触发换行，所以只保留移动。
         if (!moveTo(user, row, 500))
-        {
-            return false;
-        }
-
-        if (!output(user, string(" ")))
         {
             return false;
         }
