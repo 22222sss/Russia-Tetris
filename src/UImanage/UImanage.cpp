@@ -585,6 +585,11 @@ bool UImanage::showover(const shared_ptr<User>& user)
     if (!outputText(user, WINDOW_ROW_COUNT / 2 + 3, 2 * (WINDOW_COL_COUNT / 3), COLOR_WHITE, "Start Again ? (y/n):"))
         return false;
 
+    // 这一屏要玩家输入 y/n，光标得留着——它正好停在冒号后面，就是插入符的位置
+    // （游戏进行中隐藏、结束后恢复，2026-11-06 反馈）
+    if (!UImanage::showCursor(user))
+        return false;
+
     return true;
 }
 
@@ -606,4 +611,9 @@ bool UImanage::clear(const shared_ptr<User>& user)
 bool UImanage::hideCursor(const shared_ptr<User>& user)
 {
     return output(user, "\x1b[?25l");
+}
+
+bool UImanage::showCursor(const shared_ptr<User>& user)
+{
+    return output(user, "\x1b[?25h");
 }
