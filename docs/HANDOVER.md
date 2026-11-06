@@ -1,13 +1,48 @@
 ## 0. 当前状态（截至 2026-11-06）
 
-> 本次会话十轮：**① 按来源 IP 兜底** → **② 改密/重置** → **③ 连接池 trim**
+> 本次会话十一轮：**① 按来源 IP 兜底** → **② 改密/重置** → **③ 连接池 trim**
 > → **④ 存储层 CSV → SQLite** → **⑤ SSH 承载** → **⑥ 管理员 CLI + 备份** →
 > **⑦ 打包/部署（Dockerfile + systemd 单元 + 日志轮转）** → **⑧ 注册限流**
-> → **⑨ 真机验证（WSL）+ 恢复演练修复** → **⑩ 画面/渲染修复（真机试玩反馈）**。
+> → **⑨ 真机验证（WSL）+ 恢复演练修复** → **⑩ 画面/渲染修复（真机试玩反馈）**
+> → **⑪ 公网边界验证（没有云主机：公网 IPv6 + 公网 CI runner 替代）+ Docker 形态真跑**。
 > 更早：`-O2`（4.7）→ `User` 棋盘 int8（4.8）→ 连接池预创建 2048（4.9）→ 认证加固第一/二批。
 > 每轮实现细节见第 5 节，性能数据见第 4 节。
 
-**本轮做完了画面/渲染的一串修复（真机试玩反馈，8 个小问题）**：只动显示层，
+**本轮做完了"公网边界"验证（没有云主机，用公网 IPv6 + 公网 CI runner 替代）**：
+**服务端代码一行没改**，只新增了 `tests/ssh_play_test.py` 和文档。把 `docs/DEPLOY.md`
+第 0 节里**必须由另一台机器发出**的两条（从公网 ssh 进游戏、公网 9999 不可达）
+和 **Docker 形态**真跑了一遍：
+
+1. **入口**：Windows 侧只放行入站 TCP 22 + `netsh interface portproxy add v6tov4
+   listenaddress=:: listenport=22 connectaddress=<WSL IPv4>`，把**公网 IPv6 的 22**
+   转进 WSL 的 sshd。`9999` 一个字节都没暴露：Windows 侧 `netstat` 里 `9999` 只有
+   `127.0.0.1`（那是上一轮遗留的本机转发进程），入站规则也只有 22；
+2. **外部机器**：这台网络没有 IPv6 可达的外部机器（GitHub runner 只有 IPv4，公共端口
+   探测服务基本只支持 IPv4，手机那条路走不通），所以用 **GitHub Actions 的 runner**
+   （出口 `48.214.54.115`，Azure）当"公网另一台机器"，经 serveo 的匿名 TCP 中继
+   （`serveousercontent.com:31165` → `37.27.37.254`）ssh 进来：**9/9 判据全过
+   （15.6 s / 4134 字节）**—— 首屏菜单 → 注册 → 登录 → 进游戏 → **只发方向键、
+   不发回车就生效**（raw 模式穿过中继没丢）→ 断开自退；
+3. **验证工具进了仓库**：`tests/ssh_play_test.py`（9 条字节级判据，用法见文件头与
+   `docs/DEPLOY.md` 第 12 节）。它**不是** `integration_test.py` 的替代：那个走 socket
+   测协议/存储/认证，这个走 **sshd + ForceCommand + 桥 + pty** 测"上线形态"；
+4. **Docker 形态（WSL 里真跑，CI 之外第一次）**：`docker build` 21 步成功（128 MB）→
+   容器 `HEALTHCHECK` 约 8 s 变 healthy、`uid 10001`、`nofile 300000`、容器内监听
+   `0.0.0.0:9999`、宿主只发布 `127.0.0.1:10099` → **穿过桥玩容器 9/9**（账号
+   `dockerprobe1` 落进容器库、`tetris-admin list-users` 显示密码已是哈希）→
+   `docker stop` **244 ms**（SIGTERM 处理器生效）；
+5. **compose 形态也跑了**：`docker-compose 1.29.2` 照 `docker-compose.yml` 原样
+   `up -d`（host 网络 + `TETRIS_BIND=127.0.0.1`）→ healthy、宿主 `9999` 只在
+   `127.0.0.1`、穿过桥玩 **9/9**、`compose exec tetris-admin stats` 正常、
+   `docker stop` **93 ms**（`init: true`）；验完把 systemd 实例恢复回去了；
+6. **抓到的两个坑**：`docker build` 拉 `debian:bookworm` **i/o timeout**（国内到
+   Docker Hub 不通，必须配镜像加速器；CI 在墙外，永远看不见这个，见 6.68）；
+   `authorized_keys` 放 `/tmp` 下必然被 sshd 的 StrictModes 拒（见 6.66）；
+7. **没验到的（如实记）**：云平台安全组、从 IPv6 外部机器 `nc -vz <公网IPv6> 9999`、
+   云主机上的 Docker。要补这三条仍然得有一台真云主机（`docs/DEPLOY.md` 第 12.3 节
+   列了已知缺口）；本机这套 IPv6 转发是**临时**的，验完就拆（要重来按 12.1 节）。
+
+**上一轮做完了画面/渲染的一串修复（真机试玩反馈，8 个小问题）**：只动显示层，
 协议/存储/认证逻辑一行没改；每处都有字节级判据，并且都在 WSL 真机上玩过验证。
 
 1. **界面死角**（6.56）：登录后按 1，新账号走"暂无成绩记录"分支时提前 `return`，
@@ -372,6 +407,8 @@ wsl -d Ubuntu-22.04 -- python3 /mnt/d/dev/tools/tetris_client.py
 | `tests/deploy_test.py` | 部署形态检查（**10 项**，纯标准库，本地也能跑）：systemd 单元的关键项（`LimitNOFILE`/`TETRIS_BIND`/`Restart`/非 root/目录分离/加固项）、备份单元 + timer（ExecStart 脚本存在、`Unit=`、`OnCalendar`、`ReadWritePaths`）、**单元/Dockerfile 里的每个 `TETRIS_*` 都必须在 `src/` 里被 `getenv` 到**（防拼错）、Dockerfile（多阶段/非 root/HEALTHCHECK 连 127.0.0.1/钉版本/运行阶段不带 `-dev`）、`.dockerignore`（库/日志/旧 CSV 不进镜像）、compose（host 网络 + 127.0.0.1 + nofile 对齐）、`deploy/*.sh` 语法、**备份脚本行为**（失败不留半成品、按 KEEP 清理）、**恢复演练工具**（`--help` + 三类必须拒绝的输入：拿生产库当备份/备份不存在/坏文件）、`docs/DEPLOY.md` 与单元不漂移 |
 | `tests/log_rotation_test.py` | 日志轮转（需要真二进制）：用 `TETRIS_LOG_MAX_BYTES=4096`/`_MAX_FILES=3`/`TETRIS_LOG_LEVEL=info` 起服务端，灌 500 条连接逼出多次轮转，断言 `log.1.txt` 出现、份数不超上限、单文件不超上限的 1.5 倍、日志落在 `TETRIS_LOG_DIR`（工作目录里不能有 `log.txt`） |
 
+| `tests/ssh_play_test.py` | **SSH 入口的端到端验收**（**9 条字节级判据**，需要一台**外部**机器 + 一个能 ssh 进去的入口）：首屏菜单 → 注册 → 登录 → 进游戏 → **只发方向键、不发回车就生效**（raw 模式）→ 断开自退；顺带守住 `;0H`（6.57）与"空账号也有返回提示"（6.56）。可直连云主机的 22，也可打公共中继的端口（`docs/DEPLOY.md` 第 12 节）；**不进 CI**（需要一台活的机器和一个真入口） |
+
 `deploy/` 是部署入口（不参与服务端编译）：`tetris-bridge.py`（桥）、`sshd-tetris.conf`
 （sshd Match 片段）、`install-ssh-bridge.sh`（幂等安装 + `sshd -t` 校验 + 失败还原）、
 `install-systemd.sh`（账号/目录/单元/sysctl/开机自启，幂等）、`systemd/`（`tetris-game.service`
@@ -692,6 +729,42 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
   "棋盘输出里不该出现 `;0H`"。其余验证是临时脚本（渲染重建、字节扫描、墙列完整性、
   颜色码检查），都在 WSL 真机上跑过；**没有进仓库**（要跑得自己写，或让我下次加）。
 - **CI**：`3e462a0` / `730ca78` / `7044880` / `3b4258d` 的 check-run 全 `success`。
+
+### 公网边界验证（非云主机，2026-11-06）
+
+上线前最后一条：**"从公网另一台机器 ssh 进来能玩" + "Docker 形态"**。没有云主机，
+所以拆成两件能执行的事：把入口搬到公网上 + 找一台真外部机器当探针。**服务端代码没动。**
+
+- **入口一（这台机器本来就在公网）**：家用宽带给的是全球可路由 IPv6
+  （`2408:8459:...`）。Windows 侧 `New-NetFirewallRule` 只放行入站 TCP 22，
+  `netsh interface portproxy add v6tov4 listenaddress=:: listenport=22
+  connectaddress=<WSL IPv4>` 把 22 转进 WSL 的 sshd（Win10 的 WSL2 只有 NAT，
+  `networkingMode=mirrored` 要 Win11）。`9999` 既不进防火墙也不做转发，
+  所以**公网侧根本没有 9999 的面**。本机自检：`[公网IPv6]:22` CONNECTED、
+  `[公网IPv6]:9999` 拒绝；
+- **入口二（中继）**：外部探针要能到，但 IPv6 可达的外部机器弄不到（GitHub runner 只有
+  IPv4），于是 `ssh -R 0:localhost:2222 serveo.net` 把**一次性探针 sshd** 挂到公共端口。
+  这份探针配置是独立的：`Port 2222`、`ListenAddress 127.0.0.1`、只认一次性 ed25519 密钥、
+  `Match User tetris` + `ForceCommand /usr/local/bin/tetris-bridge` —— **生产
+  `/etc/ssh/sshd_config.d/tetris.conf` 一个字没改**，验完 `kill` 掉；
+- **外部机器**：GitHub Actions 的 runner（`ubuntu-22.04`，出口 `48.214.54.115`，Azure）
+  当玩家端；一次性分支 `cloud-probe` 里跑 `tests/ssh_play_test.py`，结果用默认
+  `GITHUB_TOKEN` 推回 `cloud-probe-result` 分支（不用配 PAT 也能取日志），验完两个分支都删；
+- **为什么不用现成的端口探测服务**：`check-host.net` 只做 IPv4 解析（8 个节点全
+  `Unknown host`），`api.hackertarget.com/nmap` 现在要 API key，
+  `ipv6.chappell-family.com/ipscan` 只测"访问它时的那个源地址"（我们出口是 IPv4，
+  直接被拒），`sslip.io` / `ipv6-literal.net` 能把 IPv6 编成域名但 check-host 仍不认。
+  **没有 IPv6 可达的外部机器，`nc -vz <公网IPv6> 9999` 这条就验不了**，已在
+  `docs/DEPLOY.md` 12.3 里写成已知缺口；
+- **Docker 形态**：`docker build` 21 步 → `docker run -p 127.0.0.1:10099:9999
+  -e TETRIS_BIND=0.0.0.0 --ulimit nofile=300000:300000` → healthy（~8 s）/`uid 10001`/
+  `nofile 300000`/容器内 `0.0.0.0:9999`（`/proc/net/tcp` 里 `00000000:270F`）/
+  宿主只有 `127.0.0.1:10099`/首屏字节可读/`tetris-admin stats` 可用/`docker stop` 244 ms；
+  再起一个 `--target 127.0.0.1:10099` 的桥 sshd，`ssh_play_test.py` **9/9**；
+  compose 形态（host 网络 + `TETRIS_BIND=127.0.0.1`）同样 **9/9**、`docker stop` 93 ms
+  —— `compose up` 前临时停 systemd 实例占用的 9999，验完在 `trap` 里恢复；
+- **镜像**：128 MB（`docker images` 口径），构建阶段与 CI 一致（`debian:bookworm`）；
+  国内拉基础镜像必须先配镜像加速器（6.68）。
 
 ### 真机验证（WSL，2026-11-04）
 
@@ -1454,6 +1527,43 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     再用字节级 trace 确认"谁写过那里"。这次如果只盯着游戏逻辑查，会一直找不到，
     因为写坏它的根本不是服务端。
 
+64. **挡在 sshd 前面的任何 TCP 转发都会把"源 IP"抹平**：`netsh portproxy`、公共中继
+    （serveo / pinggy）、云负载均衡都一样 —— sshd 看到的对端永远是那台转发器，于是桥用
+    `SSH_CLIENT` 映射出来的"每玩家专属伪源地址"退化成同一个，`IpThrottle`
+    （每 IP 300 次/5 分钟）和注册限流（每 IP 20 次/5 分钟）**实际变成"全站一份额度"**。
+    这轮经中继验的时候就是这样（所有会话都来自 127.0.0.1）。部署在这种形态下要按
+    "全站额度"重估 `TETRIS_AUTH_IP_*` / `TETRIS_REG_IP_MAX`；直连云主机的 sshd
+    （客户端 IP 直达）没有这个问题。**以后加任何"按来源分"的策略，先问一句
+    "这条链路上有几个东西会改源地址"。**
+
+65. **用脚本驱动终端程序时，本地这端的 pty 也要 raw**：`pty.fork()` 出来的**从端**
+    默认是 canonical 模式，`os.write(主端, b"\x1b[B")` 会被行缓冲压住 —— 服务端一个字节
+    都收不到，症状是"按键后完全没有输出"，非常像"服务端不处理方向键"。
+    要在父进程里对主端 `tty.setraw(fd)`（Linux 上 `tcsetattr` 作用在同一对 tty 上），
+    并且**没有 tty 时要显式 `ioctl(fd, TIOCSWINSZ, 24x80)`**，否则远端 pty 可能是 0x0、
+    棋盘全乱。`integration_test.py` 走 socket，永远碰不到这两个坑。
+
+66. **`authorized_keys` 不能放 `/tmp` 下**：sshd 的 `StrictModes` 会检查
+    `AuthorizedKeysFile` 的**每一级目录**是否"只对属主可写"，`/tmp` 是 0777 + sticky
+    → 直接被拒，日志只有一行 `Authentication refused: bad ownership or modes for
+    directory /tmp`，客户端看到的是 `Permission denied (publickey)`（很像密钥没配对）。
+    临时账号也得给一个 `0700 <user>:<user>` 的目录（这轮用的 `/var/lib/tetrisprobe`）。
+
+67. **两个排查工具本身的坑**：`sshd -T` 不带 `-C user=` 时**看不到 `Match User` 里的
+    设置**（会打印 `forcecommand none`，别误判"片段没生效"，要用
+    `sshd -T -C user=tetris,host=...,addr=...`）；**`wsl.exe -- bash -c '...'` 会吃掉
+    参数里的 `$`、`|` 和嵌套引号**——带管道/变量的命令必须落成脚本文件再
+    `bash /mnt/d/.../x.sh`，否则得到"命令找不到"甚至**静默无输出**
+    （这轮前几次 WSL 命令失败全是这个原因，不是 WSL 的问题）。
+
+68. **国内网络下 `docker build` 会卡在拉基础镜像**：`FROM debian:bookworm` 直接
+    `dial tcp ...:443: i/o timeout`（`registry-1.docker.io` 不可达），build 第 1 步就挂。
+    要么配 `/etc/docker/daemon.json` 的 `registry-mirrors`，要么显式
+    `docker pull <mirror>/library/debian:bookworm` 再 `docker tag ... debian:bookworm`
+    —— 注意 `bookworm-slim` 是**另一个** tag，构建阶段和运行阶段的 `FROM` 都要有。
+    **CI 的 runner 在墙外，这条永远不会在 CI 上暴露**，"本地/真机 build 一次"要单独做。
+    这台 Windows 机器没有 docker，Docker 形态只能在 WSL 里跑。
+
 ## 7. 仓库现状
 
 - `main` 干净，CI 全绿（最后一次实测 `3b4258d`）；无 tag；
@@ -1505,7 +1615,7 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 
 | 方向 | 内容 | 价值 |
 |---|---|---|
-| **真机验证（云主机）** | WSL 上已按 `docs/DEPLOY.md` 第 0 节走完（2026-11-04，见 5.真机验证）；仍差**真实云主机**：公网 IP、从公网另一台机器 ssh、公网 9999 不可达、Docker 形态 | 中：WSL 已覆盖 systemd/备份/演练，云主机补的是"出网边界" |
+| **云主机收尾** | 2026-11-06 已经用「公网 IPv6 + 公网 CI runner + WSL 里的 Docker」把第 0 节里**出网边界**那两条和 **Docker 形态**真跑了（5.公网边界验证、`docs/DEPLOY.md` 第 12 节）。仍差的只有三样：**云平台安全组**、**从 IPv6 外部机器 `nc -vz <公网IPv6> 9999`**、**云主机上的 Docker** | 低~中：都要一台真云主机；前两类已验证过等价形态，不上云也能上线 |
 | 桥换成 C 版 | 现在每会话一个 Python 进程（CI 实测约 17 MB），换几十行 C 可降到 1~2MB；SSH 承载的并发上限目前就是这项内存（见 6.36） | 中：真上量时才值得 |
 | 认证状态跨进程 | 用户名退避 / IP 兜底 / 注册限流的计数都在各 worker 内存里，阈值实际 ×N；要统一得放共享内存或落文件 | 低：只有真的开多 worker 才值得 |
 | 注册限流方案 B | 把注册哈希挪进哈希线程池，队满回"服务繁忙"（让注册和登录共享同一份背压）；现在方案 A 已经在提交哈希前挡掉，只有"额度内的正常注册把写线程占满"时才需要 | 低~中：只在注册量真的很大时 |
@@ -1528,7 +1638,10 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 见 5.打包/部署）**、
 **注册限流（`RegThrottle`：每 IP 20 次/5 分钟 + 全局 200 次/小时 + 两套测试，见 5.注册限流）**、
 **真机验证（WSL 上走完第 0 节 checklist + 7.5 恢复演练，并修掉演练在真机上跳过协议测试的 bug，
-见 5.真机验证、6.55）**（本轮）、
+见 5.真机验证、6.55）**、
+**公网边界验证 + Docker 形态真跑（2026-11-06：公网 IPv6 只开 22、GitHub runner 经中继
+ssh 进游戏 9/9、WSL 里 build/run/compose 两种形态都穿过桥玩通，见 5.公网边界验证、
+`docs/DEPLOY.md` 第 12 节）**（本轮）、
 密码加盐哈希 + 迁移、登录吞吐、输出批量。
 
 ## 9. 给新会话的起步提示
@@ -1543,13 +1656,19 @@ SQLite 存储层 + 旧 CSV 导入 / SSH 承载（sshd ForceCommand + 桥 + TETRI
 打包部署（Dockerfile + compose + systemd 单元 + 每日备份 timer + 日志轮转 + 恢复演练 +
 docs/DEPLOY.md 的上线 checklist）。
 2026-11-06 又把真机试玩暴露的一串渲染问题修完了（6.56~6.63），现在在 WSL 里是"能舒服地玩"的状态。
+同日又做掉了**公网边界验证**：没有云主机，就用这台笔记本的公网 IPv6 + 一台公网 CI runner
+（经匿名 TCP 中继）当"外部机器"，`ssh 进游戏` 9/9；Docker 形态（build / `docker run` /
+compose）也在 WSL 里真跑通了（见 5.公网边界验证、docs/DEPLOY.md 第 12 节）。
 不要再重复做，也别再堆性能优化（建连和游戏两种场景服务端都不是瓶颈）。
 
-上线前真正缺的（WSL 那轮之后只剩云主机相关）：
-1. 在**真实云主机**（有公网 IP）上再走一遍 docs/DEPLOY.md 第 0 节：公网侧 `ssh tetris@<IP>`
-   进游戏、公网 `nc -vz <IP> 9999` 不通、Docker 形态跑一次；
-   —— WSL（2026-11-04）已经把 systemd 装法、fd 上限、只绑回环、kill -9、开机自启、
-   日志轮转、备份、7.5 恢复演练全验过，**别在 WSL 上再重复一遍**。
+上线前真正缺的（2026-11-06 之后只剩"真云主机"才有的三样）：
+1. **云平台安全组**：主机自己"只开 22"已经验过（12.1），云上还要确认安全组没放过别的端口；
+2. **从 IPv6 外部机器 `nc -vz <公网IPv6> 9999`**：需要一台 IPv6 可达的外部机器
+   （GitHub runner 只有 IPv4），本环境拿不到；
+3. **云主机上的 Docker 形态**：容器已在 WSL 里真跑（9/9），但没在云主机上跑过。
+   —— WSL（2026-11-04）已验 systemd 装法、fd 上限、只绑回环、kill -9、开机自启、
+   日志轮转、备份、7.5 恢复演练；2026-11-06 又验了公网入口和 Docker。
+   **这两轮验过的都别再重复**。
 
 要点：
 - 注册也有限流了（`TETRIS_REG_*`：每 IP 20 次/5 分钟 + 全局 200 次/小时，挡在 PBKDF2 之前）；
@@ -1574,7 +1693,8 @@ docs/DEPLOY.md 的上线 checklist）。
   失败细节靠 ::notice::/::error:: 注解。本地能跑的是 Python：tests/deploy_test.py（10 项静态
   断言，其中 2 项 shell 相关在本机会跳过、在 WSL 里不跳过）、tests/bridge_test.py（8 项）、
   tests/admin_test.py（10 项）、tests/mock_server.py + 集成 12 项 / 跨进程 5 项 / IP 兜底 /
-  注册限流（`reg_limit_test.py` 配低阈值 mock）—— 别浪费 CI 轮次；
+  注册限流（`reg_limit_test.py` 配低阈值 mock）、tests/ssh_play_test.py（9 项，要一个能 ssh
+  进去的**活入口**：本机临时 sshd 或公网中继，见 docs/DEPLOY.md 第 12 节）—— 别浪费 CI 轮次；
 - 渲染有三条**必须守住**的规矩（这一轮踩出来的，见 6.56~6.63）：
   1. **不要往第 0 列 / 最后一列写东西**（ANSI 从 1 开始；写到最后一列会让终端的整屏滚动）；
   2. **每个 `return` 出口都要给"怎么退出去"的提示**，行号按 `WINDOW_ROW_COUNT` 约束算；
@@ -1597,5 +1717,7 @@ docs/DEPLOY.md 的上线 checklist）。
   SQLite 存储层、SSH 承载、管理命令行、打包/部署（Docker/systemd/日志轮转/备份 timer/恢复演练）、
   注册限流（RegThrottle + 两套测试）、**WSL 真机验证（第 0 节 checklist + 7.5 演练）**、
   **画面/渲染修复（6.56~6.63：返回提示、第 0 列白块、`R` 重绘、最后一列空格滚屏、光标规则、
-  右边界、`SHAPE_I` 取色、补画竖墙）**。
+  右边界、`SHAPE_I` 取色、补画竖墙）**、
+  **公网边界验证（公网 IPv6 只开 22 + GitHub runner 经中继 ssh 进游戏 9/9）+
+  Docker 形态真跑（build / `docker run` / compose，都穿过桥玩通）**。
 ```

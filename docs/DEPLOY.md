@@ -41,6 +41,8 @@
 **验证**
 
 - [ ] 从**另一台机器**：`ssh tetris@<IP>` → 直接进主菜单，方向键立刻生效，Ctrl+C 能退出
+      （没有现成云主机时怎么造出"另一台机器"见第 12 节；自动化版是
+      `python3 tests/ssh_play_test.py --host <IP> --key <私钥>`，9 条字节级判据）
 - [ ] 再验一次明文端口**从外部连不上**：`nc -vz <IP> 9999` → 超时/拒绝（不是 accepted）
 - [ ] 启动日志里有"生效配置"：`journalctl -u tetris-game -n 40`（二十来个环境变量的实际值）
 - [ ] 崩溃自动拉起：`sudo kill -9 $(systemctl show tetris-game -p MainPID --value)` →
@@ -516,3 +518,124 @@ df -h /var/lib/tetris /var/backups/tetris             # 库和备份的盘都别
 - **`ForceCommand` 不是沙箱**（SSH_DEPLOY.md 第 8 节）：登录账号本身要穷；
 - 想再收紧就先关掉容器里不必要的能力（`--read-only --tmpfs /tmp`、`cap_drop: ALL`），
   再验证第 0 节那几条——**加固的前提是"还能玩"**。
+
+---
+
+## 12. 没有云主机时，怎么验"公网边界"
+
+第 0 节里有两条**必须由另一台机器发出**的验证：从另一台机器 `ssh tetris@<IP>` 能不能直接
+进游戏、`<IP>:9999` 从外面通不通。它们验的不是代码，是**出网边界**，所以机器必须在
+公网的另一侧。没有现成云主机时，下面两条路都能真验（2026-11-06 都跑过），适用面不同：
+
+| 路 | 前提 | 证明力 |
+|---|---|---|
+| 12.1 家用宽带 + 公网 IPv6 | 运营商给全球 IPv6、路由器不挡入站 | **强**：这台机器本身就在公网上，`22` 通 / `9999` 不通与云主机同构 |
+| 12.2 公共 TCP 中继 + 一台公网 CI runner | 只要有一台能出网的公网机器 | **中**：证明"公网→sshd→桥→游戏"整条链路可用，**不**证明安全组/入站策略 |
+
+两条都**不用改仓库代码**，验证工具是 `tests/ssh_play_test.py`（9 条字节级判据）。
+
+### 12.1 家用宽带 + 公网 IPv6（Windows 宿主 + WSL 形态）
+
+很多家用宽带给的是全球可路由 IPv6（`2408:`/`2409:`/`240e:` 开头）。这时**这台笔记本
+本身就在公网上**，不需要云主机。WSL2 在 Windows 10 上只有 NAT（`networkingMode=mirrored`
+要 Win11 22H2+），所以要在 Windows 侧把公网 IPv6 的 22 转进 WSL：
+
+```powershell
+# 管理员 PowerShell
+# 1) 只放行入站 TCP 22（9999 一律不放行 —— 这本身就是"公网只能到 22"的证据）
+New-NetFirewallRule -DisplayName 'tetris-public-ssh22' -Direction Inbound `
+    -Action Allow -Protocol TCP -LocalPort 22 -Profile Any
+
+# 2) 公网 IPv6:22 -> WSL 里的 sshd:22（地址变了就重跑；先 delete 再 add，幂等）
+$wslIp = (wsl.exe -d Ubuntu-22.04 hostname -I) -split '\s+' | Select-Object -First 1
+netsh interface portproxy delete v6tov4 listenaddress=:: listenport=22
+netsh interface portproxy add    v6tov4 listenaddress=:: listenport=22 `
+    connectaddress=$wslIp connectport=22
+```
+
+先在本机对**自己的公网地址**自检一遍链路（真外部还得靠另一台机器）：
+
+```powershell
+Test-NetConnection 2408:8459:... -Port 22      # 期望 True
+Test-NetConnection 2408:8459:... -Port 9999    # 期望 False
+```
+
+坑：
+
+- **WSL 的 IPv4 每次重启都可能变**，转发规则要按"现值"重设；写成幂等脚本最省事；
+- `New-NetFirewallRule` / `netsh add` 要管理员；`netsh ... show`、`netstat -ano` 普通用户也能跑；
+  **`Get-Process` 可能看不到别的用户建的监听**（`netstat` 里有 PID、`Get-Process` 说没有），
+  别据此判断"没有进程在监听"；
+- **运营商/路由器可能挡入站 IPv6**：那时 22 从外面也是 timeout。别把这个当成服务端问题——
+  先看 12.2 能不能连通，再回头查路由器。
+
+### 12.2 公共 TCP 中继 + 一台公网 CI runner
+
+没有公网 IPv6（或路由器不让入站）时，可以让任何一台公网机器当探针，用公共 TCP 中继
+把入口搬出去：
+
+```
+GitHub runner ──公网──► serveo（匿名中继） ──隧道──► 本机一次性 sshd ──► bridge ──► 127.0.0.1:9999
+```
+
+```bash
+# 1) 一次性探针 sshd：只监听回环、只认一次性密钥、Match 里只跑桥（生产 sshd 配置一字不改）
+#    Port 2222 / ListenAddress 127.0.0.1 / PasswordAuthentication no /
+#    AuthorizedKeysFile /var/lib/tetrisprobe/authorized_keys / Match User tetris: ForceCommand tetris-bridge
+sudo /usr/sbin/sshd -f /tmp/probe_sshd.conf -E /tmp/probe_sshd.log
+
+# 2) 公网中继（匿名策略：随机端口、10 分钟、2 分钟无流量关、256 KiB/s）
+ssh -R 0:localhost:2222 serveo.net
+#   Forwarding TCP connections from serveousercontent.com:31165
+
+# 3) 在**外部机器**上跑验收
+python3 tests/ssh_play_test.py --host serveousercontent.com --port 31165 --key ~/.ssh/probe
+```
+
+坑：
+
+- **别把生产 sshd 直接挂出去**：匿名中继是公开端口，生产 `tetris` 账号是共享口令。
+  用一次性 sshd + 一次性密钥，验完 `kill` 掉；
+- 密钥要放 **`tetris` 自己的 0700 目录**（如 `/var/lib/tetrisprobe`）。放 `/tmp` 下必然
+  `Authentication refused: bad ownership or modes for directory /tmp` —— sshd 的 StrictModes
+  会检查 `authorized_keys` 的**每一级目录**，而 `/tmp` 全世界可写；
+- `sshd -T` 不带 `-C user=tetris` 时看不到 `Match User` 里的 `ForceCommand`，会显示
+  `forcecommand none`，别误判"配置没生效"；
+- 用脚本驱动终端时，**本地这端的 pty 也要 `tty.setraw`**，否则 `\x1b[B` 会被行缓冲压住、
+  服务端永远收不到（`integration_test.py` 走 socket，碰不到这个坑）；CI runner 上没有 tty，
+  还要显式 `TIOCSWINSZ` 设成 80x24，否则远端 pty 可能是 0x0。
+
+### 12.3 这轮的实测（2026-11-06，WSL + 家用宽带）
+
+| 项 | 结果 |
+|---|---|
+| 公网 IPv6 自检（`2408:8459:...`） | `:22` 可连（经 `v6tov4` → WSL sshd）、`:9999` 拒绝 |
+| Windows 侧暴露面 | 入站只放行 TCP 22；`portproxy` 只有 `::22 -> <WSL>:22`；`9999` 只有 `127.0.0.1`（属本机转发进程） |
+| 外部探针（GitHub runner，出口 `48.214.54.115`） | 中继 `serveousercontent.com:31165`（`37.27.37.254`）TCP 可连 |
+| 经中继 ssh 进游戏 | **9/9**：首屏菜单 → 注册 → 登录 → 进游戏 → 方向键（无回车即生效）→ 断开自退；15.6 s / 4134 字节 |
+| 从 runner 打公网 IPv4 的 9999 | `timed out`（信息性，见下） |
+
+同一轮还补了 Docker 形态（WSL 里真跑）：镜像 128 MB、`HEALTHCHECK` 约 8 s 变 healthy、
+容器内 `uid 10001` / `nofile 300000` / 监听 `0.0.0.0:9999`，宿主只发布 `127.0.0.1:10099`、
+`docker stop` 244 ms（compose 形态 93 ms）、穿过桥玩容器 **9/9**、
+容器里 `tetris-admin stats` 与账密落库都正常（详见 `docs/HANDOVER.md` 第 5 节）。
+
+**这次没验到的**（确实没有条件，别当成已经验过）：
+
+- **云平台安全组/防火墙**：12.1 验的是"主机自己只开 22"，云上还要看安全组；
+- **从 IPv6 外部机器 `nc -vz <公网IPv6> 9999`**：需要一台 IPv6 可达的外部机器，
+  这台网络里没有（GitHub runner 只有 IPv4，公共端口探测服务大多只支持 IPv4）；
+- **云主机上的 Docker 形态**：容器只在 WSL 里跑过。
+
+### 12.4 副作用：源 IP 会被"抹平"
+
+任何挡在 sshd 前面的 TCP 转发——`netsh portproxy`、公共中继、云负载均衡——都会让 sshd
+看到的对端地址**变成同一个**，于是桥用 `SSH_CLIENT` 映射出来的"每玩家专属伪源地址"也
+退化成同一个，`IpThrottle`（每 IP 300 次/5 分钟）和注册限流（每 IP 20 次/5 分钟）
+**实际变成"全站一份额度"**（设计取舍见 HANDOVER 6.35）。用中继验过之后，这些阈值要按
+"全站额度"重新估。直连云主机的 sshd（客户端 IP 直达）没有这个问题。
+
+> 中国网络下 `docker build` 还会卡在拉基础镜像：`registry-1.docker.io` i/o timeout，
+> 需要配镜像加速器（`/etc/docker/daemon.json` 的 `registry-mirrors`）或
+> `docker pull <mirror>/library/debian:bookworm` 再 `docker tag`。CI 的 runner 在墙外，
+> **不会**暴露这个问题。
