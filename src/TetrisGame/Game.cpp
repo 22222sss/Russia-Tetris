@@ -281,7 +281,21 @@ bool Game::IsLegal(shared_ptr<User>& user, int shape, int form, int row, int col
     {
         for (j = 0; j < 4; j++)
         {
-            if ((Game::blockDefines[shape][form].space[i][j] == 1) && (user->getData(row + i - 1, col + j - 1) == 1))
+            if (Game::blockDefines[shape][form].space[i][j] != 1)
+                continue;
+
+            const int r = row + i - 1;
+            const int c = col + j - 1;
+
+            // 先判"是不是还在棋盘里"，再判"目标格有没有方块"。
+            // 原来只查 data：方块在 col=18 且形状最右列 j=3 时，查的是 c=20 ——
+            // 那是右侧面板区（恒为 0），于是被判为合法，实际会画到第 41 列，
+            // 直接把方块画进 Next/Score 面板（2026-11-06 反馈后定位）。
+            // 棋盘可落区：行 0..WINDOW_ROW_COUNT-2，列 1..WINDOW_COL_COUNT-2。
+            if (r < 0 || r > WINDOW_ROW_COUNT - 2 || c < 1 || c > WINDOW_COL_COUNT - 2)
+                return false;
+
+            if (user->getData(r, c) == 1)
                 return false;
         }
     }
