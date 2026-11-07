@@ -656,6 +656,15 @@ python3 tests/ssh_play_test.py --host serveousercontent.com --port 31165 --key ~
   这台网络里没有（GitHub runner 只有 IPv4，公共端口探测服务大多只支持 IPv4）；
 - **云主机上的 Docker 形态**：容器只在 WSL 里跑过。
 
+> **2026-11-07 补记：云厂商可能根本不让你开机器。** Azure for Students 这个订阅上挂着
+> `Allowed resource deployment regions` 策略，白名单只有 `spaincentral / switzerlandnorth /
+> belgiumcentral / germanywestcentral / southafricanorth` 五个欧洲/非洲区域 —— 选亚洲区域一律
+> `RequestDisallowedByAzure`，而那五个区域的"总计区域 vCPU"配额又是 0，VM 建不出来。
+> 所以**租机器前先确认三件事**：① 区域白名单（`策略 → 分配`）；② 目标区域的
+> "总计区域 vCPU"配额（`配额 → Compute`，要 > 0）；③ 目标机型在这个订阅里是否
+> `NotAvailableForSubscription`。三样都过了再点创建，否则会白折腾一晚上。
+> 另外：学生包通过后 partner offers 有 **72 小时**解锁延迟。
+
 ### 12.4 副作用：源 IP 会被"抹平"
 
 任何挡在 sshd 前面的 TCP 转发——`netsh portproxy`、公共中继、云负载均衡——都会让 sshd

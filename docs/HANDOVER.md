@@ -1,14 +1,47 @@
-## 0. 当前状态（截至 2026-11-06）
+## 0. 当前状态（截至 2026-11-08）
 
-> 本次会话十一轮：**① 按来源 IP 兜底** → **② 改密/重置** → **③ 连接池 trim**
+> 本次会话十二轮：**① 按来源 IP 兜底** → **② 改密/重置** → **③ 连接池 trim**
 > → **④ 存储层 CSV → SQLite** → **⑤ SSH 承载** → **⑥ 管理员 CLI + 备份** →
 > **⑦ 打包/部署（Dockerfile + systemd 单元 + 日志轮转）** → **⑧ 注册限流**
 > → **⑨ 真机验证（WSL）+ 恢复演练修复** → **⑩ 画面/渲染修复（真机试玩反馈）**
-> → **⑪ 公网边界验证（没有云主机：公网 IPv6 + 公网 CI runner 替代）+ Docker 形态真跑**。
+> → **⑪ 公网边界验证（公网 IPv6 + 公网 CI runner 替代）+ Docker 形态真跑**
+> → **⑫ 朋友试玩入口（哪些路通/哪些路死）+ 决定租 VPS**。
 > 更早：`-O2`（4.7）→ `User` 棋盘 int8（4.8）→ 连接池预创建 2048（4.9）→ 认证加固第一/二批。
 > 每轮实现细节见第 5 节，性能数据见第 4 节。
 
-**本轮做完了"公网边界"验证（没有云主机，用公网 IPv6 + 公网 CI runner 替代）**：
+**本轮把"让朋友从外面 ssh 进来玩"这条路走了一遍，结论是：这台笔记本上无解，决定改租香港/新加坡的小 VPS**
+（2026-11-06 晚 ~ 11-08）。**服务端代码一行没改**；这一轮的价值是把"哪些路不通、为什么不通"
+钉死（别让下个会话再试一遍），并把"拿到 VPS 后怎么一步装完"准备好。
+
+1. **"公网 IPv6 直连"只在特定网络成立**：家里那台 `2408:8459:...` 是路由器从运营商要来的
+   /64 派生的。换到 **CityU 校园网**（`172.28.159.21/17`，网关 `172.28.255.254`）后 IPv6 前缀彻底消失
+   （只剩 `fe80::`），而且校园网**禁止任何入站**；再换到**手机热点**（REDMI K80，`192.168.211.x`）后，
+   Android 热点**不转发 IPv6**（网卡 IPv6 已启用、RouterDiscovery 也开，但一个 RA 前缀都没收到）。
+   **换网络 = 那个公网地址直接不存在**，不是配置问题（6.72）；
+2. **免费中继全线不可用**（逐个验过，见 6.70）：`serveo.net` / `a.pinggy.io` 已停服（蜂窝网 DNS 也解析不出），
+   `bore.pub` 域名已不存在，`ngrok` 免费账号**开 TCP 必须先绑信用卡**（`ERR_NGROK_8013`），
+   `localhost.run` 只支持 HTTP，Cloudflare 裸 TCP 要朋友装客户端；
+3. **WSL 自身的两个坑**（6.69）：WSL 3.0.3 会在最后一个客户端退出后 ~20 秒关掉整个 VM，
+   `.wslconfig` 的 `vmIdleTimeout` **无效**、systemd 单元也**不管用**——只有"由 `wsl.exe` 会话启动、
+   客户端退出后留在 VM 里的进程"能按住它（所以自检必须**读 SSH banner**，只看端口在监听会被骗）；
+   `netsh portproxy` 的目标要写 `127.0.0.1`（走 WSL 的 localhostForwarding），写死 NAT 地址会在某次重启后失效；
+4. **Azure for Students 也不能用**（6.71）：学生身份 11-07 已通过（`Application Type: Student`），
+   但要等 **72 小时**才解锁 partner offers；更致命的是这个订阅挂着 **"Allowed resource deployment
+   regions"** 策略，只允许 `spaincentral / switzerlandnorth / belgiumcentral / germanywestcentral /
+   southafricanorth` 五个欧洲/非洲区域 —— Japan East / Korea Central / Southeast Asia / East Asia
+   一律 `RequestDisallowedByAzure`，而这几个允许区域的"总计区域 vCPU"配额又是 0，VM 根本建不出来
+   （就算建出来，香港过去 ~200ms）；
+5. **决定**：**租一台香港/新加坡的小 VPS（¥10~30/月）**，把服务端搬到云上。此后"朋友能不能玩"
+   不再依赖这台笔记本的网络/IPv6/keepalive，笔记本关机也不影响；
+6. **为下一步准备好的东西**：`tests/ssh_play_test.py`（9 条字节级判据，第 3 节）已进仓库；
+   本机 `.deploy-key/cloud/60-bootstrap-vps.sh`（gitignored、不在仓库）是一键装机脚本
+   （依赖 → clone → 编译 → `install-systemd.sh` → `install-ssh-bridge.sh` → 设口令 → sshd 加固 →
+   fail2ban → 备份 → 恢复演练 → 自检）。**流程本身仍以 `docs/DEPLOY.md` 第 0 节为准**，脚本只是把命令串起来。
+
+> **CI**：本轮只动了 `tests/ssh_play_test.py` 和文档；`6e77e27` 及之前的提交全绿（27 步）；
+> 这一轮没有改服务端代码，所以 CI 不构成新证据。
+
+**上一轮做完了"公网边界"验证（没有云主机，用公网 IPv6 + 公网 CI runner 替代）**：
 **服务端代码一行没改**，只新增了 `tests/ssh_play_test.py` 和文档。把 `docs/DEPLOY.md`
 第 0 节里**必须由另一台机器发出**的两条（从公网 ssh 进游戏、公网 9999 不可达）
 和 **Docker 形态**真跑了一遍：
@@ -770,6 +803,25 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
   —— `compose up` 前临时停 systemd 实例占用的 9999，验完在 `trap` 里恢复；
 - **镜像**：128 MB（`docker images` 口径），构建阶段与 CI 一致（`debian:bookworm`）；
   国内拉基础镜像必须先配镜像加速器（6.68）。
+
+### 试玩入口：哪些路通了、哪些路死了（2026-11-07）
+
+目标只有一个：**让朋友从外面 ssh 进来玩**。服务端一行没改，这一轮全是"网络边界"排查。
+
+- **"公网 IPv6 直连"绑死在"那张网络"上**：`docs/DEPLOY.md` 12.1 那套只在**路由器给你全球前缀**时成立。
+  家里的 `2408:8459:...` 是路由器从运营商要来的 /64 派生的；换到校园网（`172.28/17`，禁入站、无 IPv6）
+  立刻消失；换到手机热点（REDMI K80）后 Android 热点也不发 RA。**任何一次换网/路由器重启，
+  地址都会变或消失**，所以这条路只能"临时自己玩"，不能当"朋友随时来"的入口。
+- **免费中继清单（逐个验过，见 6.70）**：serveo.net 停服、a.pinggy.io 停服、bore.pub NXDOMAIN、
+  ngrok 免费 TCP 要绑卡、localhost.run 只 HTTP、Cloudflare 裸 TCP 要客户端。
+  判断方法：`getent ahostsv4 <域名>`（能不能解析）+ `ssh -R 0:localhost:22 <服务>`（能不能分到端口）。
+- **WSL 侧的"假绿"**：第一次跑 `start-friends.bat` 全是绿的（banner 都能读），**20 秒后 VM 自己关了**。
+  所以自检改成"读 SSH banner + 确认 VM 里有会话启动的常驻进程"（6.69）。
+- **Azure 学生订阅不是"点几下就有 VM"**：两道墙（72 小时解锁 + 区域策略只给 5 个欧洲/非洲区域），
+  而且那 5 个区域"总计区域 vCPU"配额是 0（6.71）。**这条不要再试**。
+- **可复用的部分**：`tests/ssh_play_test.py`（任何能 ssh 进去的入口都能验，9 条字节级判据）、
+  `deploy/restore-drill.py`（迁数据时用它验备份）。数据迁移成本 = 一个 `tetris.db`（几十 KB）+
+  几个环境变量，`docs/DEPLOY.md` 第 7 节有完整流程。
 
 ### 真机验证（WSL，2026-11-04）
 
@@ -1582,9 +1634,39 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
     写死 `172.18.x.x` 会在某次 WSL 重启后失效；② **判断链路要读 SSH banner**——
     `portproxy` 先 accept 再连目标，目标不可达时客户端是"连上后卡住"，只看端口在监听会被骗。
 
+70. **免账号的公网 TCP 中继，2026 年底已经基本死绝了**（2026-11-07 在蜂窝网/校园网各验一遍）：
+    - `serveo.net`、`a.pinggy.io`：**DNS 直接不解析**（NXDOMAIN，换到运营商 DNS 也一样）→ 已停服；
+    - `bore.pub`：域名不存在（服务已关）；
+    - `ngrok` 免费账号：能建 agent，但**开 TCP 隧道要求先绑信用卡** ——
+      `ERR_NGROK_8013: You must add a credit or debit card before you can use TCP endpoints on a free account`；
+    - `localhost.run`：只做 HTTP，托不起 SSH；
+    - Cloudflare Tunnel：裸 TCP 要**朋友那边装 `cloudflared`**，不是"只要 ssh 客户端"。
+    判断一个服务还能不能用，两条命令就够：`getent ahostsv4 <域名>`（能否解析）+
+    `ssh -R 0:localhost:22 <服务>`（能否分到端口）。**别再花时间在这些上面了。**
+
+71. **Azure for Students 不等于"马上有 VM"**（2026-11-07 实测，CityU 学生订阅）：
+    - 学生身份审核通过后，页面写的是 **"Awaiting Benefits"**，**partner offers 要等 72 小时**才解锁；
+    - 订阅上挂着 **"Allowed resource deployment regions"** 策略（`策略 → 分配` 里能看到），
+      白名单只有 5 个：`spaincentral / switzerlandnorth / belgiumcentral / germanywestcentral /
+      southafricanorth`。选 Japan East / Korea Central / Southeast Asia / East Asia 一律
+      `RequestDisallowedByAzure`（错误里写着 "best available regions ... contact support"）；
+    - 就算选到白名单里的区域，那 5 个区域的 **"总计区域 vCPU"（Total Regional vCPUs）配额是 0**，
+      大小列表里全部分到「配额不足 - 区域限制」，VM 建不出来；
+    - 顺带：这个订阅里 **B1s 在多数区域是 `NotAvailableForSubscription`**；门户的"查找可部署选项"
+      还可能直接报"建议暂时不可用"（推荐服务挂了，不代表真没机型）。
+    **结论：想靠学生额度白嫖一台机器，别把时间押在它上面**；真要免费，先确认这三件事
+    （区域白名单 / 区域 vCPU 配额 / 目标机型在此订阅是否可用），否则不如直接买 ¥10~30/月 的小 VPS。
+
+72. **"把服务器放在家里"的天花板是网络本身，不是配置**：2026-11-07 一天里换了三种网络，
+    三种都不可用——校园网（无 IPv6、禁入站、DNS 还过滤 `serveo/pinggy/tcp.ngrok.io/dns.google`，
+    连 DoH 都连不上）、手机热点（不下发 IPv6 RA）、家里（IPv6 前缀会随路由器重启/换运营商变化）。
+    所以：**"临时自己玩"可以用公网 IPv6 直连；"朋友随时来"必须一台有固定公网地址的机器**（VPS）。
+    判断方法：`ipconfig` 里有没有 `IPv6 Address`（不是 `Link-local`），以及它是不是
+    `2408:/2409:/240e:` 这种运营商前缀。
+
 ## 7. 仓库现状
 
-- `main` 干净，CI 全绿（最后一次实测 `40e76c4`：27 步全过）；无 tag；
+- `main` 干净，CI 全绿（最后一次实测 `6e77e27`：27 步全过）；无 tag；
 - `bench-run` 分支已删除（需触发 bench 时重建并 push，用完删）；
 - 远程另有 `Russia-Tetris_1.0` 分支（历史版本，未维护）；
 - 许可证：MIT（`LICENSE`）；
@@ -1633,7 +1715,7 @@ base = `daa64f0`（池子 50k），new = `10d95fb`（池子 2048），其余代�
 
 | 方向 | 内容 | 价值 |
 |---|---|---|
-| **云主机收尾** | 2026-11-06 已经用「公网 IPv6 + 公网 CI runner + WSL 里的 Docker」把第 0 节里**出网边界**那两条和 **Docker 形态**真跑了（5.公网边界验证、`docs/DEPLOY.md` 第 12 节）。仍差的只有三样：**云平台安全组**、**从 IPv6 外部机器 `nc -vz <公网IPv6> 9999`**、**云主机上的 Docker** | 低~中：都要一台真云主机；前两类已验证过等价形态，不上云也能上线 |
+| **租一台小 VPS 上线（已决定走这条）** | 香港/新加坡，1~2 vCPU / 1 GiB，¥10~30/月。**Azure 学生订阅这条路 2026-11-07 已试尽并放弃**（6.71：区域策略只给 5 个欧洲区域 + 那些区域配额 0 + 72 小时解锁）。拿到 IP 后按 `docs/DEPLOY.md` 第 0 节装 → 用 `tests/ssh_play_test.py` 从**外部机器**验收 → 迁数据（`tetris-admin backup` + `tetris-restore-drill`）。本机有现成脚本 `.deploy-key/cloud/60-bootstrap-vps.sh` | **高**：这是"朋友能玩"的唯一稳定解；顺带清掉"云平台安全组 / 云上 Docker"两个缺口 |
 | 桥换成 C 版 | 现在每会话一个 Python 进程（CI 实测约 17 MB），换几十行 C 可降到 1~2MB；SSH 承载的并发上限目前就是这项内存（见 6.36） | 中：真上量时才值得 |
 | 认证状态跨进程 | 用户名退避 / IP 兜底 / 注册限流的计数都在各 worker 内存里，阈值实际 ×N；要统一得放共享内存或落文件 | 低：只有真的开多 worker 才值得 |
 | 注册限流方案 B | 把注册哈希挪进哈希线程池，队满回"服务繁忙"（让注册和登录共享同一份背压）；现在方案 A 已经在提交哈希前挡掉，只有"额度内的正常注册把写线程占满"时才需要 | 低~中：只在注册量真的很大时 |
@@ -1677,16 +1759,23 @@ docs/DEPLOY.md 的上线 checklist）。
 同日又做掉了**公网边界验证**：没有云主机，就用这台笔记本的公网 IPv6 + 一台公网 CI runner
 （经匿名 TCP 中继）当"外部机器"，`ssh 进游戏` 9/9；Docker 形态（build / `docker run` /
 compose）也在 WSL 里真跑通了（见 5.公网边界验证、docs/DEPLOY.md 第 12 节）。
+2026-11-07 又试了一整轮"让朋友从外面连进来"：**这台笔记本上无解**——换网 IPv6 就没了、
+免费中继全死了、Azure 学生订阅卡在区域策略和配额上（6.69~6.72）。
+**已决定：租一台香港/新加坡的小 VPS（¥10~30/月），把服务端搬上去。**
 不要再重复做，也别再堆性能优化（建连和游戏两种场景服务端都不是瓶颈）。
 
-上线前真正缺的（2026-11-06 之后只剩"真云主机"才有的三样）：
-1. **云平台安全组**：主机自己"只开 22"已经验过（12.1），云上还要确认安全组没放过别的端口；
-2. **从 IPv6 外部机器 `nc -vz <公网IPv6> 9999`**：需要一台 IPv6 可达的外部机器
-   （GitHub runner 只有 IPv4），本环境拿不到；
-3. **云主机上的 Docker 形态**：容器已在 WSL 里真跑（9/9），但没在云主机上跑过。
-   —— WSL（2026-11-04）已验 systemd 装法、fd 上限、只绑回环、kill -9、开机自启、
-   日志轮转、备份、7.5 恢复演练；2026-11-06 又验了公网入口和 Docker。
-   **这两轮验过的都别再重复**。
+上线前真正缺的（2026-11-08 之后只剩"租 VPS 并搬上去"这一步）：
+1. **租一台香港/新加坡的小 VPS**（1~2 vCPU / 1 GiB，¥10~30/月），按 `docs/DEPLOY.md` 第 0 节装；
+   拿到 IP 就能用本机 `.deploy-key/cloud/60-bootstrap-vps.sh` 一条命令串完（依赖→clone→编译→
+   `install-systemd.sh`→`install-ssh-bridge.sh`→口令→sshd 加固→fail2ban→备份→恢复演练→自检）；
+2. **从外部机器验收**：`python3 tests/ssh_play_test.py --host <IP> --key <私钥>`（9 条字节级判据），
+   外加 `nc -vz <IP> 9999` 必须不通；
+3. **迁数据**（如果要从现在的 WSL 搬）：`tetris-admin backup` 出快照 → 新机器上
+   `tetris-restore-drill <快照>` 验一遍 → 按 `docs/DEPLOY.md` 7.4 放进去。
+   —— **不要再试的**：公网 IPv6 直连（换网就废，6.72）、免账号中继（全死了，6.70）、
+   Azure 学生订阅（区域策略+配额，6.71）、WSL 上再折腾 keepalive（6.69）。
+   WSL（2026-11-04）已验 systemd 装法、fd 上限、只绑回环、kill -9、开机自启、日志轮转、
+   备份、7.5 恢复演练；2026-11-06 又验了公网入口和 Docker。**这些都别再重复**。
 
 要点：
 - 注册也有限流了（`TETRIS_REG_*`：每 IP 20 次/5 分钟 + 全局 200 次/小时，挡在 PBKDF2 之前）；
@@ -1723,6 +1812,14 @@ compose）也在 WSL 里真跑通了（见 5.公网边界验证、docs/DEPLOY.md
   会自动取 WSL 的当前 IP、用密钥免密 ssh 进游戏；WSL 里服务已装成 systemd 单元
   （`systemctl status tetris-game`），登录账号 `tetris` / 口令 `tetris-WSL-2026`；
   WSL 在两次 `wsl.exe` 调用之间会自己关机，所以"开机自启"每次都会被动验证一次；
+- **2026-11-07 留下的本机辅助物（都在 `.deploy-key/cloud/`，gitignored）**，新会话可以直接用/清掉：
+  `start-friends.bat` / `stop-friends.bat`（WSL + 公网 IPv6 时代的开/关入口，含 6.69 那套
+  "会话常驻进程 + banner 自检"）、`60-bootstrap-vps.sh`（装机脚本）、`74-start-ngrok.sh` +
+  `.ngrok_token`（ngrok 那条路，免费 TCP 要绑卡，已放弃；**token 可以删/重置**）、
+  `74/76/77` 之类的一次性探测脚本。
+  另外 Windows 侧可能还留着 `tetris-public-ssh22` 防火墙规则和 `::22 → 127.0.0.1:22` 的 portproxy
+  （现在没有全局 IPv6，等于空转）——要清就双击 `stop-friends.bat`；WSL 里那个没用的
+  `tetris-hold.service` 也会被它一起删掉；
 - CI 现在 26 步，末尾三步是「Admin CLI test」「Deploy artifacts test (systemd)」
   「Docker image build and health check」：后两步会**真装一遍 systemd 服务**（LimitNOFILE /
   只绑回环 / 真跑备份 / 恢复演练 / kill -9 拉起 / stop 计时）和**真 build 镜像并跑健康检查**；
@@ -1737,5 +1834,7 @@ compose）也在 WSL 里真跑通了（见 5.公网边界验证、docs/DEPLOY.md
   **画面/渲染修复（6.56~6.63：返回提示、第 0 列白块、`R` 重绘、最后一列空格滚屏、光标规则、
   右边界、`SHAPE_I` 取色、补画竖墙）**、
   **公网边界验证（公网 IPv6 只开 22 + GitHub runner 经中继 ssh 进游戏 9/9）+
-  Docker 形态真跑（build / `docker run` / compose，都穿过桥玩通）**。
+  Docker 形态真跑（build / `docker run` / compose，都穿过桥玩通）**、
+  **"朋友试玩入口"这一轮的全部尝试（公网 IPv6 直连 / serveo / pinggy / bore / ngrok /
+  手机热点 / 校园网 / Azure 学生订阅 —— 全都试过并失败，见 6.69~6.72）**。
 ```
