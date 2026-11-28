@@ -227,6 +227,47 @@ jobs:
           fi
           exit "$RC"
 
+      - name: Game input TCP integration test
+        working-directory: src
+        run: |
+          # 在真实服务端会话中验证游戏输入：先登录并进入简单模式，
+          # 再分片发送 ESC [ D，最后一次写入发送 16 个左右键命令。
+          set -e
+          rm -f tetris.db tetris.db-wal tetris.db-shm userdata.csv userdata.csv.lock log.txt
+          python3 ../tests/play_test.py --seed 1 --db tetris.db
+
+          TETRIS_PORT=10010 TETRIS_DB="$PWD/tetris.db" TETRIS_LOG_LEVEL=debug \
+            ./tetris_game > /tmp/game_input_server.log 2>&1 &
+          SERVER_PID=$!
+          cleanup() {
+            kill "$SERVER_PID" 2>/dev/null || true
+            wait "$SERVER_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          READY=0
+          for i in $(seq 1 120); do
+            if (exec 3<>/dev/tcp/127.0.0.1/10010) 2>/dev/null; then
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$READY" -ne 1 ]; then
+            echo "::error::游戏输入集成测试服务端未能在 120 秒内启动"
+            tail -40 /tmp/game_input_server.log || true
+            exit 1
+          fi
+
+          if ! python3 ../tests/game_input_integration_test.py --host 127.0.0.1 --port 10010; then
+            detail=$(grep -aE 'Client\[|game input|recv|send|Error|error' log.txt 2>/dev/null | tail -30 | tr '\n' '|' | cut -c1-1800)
+            if [ -z "$detail" ]; then
+              detail=$(tail -30 /tmp/game_input_server.log 2>/dev/null | tr '\n' '|' | cut -c1-1800)
+            fi
+            echo "::error::真实 TCP 游戏输入集成测试失败: $detail"
+            exit 1
+          fi
+
       - name: Legacy CSV import test
         working-directory: src
         run: |
