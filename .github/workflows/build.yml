@@ -166,6 +166,26 @@ jobs:
           fi
           echo "::notice::注册限流自检通过: $(echo "$out" | tr '\n' '|' | cut -c1-800)"
 
+      - name: Game input parser self-test
+        working-directory: src
+        run: |
+          # 拆包/粘包、ESC 序列、缓冲区上限和玩家隔离的纯解析器回归测试。
+          if ! g++ -std=c++17 -Wall -Wextra -Werror -pedantic -I. \
+                ../tests/game_input_parser_test.cpp -o /tmp/gip_test \
+                2> /tmp/gip_build.txt; then
+            echo "::error::游戏输入解析器测试编译失败: $(tr '\n' '|' < /tmp/gip_build.txt | cut -c1-1200)"
+            exit 1
+          fi
+          set +e
+          out=$(/tmp/gip_test 2>&1)
+          rc=$?
+          echo "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::游戏输入解析器测试失败: $(echo "$out" | tr '\n' '|' | cut -c1-1500)"
+            exit 1
+          fi
+          echo "::notice::游戏输入解析器测试通过: $(echo "$out" | tail -1)"
+
       - name: Protocol integration test
         working-directory: src
         run: |
@@ -206,6 +226,47 @@ jobs:
             echo "::error::协议集成测试失败，服务端日志: $detail"
           fi
           exit "$RC"
+
+      - name: Game input TCP integration test
+        working-directory: src
+        run: |
+          # 在真实服务端会话中验证游戏输入：先登录并进入简单模式，
+          # 再分片发送 ESC [ D，最后一次写入发送 16 个左右键命令。
+          set -e
+          rm -f tetris.db tetris.db-wal tetris.db-shm userdata.csv userdata.csv.lock log.txt
+          python3 ../tests/play_test.py --seed 1 --db tetris.db
+
+          TETRIS_PORT=10010 TETRIS_DB="$PWD/tetris.db" TETRIS_LOG_LEVEL=debug \
+            ./tetris_game > /tmp/game_input_server.log 2>&1 &
+          SERVER_PID=$!
+          cleanup() {
+            kill "$SERVER_PID" 2>/dev/null || true
+            wait "$SERVER_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          READY=0
+          for i in $(seq 1 120); do
+            if (exec 3<>/dev/tcp/127.0.0.1/10010) 2>/dev/null; then
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$READY" -ne 1 ]; then
+            echo "::error::游戏输入集成测试服务端未能在 120 秒内启动"
+            tail -40 /tmp/game_input_server.log || true
+            exit 1
+          fi
+
+          if ! python3 ../tests/game_input_integration_test.py --host 127.0.0.1 --port 10010; then
+            detail=$(grep -aE 'Client\[|game input|recv|send|Error|error' log.txt 2>/dev/null | tail -30 | tr '\n' '|' | cut -c1-1800)
+            if [ -z "$detail" ]; then
+              detail=$(tail -30 /tmp/game_input_server.log 2>/dev/null | tr '\n' '|' | cut -c1-1800)
+            fi
+            echo "::error::真实 TCP 游戏输入集成测试失败: $detail"
+            exit 1
+          fi
 
       - name: Legacy CSV import test
         working-directory: src

@@ -2,6 +2,8 @@
 #ifndef Game_H
 #define Game_H
 
+#include <cstddef>
+
 #include"User.h"
 #include"Game.h"
 #include"Common.h"
@@ -127,6 +129,7 @@ public:
     static bool handleRotation(std::shared_ptr<User>& user);
 
     static bool handleReceivedData_STATUS_PLAYING(char* buffer, std::shared_ptr<User>& user);
+    static bool handleReceivedData_STATUS_PLAYING(const char* buffer, std::size_t length, std::shared_ptr<User>& user);
 
 
     //STATUS_OVER_CONFIRMING

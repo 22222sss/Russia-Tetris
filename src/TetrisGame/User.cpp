@@ -429,6 +429,11 @@ void User::setReceivedata(const string& value)
     this->receivedata = value;
 }
 
+std::string& User::getReceivedataBuffer()
+{
+    return this->receivedata;
+}
+
 // Getter and setter functions for speed
 
 double User::getSpeed() const

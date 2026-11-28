@@ -130,6 +130,8 @@ public:
     // Getter and setter functions for receivedata
     string getReceivedata() const;
     void setReceivedata(const string& value);
+    // STATUS_PLAYING 时复用 receivedata，作为每连接独立的 TCP 字节流缓冲。
+    std::string& getReceivedataBuffer();
 
     // Getter and setter functions for speed
     double getSpeed() const;

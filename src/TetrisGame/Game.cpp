@@ -1,4 +1,5 @@
 #include"Game.h"
+#include "GameInputParser.h"
 #include <cstdlib>
 #include <string>
 
@@ -501,6 +502,8 @@ bool Game::IsOver(shared_ptr<User>& user)
     {
         if (user->getData(1, j) == 1) //顶层有方块存在（以第1行为顶层，不是第0行）
         {
+            // 丢弃游戏阶段未完成的 ESC 序列，避免污染结束确认阶段输入。
+            user->getReceivedataBuffer().clear();
             user->setStatus(STATUS_OVER_CONFIRMING);
             return true;
         }
@@ -515,19 +518,25 @@ bool Game::IsOver(shared_ptr<User>& user)
 
 bool Game::process_STATUS_PLAYING(shared_ptr<User>& user)
 {
-    char buffer[1024] = { 0 };
-    int bytesRead = recv(user->getFd(), buffer, sizeof(buffer), 0);
+    // recv() 返回字节数，不是 C 字符串长度；不追加 NUL，避免边界越界。
+    char buffer[1024];
+    const ssize_t bytesRead = recv(user->getFd(), buffer, sizeof(buffer), 0);
 
-    if (bytesRead == -1 || bytesRead == 0) {
+    if (bytesRead == 0) {
+        Game::handleRecvError_STATUS_PLAYING(user);
+        return false;
+    }
+    if (bytesRead < 0) {
+        // 非阻塞 socket 的 EAGAIN/EWOULDBLOCK 不是断线，EINTR 也可安全重试。
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+            return true;
+        }
         Game::handleRecvError_STATUS_PLAYING(user);
         return false;
     }
 
-    buffer[bytesRead] = '\0';
-
-    if (!Game::handleReceivedData_STATUS_PLAYING(buffer, user))
-        return false;
-    return true;
+    return Game::handleReceivedData_STATUS_PLAYING(
+        buffer, static_cast<std::size_t>(bytesRead), user);
 }
 
 void Game::handleRecvError_STATUS_PLAYING(shared_ptr<User>& user)
@@ -629,43 +638,43 @@ bool Game::handleRotation(shared_ptr<User>& user)
 
 bool Game::handleReceivedData_STATUS_PLAYING(char* buffer, shared_ptr<User>& user)
 {
-    // 处理接收到的数据
-    if (strcmp(buffer, KEY_DOWN) == 0)//下
-    {
-        if (!Game::handleMoveDown(user)) //判断方块向下移动一位后是否合法
-        {
-            return false;
-        }
-    }
-    else if (strcmp(buffer, KEY_LEFT) == 0)//左
-    {
-        if (!Game::handleMoveLeft(user))
-        {
-            return false;
-        }
-    }
-    else if (strcmp(buffer, KEY_RIGHT) == 0)//右
-    {
-        if (!Game::handleMoveRight(user))
-        {
-            return false;
-        }
-    }
-    else if (*buffer == ' ')
-    {
-        if (!Game::handleRotation(user))
-        {
-            return false;
-        }
-    }
-    else if (*buffer == 'r' || *buffer == 'R')//重绘整屏（终端重排/花屏后用，不影响游戏状态）
-    {
-        if (!Game::Repaint(user))
-        {
-            return false;
-        }
+    if (buffer == nullptr)
+        return false;
+    return Game::handleReceivedData_STATUS_PLAYING(
+        buffer, std::strlen(buffer), user);
+}
+
+bool Game::handleReceivedData_STATUS_PLAYING(
+    const char* buffer, std::size_t length, shared_ptr<User>& user)
+{
+    // STATUS_PLAYING 时复用 receivedata 作为每连接独立的 TCP 输入缓冲。
+    std::string& pending = user->getReceivedataBuffer();
+    if (!GameInputParser::append(pending, buffer, length)) {
+        logger->warn("Client[{}] game input buffer overflow; dropping pending input",
+                     user->getFd());
+        return true;
     }
 
+    GameInputCommand command;
+    while (GameInputParser::next(pending, command)) {
+        switch (command) {
+            case GameInputCommand::MoveDown:
+                if (!Game::handleMoveDown(user)) return false;
+                break;
+            case GameInputCommand::MoveLeft:
+                if (!Game::handleMoveLeft(user)) return false;
+                break;
+            case GameInputCommand::MoveRight:
+                if (!Game::handleMoveRight(user)) return false;
+                break;
+            case GameInputCommand::Rotate:
+                if (!Game::handleRotation(user)) return false;
+                break;
+            case GameInputCommand::Repaint:
+                if (!Game::Repaint(user)) return false;
+                break;
+        }
+    }
     return true;
 }
 
